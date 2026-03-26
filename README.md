@@ -112,10 +112,13 @@
 4. 開啟一個終端機執行前端 (Vite)。
 
 ## 📂 專案結構說明
+
+```text
 NTU_CloudNative/
 ├── docker-compose.yml   # 本地開發資料庫與 Redis 配置
-├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯
-├── reporting-api/       # Django: 處理複雜階層查詢與報表 API
-├── frontend/            # React + TS: 主管報表視覺化儀表板
-├── k8s/                 # Kubernetes 部署與 HPA (水平擴展) 設定檔
+├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯 [cite: 118, 120]
+├── reporting-api/       # Django: 處理複雜階層查詢與報表 API [cite: 121, 126]
+├── frontend/            # React + TS: 主管報表視覺化儀表板 [cite: 124]
+├── k8s/                 # Kubernetes 部署與 HPA (水平擴展) 設定檔 [cite: 132]
 └── .gitignore           # 多語言環境過濾配置
+```
