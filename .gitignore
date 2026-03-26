@@ -205,3 +205,40 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =========================
+# Go (Access API)
+# =========================
+# 排除編譯後的二進位執行檔 (避免推上幾十 MB 的無用檔案)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+access-api  # 假設你未來 Go build 出來的檔案名
+
+# Go 測試檔與涵蓋率報告
+*.test
+*.out
+
+# Go 依賴包的本地快取 (如果有使用 go mod vendor)
+vendor/
+
+# =========================
+# Django 補充設定
+# =========================
+# 排除使用者上傳的媒體檔與收集後的靜態檔
+media/
+staticfiles/
+
+# =========================
+# Docker & 系統設定
+# =========================
+# 排除 Docker 開發時可能覆蓋的本地配置
+docker-compose.override.yml
+
+# Windows 系統縮圖快取
+Thumbs.db
+
+# 允許上傳環境變數的範本檔 (讓隊友知道要填哪些變數)
+!.env.example
