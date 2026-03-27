@@ -1,0 +1,13 @@
+{
+  "groups": [
+    "Admin",
+    "Manager",
+    "Employee"
+  ],
+  "default_superuser": {
+    "username": "admin",
+    "email": "admin@example.com",
+    "is_staff": true,
+    "is_superuser": true
+  }
+}

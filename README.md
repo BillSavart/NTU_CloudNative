@@ -115,6 +115,24 @@
    python manage.py runserver
    ```
 
+### 團隊資料同步（長期建議）
+大型專案建議使用「Migration + Seed」確保所有人有一致資料結構與基礎資料。
+
+1. 每位組員先同步程式碼後執行：
+   ```bash
+   python manage.py migrate
+   ```
+2. 載入基礎資料（可重複執行）：
+   ```bash
+   python manage.py seed_data
+   ```
+3. 若要一併建立預設管理員：
+   ```bash
+   python manage.py seed_data --create-admin --admin-password '請改成安全密碼'
+   ```
+
+預設 seed 檔案位於 `reporting-api/core/fixtures/initial_seed.json`。
+
 ### Reporting API 安全設定重點
 - `SECRET_KEY` 改由 `reporting-api/.env` 的 `DJANGO_SECRET_KEY` 提供。
 - 開發模式預設開啟 `DJANGO_DEBUG=True`，部署前請改為 `False`。
