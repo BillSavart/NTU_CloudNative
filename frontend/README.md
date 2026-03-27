@@ -1,73 +1,56 @@
-# React + TypeScript + Vite
+# Frontend (React + TypeScript + Vite)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+此前端目前已改為 Bootstrap 版型，首頁為「出勤管理系統」登入頁。
 
-Currently, two official plugins are available:
+## 使用技術
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React 19
+- TypeScript
+- Vite
+- Bootstrap 5
+- React Router
 
-## React Compiler
+## 本地啟動
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 版面說明
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- 主要畫面使用 Bootstrap 工具類別與元件（`card`、`form-control`、`btn` 等）建構。
+- 全域樣式由 `bootstrap/dist/css/bootstrap.min.css` 載入。
+- Logo 圖片來源：`src/assets/tsmc_logo.png`。
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## 前端結構（重構後）
+
+- `src/App.tsx`：應用入口，負責掛載頁面。
+- `src/pages/LoginPage.tsx`：登入頁容器（頁面層）。
+- `src/components/auth/LoginCard.tsx`：登入卡片與標題區塊。
+- `src/components/auth/LoginForm.tsx`：登入表單區塊。
+
+此結構可在後續擴充時，平滑加入其他頁面（例如 Dashboard、Reports、Users）與路由設定。
+
+## 路由
+
+- `/login`：出勤管理系統登入頁。
+- 其他未定義路徑會自動導回 `/login`。
+
+## Django 串接
+
+- 登入 API：`POST /api/login/`
+- 健康檢查 API：`GET /api/health/`
+- 開發模式下，Vite 會把 `/api/*` 代理到 `http://127.0.0.1:8000`。
+
+請先啟動 Django，再啟動前端：
+
+```bash
+# terminal 1
+cd ../reporting-api
+python manage.py runserver
+
+# terminal 2
+cd frontend
+npm run dev
 ```

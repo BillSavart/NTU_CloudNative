@@ -20,8 +20,8 @@
 * **Write Path (Access API)**: Go (Gin/Fiber) + Redis (Cache System).
 * **Event Broker**: RabbitMQ / Kafka (用於解耦開門決策與報表寫入). （待定）
 * **Read Path (Reporting API)**: Python 3.12 (Django) + PostgreSQL.
-* **Frontend Dashboard**: React + TypeScript (Vite 6.0.1).
-* **Observability**: Prometheus + Grafana (視覺化「換班 Shift Change」期間的流量尖峰). （待定）
+* **Frontend Dashboard**: React + TypeScript (Vite 6.0.1) + Bootstrap 5.
+* **Observability**: Prometheus + Grafana (視覺化「換班 Shift Change」期間的流量尖峰). 
 
 ---
 
