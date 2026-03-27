@@ -39,7 +39,12 @@
 ### 1. 基礎設施服務 (資料庫與快取)
 本專案需要 PostgreSQL 與 Redis 才能運作，這些服務已包裝在 Docker 中。
 1. 在專案根目錄開啟終端機。
-2. 在背景啟動服務：
+2. 建立 Docker 用環境變數檔：
+   ```bash
+   cp .env.example .env
+   ```
+   請將 `.env` 內的 `POSTGRES_PASSWORD` 改為你自己的密碼。
+3. 在背景啟動服務：
    ```bash
    docker-compose up -d
    ```
@@ -81,14 +86,34 @@
    pip install -r requirements.txt
    ```
    *(註：使用 `pip` 是為了確保能正確從 PyPI 抓取套件，您也可以視情況混合使用 `conda install`)*
-4. 執行資料庫遷移：
+4. 設定環境變數（避免把密碼與 secret key 寫死在程式碼）：
+   ```bash
+   cp .env.example .env
+   ```
+   請至少修改 `DJANGO_SECRET_KEY` 與 `POSTGRES_PASSWORD`。
+5. 確保 PostgreSQL 已啟動（若尚未啟動）：
+   ```bash
+   cd ..
+   docker-compose up -d db
+   cd reporting-api
+   ```
+6. 執行資料庫遷移：
    ```bash
    python manage.py migrate
    ```
-5. 啟動 Django 開發伺服器：
+7. 建立 Django 管理員帳號（superuser）：
+   ```bash
+   python manage.py createsuperuser
+   ```
+8. 啟動 Django 開發伺服器：
    ```bash
    python manage.py runserver
    ```
+
+### Reporting API 安全設定重點
+- `SECRET_KEY` 改由 `reporting-api/.env` 的 `DJANGO_SECRET_KEY` 提供。
+- 開發模式預設開啟 `DJANGO_DEBUG=True`，部署前請改為 `False`。
+- `/api/login/` 已啟用 CSRF 防護，前端會先呼叫 `/api/csrf/` 取得 cookie 再送登入請求。
 
 ### 4. 前端 (React / Vite)
 1. 開啟新的終端機並進入 `frontend` 目錄：

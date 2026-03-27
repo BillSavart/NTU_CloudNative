@@ -1,9 +1,8 @@
-# Python >= 3.12 (Conda environment recommended: conda create -n env_name python=3.12)
 asgiref==3.11.1
 Django==6.0.3
 djangorestframework==3.17.1
 packaging
-psycopg==3.3.3
+psycopg-binary==3.3.3
 setuptools==82.0.1
 sqlparse==0.5.5
 typing_extensions==4.15.0

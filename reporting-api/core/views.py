@@ -2,7 +2,7 @@ import json
 
 from django.contrib.auth import authenticate
 from django.http import HttpRequest, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
 
@@ -11,7 +11,12 @@ def health(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "ok", "service": "reporting-api"})
 
 
-@csrf_exempt
+@ensure_csrf_cookie
+@require_GET
+def csrf_token(request: HttpRequest) -> JsonResponse:
+    return JsonResponse({"message": "CSRF cookie set."})
+
+
 @require_POST
 def login_api(request: HttpRequest) -> JsonResponse:
     try:
