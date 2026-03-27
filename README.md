@@ -21,7 +21,7 @@
 * **Event Broker**: RabbitMQ / Kafka (用於解耦開門決策與報表寫入). （待定）
 * **Read Path (Reporting API)**: Python 3.12 (Django) + PostgreSQL.
 * **Frontend Dashboard**: React + TypeScript (Vite 6.0.1) + Bootstrap 5.
-* **Observability**: Prometheus + Grafana (視覺化「換班 Shift Change」期間的流量尖峰). 
+* **Observability**: Prometheus + Grafana (視覺化「換班 Shift Change」期間的流量尖峰). （待定）
 
 ---
 
@@ -49,6 +49,11 @@
    docker-compose up -d
    ```
    *這將會啟動 PostgreSQL（Port 5432，資料庫 `access_control`）與 Redis（Port 6379）。*
+
+### 環境變數檔案說明（重要）
+- 專案根目錄 `.env`：提供給 Docker Compose（啟動 PostgreSQL 容器時使用）。
+- `reporting-api/.env`：提供給 Django（應用程式連接資料庫與 `SECRET_KEY` 使用）。
+- 這兩份檔案中的 `POSTGRES_PASSWORD` 必須一致。
 
 ### 2. Access API (Go)
 1. 開啟新的終端機並進入 `access-api` 目錄：
@@ -114,6 +119,27 @@
 - `SECRET_KEY` 改由 `reporting-api/.env` 的 `DJANGO_SECRET_KEY` 提供。
 - 開發模式預設開啟 `DJANGO_DEBUG=True`，部署前請改為 `False`。
 - `/api/login/` 已啟用 CSRF 防護，前端會先呼叫 `/api/csrf/` 取得 cookie 再送登入請求。
+
+### 驗證目前使用 PostgreSQL（不是 SQLite）
+在 `reporting-api` 目錄執行：
+
+```bash
+python manage.py shell -c "from django.db import connection; s=connection.settings_dict; print(s['ENGINE'], s['NAME'], s['HOST'], s['USER'])"
+```
+
+若結果包含 `django.db.backends.postgresql`，代表 Django 目前連的是 PostgreSQL。
+
+另外可直接查 PostgreSQL 的 `auth_user`：
+
+```bash
+cd ..
+docker-compose exec db psql -U root -d access_control -c "select id, username, is_superuser, date_joined from auth_user order by id desc limit 20;"
+```
+
+### 常見錯誤排查
+- 錯誤：`database "root" does not exist`
+- 原因：在本機 shell 展開了 `$POSTGRES_DB`，但該變數未設定，導致 psql 回退到錯誤資料庫名稱。
+- 建議：查詢時先用固定值（`-U root -d access_control`），避免變數展開問題。
 
 ### 4. 前端 (React / Vite)
 1. 開啟新的終端機並進入 `frontend` 目錄：
