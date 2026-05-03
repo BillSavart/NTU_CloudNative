@@ -19,7 +19,7 @@
 * **基礎設施**：Docker、Docker Compose、Kubernetes (K8s)。
 * **寫入路徑（Access API）**：Go (Gin) + Redis。
 * **事件串流**：Kafka，用於解耦開門決策與報表寫入。
-* **讀取路徑（Reporting API）**：Python 3.12 (Django) + PostgreSQL。
+* **讀取路徑（Reporting API）**：Python 3.12 (FastAPI) + PostgreSQL。
 * **前端儀表板**：React + TypeScript (Vite 6.0.1) + Bootstrap 5。
 * **可觀測性**：Prometheus + Grafana，用於視覺化換班尖峰期間的系統流量。
 
@@ -52,7 +52,7 @@
 
 ### 環境變數檔案說明（重要）
 - 專案根目錄 `.env`：提供給 Docker Compose（啟動 PostgreSQL 容器時使用）。
-- `reporting-api/.env`：提供給 Django（應用程式連接資料庫與 `SECRET_KEY` 使用）。
+- `reporting-api/.env`：提供給 FastAPI（應用程式連接資料庫、Kafka 與 CORS 設定使用）。
 - 這兩份檔案中的 `POSTGRES_PASSWORD` 必須一致。
 
 ### 2. Access API（Go）
@@ -134,8 +134,8 @@ k8s/access-api-service.yaml
 k8s/access-api-hpa.yaml
 ```
 
-### 3. Reporting API（Python/Django）
-此專案的 Python 需求為 **3.12**，以下將以 Conda 環境示範架設步驟。
+### 3. Reporting API（Python/FastAPI）
+此專案的 Python 需求為 **3.12**。目前 Reporting API 已改成 FastAPI 骨架，只負責把環境架好；Kafka 寫入 DB、報表查詢與 dashboard API 會留給後續分工實作。
 1. 開啟新的終端機並進入 `reporting-api` 目錄：
    ```bash
    cd reporting-api
@@ -154,69 +154,28 @@ k8s/access-api-hpa.yaml
    ```bash
    cp .env.example .env
    ```
-   請至少修改 `DJANGO_SECRET_KEY` 與 `POSTGRES_PASSWORD`。
+   請確認 `POSTGRES_PASSWORD` 與專案根目錄 `.env` 一致。
 5. 確保 PostgreSQL 已啟動（若尚未啟動）：
    ```bash
    cd ..
    docker-compose up -d db
    cd reporting-api
    ```
-6. 執行資料庫遷移：
+6. 啟動 FastAPI 開發伺服器：
    ```bash
-   python manage.py migrate
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
-7. 建立 Django 管理員帳號：
+7. 測試健康檢查：
    ```bash
-   python manage.py createsuperuser
-   ```
-8. 啟動 Django 開發伺服器：
-   ```bash
-   python manage.py runserver
+   curl http://127.0.0.1:8000/api/health/
    ```
 
-### 團隊資料同步（長期建議）
-大型專案建議使用「Migration + Seed」確保所有人有一致資料結構與基礎資料。
-
-1. 每位組員先同步程式碼後執行：
-   ```bash
-   python manage.py migrate
-   ```
-2. 載入基礎資料（可重複執行）：
-   ```bash
-   python manage.py seed_data
-   ```
-3. 若要一併建立預設管理員：
-   ```bash
-   python manage.py seed_data --create-admin --admin-password '請改成安全密碼'
-   ```
-
-預設 seed 檔案位於 `reporting-api/core/fixtures/initial_seed.json`。
-
-### Reporting API 安全設定重點
-- `SECRET_KEY` 改由 `reporting-api/.env` 的 `DJANGO_SECRET_KEY` 提供。
-- 開發模式預設開啟 `DJANGO_DEBUG=True`，部署前請改為 `False`。
-- `/api/login/` 已啟用 CSRF 防護，前端會先呼叫 `/api/csrf/` 取得 cookie 再送登入請求。
-
-### 驗證目前使用 PostgreSQL（不是 SQLite）
-在 `reporting-api` 目錄執行：
+也可以直接用 Docker Compose 啟動：
 
 ```bash
-python manage.py shell -c "from django.db import connection; s=connection.settings_dict; print(s['ENGINE'], s['NAME'], s['HOST'], s['USER'])"
+docker-compose up -d reporting-api
+curl http://127.0.0.1:8000/api/health/
 ```
-
-若結果包含 `django.db.backends.postgresql`，代表 Django 目前連的是 PostgreSQL。
-
-另外可直接查 PostgreSQL 的 `auth_user`：
-
-```bash
-cd ..
-docker-compose exec db psql -U root -d access_control -c "select id, username, is_superuser, date_joined from auth_user order by id desc limit 20;"
-```
-
-### 常見錯誤排查
-- 錯誤：`database "root" does not exist`
-- 原因：在本機 shell 展開了 `$POSTGRES_DB`，但該變數未設定，導致 psql 回退到錯誤資料庫名稱。
-- 建議：查詢時先用固定值（`-U root -d access_control`），避免變數展開問題。
 
 ### 4. 前端（React / Vite）
 1. 開啟新的終端機並進入 `frontend` 目錄：
@@ -232,21 +191,66 @@ docker-compose exec db psql -U root -d access_control -c "select id, username, i
    npm run dev
    ```
 
+### 5. 可觀測性環境（Prometheus / Grafana）
+目前已先架好 Prometheus 與 Grafana 的基礎環境，讓後續組員可以接著設計 dashboard、告警與更多 exporter。
+
+啟動可觀測性環境：
+
+```bash
+docker-compose up -d prometheus grafana
+```
+
+Prometheus：
+
+```text
+http://localhost:9090
+```
+
+Grafana：
+
+```text
+http://localhost:3000
+```
+
+Grafana 管理員帳密由專案根目錄 `.env` 的 `GRAFANA_ADMIN_USER` 與 `GRAFANA_ADMIN_PASSWORD` 設定。`.env.example` 只提供 placeholder，請不要把真正密碼寫進 README 或提交到 Git。
+
+目前 Prometheus 會 scrape：
+
+```text
+access-lb:8080/metrics
+```
+
+也就是 Access API 已提供的 Prometheus 格式指標，例如：
+
+```text
+access_api_swipes_total
+access_api_swipes_granted_total
+access_api_swipes_denied_total
+access_api_events_queued_total
+access_api_events_published_total
+access_api_events_failed_total
+access_api_events_dropped_total
+access_api_event_queue_depth
+```
+
+Grafana 已自動 provision Prometheus datasource。Dashboard、告警規則、Kafka/Redis/PostgreSQL exporter 尚未實作，保留給後續可觀測性分工。
+
 ## 開發流程
 若要在本地完整運行整個應用程式，您需要：
 1. 確保 Docker 容器已啟動。
 2. 開啟一個終端機執行 Access API（Go）。
-3. 開啟一個終端機執行 Reporting API（Django）。
+3. 開啟一個終端機執行 Reporting API（FastAPI）。
 4. 開啟一個終端機執行前端（Vite）。
 
 ## 📂 專案結構說明
 
 ```text
 NTU_CloudNative/
-├── docker-compose.yml   # 本地開發資料庫、Redis Sentinel、Kafka 叢集與 Access API 叢集配置
+├── docker-compose.yml   # 本地開發資料庫、Redis Sentinel、Kafka、API 與可觀測性服務配置
 ├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯
-├── reporting-api/       # Django: 處理複雜階層查詢與報表 API 
+├── reporting-api/       # FastAPI: 報表服務骨架，預留 Kafka -> DB 與報表 API 分工
 ├── frontend/            # React + TS: 主管報表視覺化儀表板 
+├── infra/               # Nginx、Redis Sentinel、Prometheus、Grafana 設定
 ├── k8s/                 # Kubernetes 部署與 HPA (水平擴展) 設定檔 
 └── .gitignore           # 多語言環境過濾配置
 ```

@@ -37,18 +37,19 @@ npm run dev
 - `/login`：出勤管理系統登入頁。
 - 其他未定義路徑會自動導回 `/login`。
 
-## Django 串接
+## Reporting API 串接
 
-- 登入 API：`POST /api/login/`
+- Reporting API 已從 Django 改成 FastAPI。
 - 健康檢查 API：`GET /api/health/`
 - 開發模式下，Vite 會把 `/api/*` 代理到 `http://127.0.0.1:8000`。
+- 登入與報表 API 尚未實作，會留給後續分工。
 
-請先啟動 Django，再啟動前端：
+請先啟動 FastAPI，再啟動前端：
 
 ```bash
 # terminal 1
 cd ../reporting-api
-python manage.py runserver
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 # terminal 2
 cd frontend
