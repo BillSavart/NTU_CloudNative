@@ -32,6 +32,7 @@ type Config struct {
 	EntryRatio     float64
 	DuplicatePct   float64
 	HTTPTimeout    time.Duration
+	ProgressEvery  time.Duration
 }
 
 type SwipeRequest struct {
@@ -55,6 +56,7 @@ type Result struct {
 	Decision string
 	Reason   string
 	Err      error
+	ErrorKey string
 	Latency  time.Duration
 }
 
@@ -67,6 +69,9 @@ type Stats struct {
 	NoEntryRecord  atomic.Int64
 	LatencyTotalUs atomic.Int64
 	LatencyMaxUs   atomic.Int64
+	errorMu        sync.Mutex
+	errorCounts    map[string]int64
+	errorSamples   []string
 }
 
 func main() {
@@ -90,10 +95,14 @@ func main() {
 		go worker(ctx, &wg, client, cfg.BaseURL, jobs, results)
 	}
 
-	statsDone := make(chan Stats)
-	go collectStats(results, statsDone)
+	var stats Stats
+	statsDone := make(chan struct{})
+	progressDone := make(chan struct{})
+	go collectStats(results, &stats, statsDone)
 
 	start := time.Now()
+	go reportProgress(&stats, len(swipes), start, progressDone, cfg.ProgressEvery)
+
 	for _, swipe := range swipes {
 		waitUntil(start, swipe.At, cfg.TimeScale)
 		jobs <- swipe.Request
@@ -102,25 +111,27 @@ func main() {
 
 	wg.Wait()
 	close(results)
-	stats := <-statsDone
+	<-statsDone
+	close(progressDone)
 
 	elapsed := time.Since(start)
-	printSummary(stats, len(swipes), elapsed, cfg)
+	printSummary(&stats, len(swipes), elapsed, cfg)
 }
 
 func parseFlags() Config {
 	cfg := Config{}
 	flag.StringVar(&cfg.BaseURL, "base-url", envString("ACCESS_API_URL", "http://127.0.0.1:8080"), "Access API base URL")
 	flag.IntVar(&cfg.Employees, "employees", envInt("SIM_EMPLOYEES", 90000), "number of employees to simulate")
-	flag.StringVar(&cfg.EmployeePrefix, "employee-prefix", envString("SIM_EMPLOYEE_PREFIX", "E"), "employee ID prefix")
+	flag.StringVar(&cfg.EmployeePrefix, "employee-prefix", envString("SIM_EMPLOYEE_PREFIX", fmt.Sprintf("E%d", time.Now().Unix())), "employee ID prefix")
 	flag.IntVar(&cfg.Gates, "gates", envInt("SIM_GATES", 50), "number of gates")
 	flag.DurationVar(&cfg.Duration, "duration", envDuration("SIM_DURATION", 30*time.Minute), "simulated peak duration")
-	flag.Float64Var(&cfg.TimeScale, "time-scale", envFloat("SIM_TIME_SCALE", 60), "simulation speedup; 60 means 30 simulated minutes run in 30 real seconds")
+	flag.Float64Var(&cfg.TimeScale, "time-scale", envFloat("SIM_TIME_SCALE", 10), "simulation speedup; 10 means 30 simulated minutes run in about 3 real minutes")
 	flag.IntVar(&cfg.Workers, "workers", envInt("SIM_WORKERS", 200), "concurrent HTTP workers")
 	flag.Int64Var(&cfg.Seed, "seed", envInt64("SIM_SEED", time.Now().UnixNano()), "random seed")
-	flag.Float64Var(&cfg.EntryRatio, "entry-ratio", envFloat("SIM_ENTRY_RATIO", 0.97), "ratio of first swipes that are IN")
-	flag.Float64Var(&cfg.DuplicatePct, "duplicate-pct", envFloat("SIM_DUPLICATE_PCT", 0.03), "extra duplicate swipes as a fraction of employee count")
+	flag.Float64Var(&cfg.EntryRatio, "entry-ratio", envFloat("SIM_ENTRY_RATIO", 0.995), "ratio of first swipes that are IN")
+	flag.Float64Var(&cfg.DuplicatePct, "duplicate-pct", envFloat("SIM_DUPLICATE_PCT", 0.005), "extra duplicate swipes as a fraction of employee count")
 	flag.DurationVar(&cfg.HTTPTimeout, "http-timeout", envDuration("SIM_HTTP_TIMEOUT", 3*time.Second), "per-request timeout")
+	flag.DurationVar(&cfg.ProgressEvery, "progress-every", envDuration("SIM_PROGRESS_EVERY", 3*time.Second), "progress report interval; set to 0 to disable")
 	flag.Parse()
 
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
@@ -148,6 +159,9 @@ func parseFlags() Config {
 	}
 	if cfg.DuplicatePct < 0 {
 		fail("duplicate-pct must be >= 0")
+	}
+	if cfg.ProgressEvery < 0 {
+		fail("progress-every must be >= 0")
 	}
 
 	return cfg
@@ -222,25 +236,25 @@ func worker(ctx context.Context, wg *sync.WaitGroup, client *http.Client, baseUR
 func sendSwipe(client *http.Client, baseURL string, swipe SwipeRequest) Result {
 	body, err := json.Marshal(swipe)
 	if err != nil {
-		return Result{Err: err}
+		return Result{Err: err, ErrorKey: "json_marshal"}
 	}
 
 	start := time.Now()
 	resp, err := client.Post(baseURL+"/api/access/swipe", "application/json", bytes.NewReader(body))
 	latency := time.Since(start)
 	if err != nil {
-		return Result{Err: err, Latency: latency}
+		return Result{Err: err, ErrorKey: classifyError(err), Latency: latency}
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{Status: resp.StatusCode, Err: err, Latency: latency}
+		return Result{Status: resp.StatusCode, Err: err, ErrorKey: "read_body", Latency: latency}
 	}
 
 	var swipeResp SwipeResponse
 	if err := json.Unmarshal(payload, &swipeResp); err != nil {
-		return Result{Status: resp.StatusCode, Err: err, Latency: latency}
+		return Result{Status: resp.StatusCode, Err: err, ErrorKey: "decode_json", Latency: latency}
 	}
 
 	return Result{
@@ -251,8 +265,7 @@ func sendSwipe(client *http.Client, baseURL string, swipe SwipeRequest) Result {
 	}
 }
 
-func collectStats(results <-chan Result, done chan<- Stats) {
-	var stats Stats
+func collectStats(results <-chan Result, stats *Stats, done chan<- struct{}) {
 	for result := range results {
 		stats.Total.Add(1)
 
@@ -262,6 +275,7 @@ func collectStats(results <-chan Result, done chan<- Stats) {
 
 		if result.Err != nil || result.Status < 200 || result.Status >= 300 {
 			stats.Errors.Add(1)
+			stats.recordError(result)
 			continue
 		}
 
@@ -279,7 +293,117 @@ func collectStats(results <-chan Result, done chan<- Stats) {
 			stats.NoEntryRecord.Add(1)
 		}
 	}
-	done <- stats
+	close(done)
+}
+
+func (s *Stats) recordError(result Result) {
+	key := result.ErrorKey
+	if key == "" {
+		key = fmt.Sprintf("http_status_%d", result.Status)
+	}
+	if result.Status >= 400 {
+		key = fmt.Sprintf("http_status_%d", result.Status)
+	}
+
+	s.errorMu.Lock()
+	defer s.errorMu.Unlock()
+
+	if s.errorCounts == nil {
+		s.errorCounts = make(map[string]int64)
+	}
+	s.errorCounts[key]++
+
+	if len(s.errorSamples) < 5 {
+		message := key
+		if result.Err != nil {
+			message = fmt.Sprintf("%s: %v", key, result.Err)
+		}
+		s.errorSamples = append(s.errorSamples, message)
+	}
+}
+
+func (s *Stats) errorSnapshot() ([]string, []string) {
+	s.errorMu.Lock()
+	defer s.errorMu.Unlock()
+
+	keys := make([]string, 0, len(s.errorCounts))
+	for key := range s.errorCounts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("%s: %d", key, s.errorCounts[key]))
+	}
+
+	samples := append([]string(nil), s.errorSamples...)
+	return lines, samples
+}
+
+func classifyError(err error) string {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "client.timeout") || strings.Contains(message, "timeout"):
+		return "request_timeout"
+	case strings.Contains(message, "connection refused"):
+		return "connection_refused"
+	case strings.Contains(message, "connection reset"):
+		return "connection_reset"
+	case strings.Contains(message, "no such host"):
+		return "dns_lookup_failed"
+	default:
+		return "request_error"
+	}
+}
+
+func reportProgress(stats *Stats, scheduled int, started time.Time, done <-chan struct{}, every time.Duration) {
+	if every <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	var lastTotal int64
+	var lastTick = started
+	for {
+		select {
+		case <-done:
+			return
+		case now := <-ticker.C:
+			total := stats.Total.Load()
+			interval := now.Sub(lastTick).Seconds()
+			currentQPS := float64(total-lastTotal) / interval
+			overallQPS := float64(total) / now.Sub(started).Seconds()
+			avgLatencyMs := 0.0
+			if total > 0 {
+				avgLatencyMs = float64(stats.LatencyTotalUs.Load()) / float64(total) / 1000
+			}
+			maxLatencyMs := float64(stats.LatencyMaxUs.Load()) / 1000
+			percent := 0.0
+			if scheduled > 0 {
+				percent = float64(total) / float64(scheduled) * 100
+			}
+
+			log.Printf(
+				"progress: completed=%d/%d %.1f%% granted=%d denied=%d errors=%d currentQPS=%.1f avgQPS=%.1f avgLatencyMs=%.2f maxLatencyMs=%.2f",
+				total,
+				scheduled,
+				percent,
+				stats.Granted.Load(),
+				stats.Denied.Load(),
+				stats.Errors.Load(),
+				currentQPS,
+				overallQPS,
+				avgLatencyMs,
+				maxLatencyMs,
+			)
+
+			lastTotal = total
+			lastTick = now
+		}
+	}
 }
 
 func updateMax(current *atomic.Int64, candidate int64) {
@@ -301,7 +425,7 @@ func waitUntil(start time.Time, simulatedAt time.Duration, timeScale float64) {
 	}
 }
 
-func printSummary(stats Stats, scheduled int, elapsed time.Duration, cfg Config) {
+func printSummary(stats *Stats, scheduled int, elapsed time.Duration, cfg Config) {
 	total := stats.Total.Load()
 	avgLatencyUs := int64(0)
 	if total > 0 {
@@ -317,10 +441,24 @@ func printSummary(stats Stats, scheduled int, elapsed time.Duration, cfg Config)
 	fmt.Printf("Granted:             %d\n", stats.Granted.Load())
 	fmt.Printf("Denied:              %d\n", stats.Denied.Load())
 	fmt.Printf("Errors:              %d\n", stats.Errors.Load())
+	errorLines, errorSamples := stats.errorSnapshot()
+	if len(errorLines) > 0 {
+		fmt.Println("Error breakdown:")
+		for _, line := range errorLines {
+			fmt.Printf("  %s\n", line)
+		}
+	}
+	if len(errorSamples) > 0 {
+		fmt.Println("Error samples:")
+		for _, sample := range errorSamples {
+			fmt.Printf("  %s\n", sample)
+		}
+	}
 	fmt.Printf("Anti-passback:       %d\n", stats.AntiPassback.Load())
 	fmt.Printf("No entry record:     %d\n", stats.NoEntryRecord.Load())
 	fmt.Printf("Average latency:     %.2f ms\n", float64(avgLatencyUs)/1000)
 	fmt.Printf("Max latency:         %.2f ms\n", float64(stats.LatencyMaxUs.Load())/1000)
+	fmt.Printf("Under 50ms target:   %t\n", float64(avgLatencyUs)/1000 < 50)
 	fmt.Printf("Real elapsed time:   %s\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("Real request rate:   %.2f req/s\n", float64(total)/elapsed.Seconds())
 	fmt.Printf("Simulated peak span: %s\n", cfg.Duration)

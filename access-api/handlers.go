@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -13,9 +14,10 @@ import (
 )
 
 type App struct {
-	cfg       Config
-	store     *RedisStore
-	publisher EventPublisher
+	cfg        Config
+	store      *RedisStore
+	publisher  EventPublisher
+	instanceID string
 
 	totalSwipes   atomic.Int64
 	grantedSwipes atomic.Int64
@@ -23,40 +25,48 @@ type App struct {
 }
 
 func NewApp(cfg Config, store *RedisStore, publisher EventPublisher) *App {
-	return &App{cfg: cfg, store: store, publisher: publisher}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown"
+	}
+	return &App{cfg: cfg, store: store, publisher: publisher, instanceID: hostname}
 }
 
 func (a *App) Ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"message": "pong",
-		"status":  "Access API is running",
+		"message":    "pong",
+		"status":     "Access API is running",
+		"instanceId": a.instanceID,
 	})
 }
 
 func (a *App) Healthz(c *gin.Context) {
 	if err := a.store.Ping(c.Request.Context()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status": "degraded",
-			"redis":  "unavailable",
-			"error":  err.Error(),
+			"status":     "degraded",
+			"redis":      "unavailable",
+			"error":      err.Error(),
+			"instanceId": a.instanceID,
 		})
 		return
 	}
 
 	if err := a.publisher.Health(c.Request.Context()); err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status":    "degraded",
-			"redis":     "ok",
-			"publisher": a.publisher.Name(),
-			"error":     err.Error(),
+			"status":     "degraded",
+			"redis":      "ok",
+			"publisher":  a.publisher.Name(),
+			"error":      err.Error(),
+			"instanceId": a.instanceID,
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":    "ok",
-		"redis":     "ok",
-		"publisher": a.publisher.Name(),
+		"status":     "ok",
+		"redis":      "ok",
+		"publisher":  a.publisher.Name(),
+		"instanceId": a.instanceID,
 	})
 }
 
@@ -182,6 +192,7 @@ func (a *App) ListEvents(c *gin.Context) {
 }
 
 func (a *App) Metrics(c *gin.Context) {
+	publisherStats := a.publisher.Stats()
 	c.Header("Content-Type", "text/plain; version=0.0.4")
 	c.String(http.StatusOK, fmt.Sprintf(`# HELP access_api_swipes_total Total fake badge swipe requests.
 # TYPE access_api_swipes_total counter
@@ -192,7 +203,31 @@ access_api_swipes_granted_total %d
 # HELP access_api_swipes_denied_total Total denied fake badge swipe requests.
 # TYPE access_api_swipes_denied_total counter
 access_api_swipes_denied_total %d
-`, a.totalSwipes.Load(), a.grantedSwipes.Load(), a.deniedSwipes.Load()))
+# HELP access_api_events_queued_total Total events accepted into the async publisher queue.
+# TYPE access_api_events_queued_total counter
+access_api_events_queued_total %d
+# HELP access_api_events_published_total Total events published to the configured publisher.
+# TYPE access_api_events_published_total counter
+access_api_events_published_total %d
+# HELP access_api_events_failed_total Total publisher failures.
+# TYPE access_api_events_failed_total counter
+access_api_events_failed_total %d
+# HELP access_api_events_dropped_total Total events dropped before publishing.
+# TYPE access_api_events_dropped_total counter
+access_api_events_dropped_total %d
+# HELP access_api_event_queue_depth Current async publisher queue depth.
+# TYPE access_api_event_queue_depth gauge
+access_api_event_queue_depth %d
+`,
+		a.totalSwipes.Load(),
+		a.grantedSwipes.Load(),
+		a.deniedSwipes.Load(),
+		publisherStats.Queued.Load(),
+		publisherStats.Published.Load(),
+		publisherStats.Failed.Load(),
+		publisherStats.Dropped.Load(),
+		publisherStats.QueueDepth.Load(),
+	))
 }
 
 func (a *App) recordMetrics(granted bool) {

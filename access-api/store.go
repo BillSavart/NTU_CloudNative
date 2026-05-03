@@ -39,16 +39,26 @@ return {0, current, current, "ANTI_PASSBACK_VIOLATION"}
 `
 
 type RedisStore struct {
-	client *redis.Client
+	client redis.UniversalClient
 	cfg    Config
 }
 
 func NewRedisStore(ctx context.Context, cfg Config) (*RedisStore, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		DB:       cfg.RedisDB,
-	})
+	var client redis.UniversalClient
+	if cfg.RedisMasterName != "" && len(cfg.RedisSentinels) > 0 {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    cfg.RedisMasterName,
+			SentinelAddrs: cfg.RedisSentinels,
+			Password:      cfg.RedisPassword,
+			DB:            cfg.RedisDB,
+		})
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr:     cfg.RedisAddr,
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB,
+		})
+	}
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, err

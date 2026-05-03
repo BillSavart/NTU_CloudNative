@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: access-api
+  labels:
+    app: access-api
+spec:
+  type: LoadBalancer
+  selector:
+    app: access-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

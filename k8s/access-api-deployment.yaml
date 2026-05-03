@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: access-api
+  labels:
+    app: access-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: access-api
+  template:
+    metadata:
+      labels:
+        app: access-api
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: access-api
+          image: access-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: REDIS_ADDR
+              value: "redis:6379"
+            - name: REDIS_SENTINEL_ADDRS
+              value: "redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379"
+            - name: REDIS_MASTER_NAME
+              value: "mymaster"
+            - name: KAFKA_BROKERS
+              value: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+            - name: KAFKA_TOPIC
+              value: "access-events"
+            - name: KAFKA_MIRROR_REDIS
+              value: "true"
+            - name: PUBLISHER_ASYNC
+              value: "true"
+            - name: PUBLISHER_QUEUE_SIZE
+              value: "100000"
+            - name: PUBLISHER_WORKERS
+              value: "8"
+            - name: PUBLISHER_BATCH_SIZE
+              value: "100"
+            - name: PUBLISHER_FLUSH_MS
+              value: "10"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi

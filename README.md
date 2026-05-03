@@ -1,4 +1,4 @@
-# NTU_CloudNative: Distributed Physical Access Control System 🏢
+# NTU_CloudNative：分散式實體門禁系統
 
 本專案為台積電「Cloud Native Development and Best Practice」課程之學期實作專案。目標是開發一個分散式實體門禁系統，精確記錄 9 萬名員工的進出（In/Out）狀況，並為審計與追蹤生成詳盡報表。
 
@@ -14,18 +14,18 @@
 * **系統韌性 (Resilience)**：即使資料庫故障，系統仍須能維持開門功能，並將事件緩衝至資料庫恢復。
 * **權限控管與階層報表**：管理員自動擁有其轄下團隊與所有子團隊的數據檢視權限。
 
-## 🛠 關鍵技術架構 (Tech Stack)
+## 🛠 關鍵技術架構
 
-* **Infrastructure**: Docker, Docker Compose, Kubernetes (K8s).
-* **Write Path (Access API)**: Go (Gin/Fiber) + Redis (Cache System).
-* **Event Broker**: RabbitMQ / Kafka (用於解耦開門決策與報表寫入). （待定）
-* **Read Path (Reporting API)**: Python 3.12 (Django) + PostgreSQL.
-* **Frontend Dashboard**: React + TypeScript (Vite 6.0.1) + Bootstrap 5.
-* **Observability**: Prometheus + Grafana (視覺化「換班 Shift Change」期間的流量尖峰). 
+* **基礎設施**：Docker、Docker Compose、Kubernetes (K8s)。
+* **寫入路徑（Access API）**：Go (Gin) + Redis。
+* **事件串流**：Kafka，用於解耦開門決策與報表寫入。
+* **讀取路徑（Reporting API）**：Python 3.12 (Django) + PostgreSQL。
+* **前端儀表板**：React + TypeScript (Vite 6.0.1) + Bootstrap 5。
+* **可觀測性**：Prometheus + Grafana，用於視覺化換班尖峰期間的系統流量。
 
 ---
 
-## 🚀 快速上手指南 (Local Setup)
+## 🚀 快速上手指南
 
 ## 系統需求
 請確保您的開發環境已安裝以下工具：
@@ -37,7 +37,7 @@
 ## 本地環境架設
 
 ### 1. 基礎設施服務 (資料庫與快取)
-本專案需要 PostgreSQL 與 Redis 才能運作，這些服務已包裝在 Docker 中。
+本專案需要 PostgreSQL、Redis 與 Kafka 才能運作，這些服務已包裝在 Docker 中。
 1. 在專案根目錄開啟終端機。
 2. 建立 Docker 用環境變數檔：
    ```bash
@@ -48,14 +48,14 @@
    ```bash
    docker-compose up -d
    ```
-   *這將會啟動 PostgreSQL（Port 5432，資料庫 `access_control`）與 Redis（Port 6379）。*
+   *這將會啟動 PostgreSQL（Port 5432，資料庫 `access_control`）、Redis 主節點/複本/Sentinel、Kafka 3 節點叢集。*
 
 ### 環境變數檔案說明（重要）
 - 專案根目錄 `.env`：提供給 Docker Compose（啟動 PostgreSQL 容器時使用）。
 - `reporting-api/.env`：提供給 Django（應用程式連接資料庫與 `SECRET_KEY` 使用）。
 - 這兩份檔案中的 `POSTGRES_PASSWORD` 必須一致。
 
-### 2. Access API (Go)
+### 2. Access API（Go）
 1. 開啟新的終端機並進入 `access-api` 目錄：
    ```bash
    cd access-api
@@ -64,9 +64,11 @@
    ```bash
    go mod download
    ```
-3. 執行 Go 伺服器：
+3. 若只想在本機開發 Go API，請直接連 `localhost:6379` 的 Redis，不要使用 Docker 內部 Sentinel hostname：
    ```bash
-   go run main.go
+   REDIS_ADDR=localhost:6379 \
+   KAFKA_BROKERS=localhost:19092,localhost:29092,localhost:39092 \
+   go run .
    ```
 4. 測試 API 運作狀態：
    開啟瀏覽器或在新的終端機輸入以下指令尋找 `ping` 路由，確認伺服器啟動成功：
@@ -75,7 +77,64 @@
    ```
    *您應會看見包含 `{"message":"pong","status":"Access API is running"}` 的 JSON 回應。*
 
-### 3. Reporting API (Python/Django)
+Access API 目前採用 Redis Sentinel 管理的主節點/複本快取做門禁即時決策，Kafka 3 節點叢集作為非同步事件流：
+
+```text
+假刷卡訊號 -> 負載平衡器 -> Access API 叢集 -> Redis Sentinel/主節點 -> 非同步批次佇列 -> Kafka access-events
+```
+
+本地可用 Docker Compose 啟動 3 個 Access API 複本與 Nginx 負載平衡器：
+
+```bash
+docker-compose up -d --scale access-api=3 access-lb
+```
+
+注意：如果是在 Mac 主機端直接 `go run .`，請使用 `REDIS_ADDR=localhost:6379`。Redis Sentinel 會回傳 Docker network 內的 `redis:6379`，該 hostname 只有容器內能解析。
+
+可使用內建模擬器壓測 90,000 人、50 扇門、30 分鐘上班尖峰：
+
+```bash
+cd access-api
+go run ./cmd/swipe-simulator
+```
+
+也可以直接使用專案腳本驗證與壓測：
+
+```bash
+./scripts/demo-access-api.sh
+./scripts/verify-access-stack.sh
+./scripts/run-access-load-test.sh
+./scripts/run-access-load-test.sh --full
+```
+
+若想從 Docker Compose 啟動一路跑到壓力測試結束，最無腦的指令是：
+
+```bash
+./scripts/demo-access-api.sh
+```
+
+正式 90,000 人尖峰模擬：
+
+```bash
+./scripts/demo-access-api.sh --full
+```
+
+此模式會把 30 分鐘尖峰壓縮成約 3 分鐘執行，較適合本機 Docker Desktop。
+
+壓測模擬器和腳本每次會自動使用新的員工 ID 前綴，避免 Redis 裡前一次壓測留下的 IN 狀態導致大量 Anti-Passback 拒絕。正式尖峰預設為 99.5% 進門刷卡與 0.5% 重複刷卡，因此結果應以 `GRANTED` 為主。
+
+壓測過程會定期印出完成數、百分比、QPS、錯誤數、平均延遲毫秒數與最大延遲毫秒數。最後 summary 會顯示 `Under 50ms target`，可用 `PROGRESS_EVERY=5s` 調整輸出頻率。
+
+Access API 也已提供 Dockerfile 與 Kubernetes 部署檔：
+
+```text
+access-api/Dockerfile
+k8s/access-api-deployment.yaml
+k8s/access-api-service.yaml
+k8s/access-api-hpa.yaml
+```
+
+### 3. Reporting API（Python/Django）
 此專案的 Python 需求為 **3.12**，以下將以 Conda 環境示範架設步驟。
 1. 開啟新的終端機並進入 `reporting-api` 目錄：
    ```bash
@@ -106,7 +165,7 @@
    ```bash
    python manage.py migrate
    ```
-7. 建立 Django 管理員帳號（superuser）：
+7. 建立 Django 管理員帳號：
    ```bash
    python manage.py createsuperuser
    ```
@@ -159,7 +218,7 @@ docker-compose exec db psql -U root -d access_control -c "select id, username, i
 - 原因：在本機 shell 展開了 `$POSTGRES_DB`，但該變數未設定，導致 psql 回退到錯誤資料庫名稱。
 - 建議：查詢時先用固定值（`-U root -d access_control`），避免變數展開問題。
 
-### 4. 前端 (React / Vite)
+### 4. 前端（React / Vite）
 1. 開啟新的終端機並進入 `frontend` 目錄：
    ```bash
    cd frontend
@@ -176,15 +235,15 @@ docker-compose exec db psql -U root -d access_control -c "select id, username, i
 ## 開發流程
 若要在本地完整運行整個應用程式，您需要：
 1. 確保 Docker 容器已啟動。
-2. 開啟一個終端機執行 Access API (Go)。
-3. 開啟一個終端機執行 Reporting API (Django)。
-4. 開啟一個終端機執行前端 (Vite)。
+2. 開啟一個終端機執行 Access API（Go）。
+3. 開啟一個終端機執行 Reporting API（Django）。
+4. 開啟一個終端機執行前端（Vite）。
 
 ## 📂 專案結構說明
 
 ```text
 NTU_CloudNative/
-├── docker-compose.yml   # 本地開發資料庫與 Redis 配置
+├── docker-compose.yml   # 本地開發資料庫、Redis Sentinel、Kafka 叢集與 Access API 叢集配置
 ├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯
 ├── reporting-api/       # Django: 處理複雜階層查詢與報表 API 
 ├── frontend/            # React + TS: 主管報表視覺化儀表板 
