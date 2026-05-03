@@ -19,7 +19,10 @@ func main() {
 	}
 	defer store.Close()
 
-	app := NewApp(cfg, store)
+	publisher := NewEventPublisher(cfg, store)
+	defer publisher.Close()
+
+	app := NewApp(cfg, store, publisher)
 
 	router := gin.Default()
 	router.GET("/ping", app.Ping)

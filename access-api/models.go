@@ -43,16 +43,16 @@ type AccessDecision struct {
 }
 
 type AccessEvent struct {
-	RequestID     string
-	EmployeeID    string
-	GateID        string
-	Direction     string
-	Decision      string
-	Reason        string
-	PreviousState string
-	CurrentState  string
-	LatencyMs     int64
-	Timestamp     time.Time
+	RequestID     string    `json:"requestId"`
+	EmployeeID    string    `json:"employeeId"`
+	GateID        string    `json:"gateId"`
+	Direction     string    `json:"direction"`
+	Decision      string    `json:"decision"`
+	Reason        string    `json:"reason"`
+	PreviousState string    `json:"previousState"`
+	CurrentState  string    `json:"currentState"`
+	LatencyMs     int64     `json:"latencyMs"`
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 type EventDTO struct {

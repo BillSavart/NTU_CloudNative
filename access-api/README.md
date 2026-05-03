@@ -1,13 +1,25 @@
 # Access API
 
-Go/Gin service for fake badge swipes, anti-passback checks, and async event buffering.
+Go/Gin service for fake badge swipes, Redis anti-passback checks, and Kafka event buffering.
 
 ## Run
 
-Start Redis from the project root:
+Start Redis and Kafka from the project root:
 
 ```bash
-docker-compose up -d redis
+docker-compose up -d redis kafka
+```
+
+Kafka auto topic creation is enabled for local demos. If you want to create the topic explicitly:
+
+```bash
+docker-compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create \
+  --if-not-exists \
+  --topic access-events \
+  --partitions 3 \
+  --replication-factor 1
 ```
 
 Run the API:
@@ -17,14 +29,22 @@ cd access-api
 go run .
 ```
 
+The default event path is Kafka:
+
+```text
+fake swipe -> Access API -> Redis anti-passback state -> Kafka topic access-events
+```
+
+`KAFKA_MIRROR_REDIS=true` is enabled by default, so the API also mirrors events into Redis Stream `access:events` for easy local demo inspection.
+
 ## Endpoints
 
 - `GET /ping`: basic service check.
-- `GET /healthz`: checks Redis availability.
+- `GET /healthz`: checks Redis and Kafka availability.
 - `POST /api/access/swipe`: accepts a fake badge swipe and returns a gate decision.
 - `GET /api/access/state/:employeeId`: reads the current cached IN/OUT state.
 - `POST /api/access/reset/:employeeId`: clears one employee state for demos.
-- `GET /api/access/events?limit=20`: reads recent Redis Stream events.
+- `GET /api/access/events?limit=20`: reads recent mirrored Redis Stream events.
 - `GET /metrics`: Prometheus-style counters for demo observability.
 
 ## Demo Flow
@@ -63,6 +83,16 @@ Read buffered events:
 
 ```bash
 curl 'http://localhost:8080/api/access/events?limit=3'
+```
+
+Read Kafka events directly:
+
+```bash
+docker-compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic access-events \
+  --from-beginning \
+  --max-messages 3
 ```
 
 ## Peak Traffic Simulation

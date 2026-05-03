@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,16 +13,17 @@ import (
 )
 
 type App struct {
-	cfg   Config
-	store *RedisStore
+	cfg       Config
+	store     *RedisStore
+	publisher EventPublisher
 
 	totalSwipes   atomic.Int64
 	grantedSwipes atomic.Int64
 	deniedSwipes  atomic.Int64
 }
 
-func NewApp(cfg Config, store *RedisStore) *App {
-	return &App{cfg: cfg, store: store}
+func NewApp(cfg Config, store *RedisStore, publisher EventPublisher) *App {
+	return &App{cfg: cfg, store: store, publisher: publisher}
 }
 
 func (a *App) Ping(c *gin.Context) {
@@ -41,9 +43,20 @@ func (a *App) Healthz(c *gin.Context) {
 		return
 	}
 
+	if err := a.publisher.Health(c.Request.Context()); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status":    "degraded",
+			"redis":     "ok",
+			"publisher": a.publisher.Name(),
+			"error":     err.Error(),
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"status": "ok",
-		"redis":  "ok",
+		"status":    "ok",
+		"redis":     "ok",
+		"publisher": a.publisher.Name(),
 	})
 }
 
@@ -108,7 +121,8 @@ func (a *App) Swipe(c *gin.Context) {
 	}
 
 	eventBuffered := true
-	if err := a.store.AppendEvent(c.Request.Context(), event); err != nil {
+	if err := a.publisher.Publish(c.Request.Context(), event); err != nil {
+		log.Printf("failed to publish access event requestId=%s publisher=%s: %v", requestID, a.publisher.Name(), err)
 		eventBuffered = false
 	}
 
