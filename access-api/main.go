@@ -1,28 +1,45 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// 建立一個預設的 Gin 路由引擎
-	r := gin.Default()
+	cfg := LoadConfig()
+	ctx := context.Background()
 
-	// 定義基本的健康檢查路由
-	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "pong",
-			"status":  "Access API is running",
-		})
-	})
+	store, err := NewRedisStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("failed to connect to redis: %v", err)
+	}
+	defer store.Close()
 
-	log.Println("Starting Access API on :8080...")
-	
-	// 啟動伺服器於 0.0.0.0:8080
-	if err := r.Run(":8080"); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	app := NewApp(cfg, store)
+
+	router := gin.Default()
+	router.GET("/ping", app.Ping)
+	router.GET("/healthz", app.Healthz)
+	router.GET("/metrics", app.Metrics)
+
+	api := router.Group("/api/access")
+	api.POST("/swipe", app.Swipe)
+	api.GET("/state/:employeeId", app.GetState)
+	api.POST("/reset/:employeeId", app.ResetState)
+	api.GET("/events", app.ListEvents)
+
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	log.Printf("Starting Access API on :%s...", cfg.Port)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("failed to start server: %v", err)
 	}
 }
