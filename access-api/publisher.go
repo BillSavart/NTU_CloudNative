@@ -26,6 +26,7 @@ type PublisherStats struct {
 	Queued     atomic.Int64
 	Published  atomic.Int64
 	Failed     atomic.Int64
+	Retried    atomic.Int64
 	Dropped    atomic.Int64
 	QueueDepth atomic.Int64
 }
@@ -44,10 +45,8 @@ func NewEventPublisher(cfg Config, store *RedisStore) EventPublisher {
 				AllowAutoTopicCreation: true,
 				Async:                  false,
 			},
-			brokers:     cfg.KafkaBrokers,
-			topic:       cfg.KafkaTopic,
-			mirrorRedis: cfg.KafkaMirrorRedis,
-			store:       store,
+			brokers: cfg.KafkaBrokers,
+			topic:   cfg.KafkaTopic,
 		}
 	}
 
@@ -58,6 +57,8 @@ func NewEventPublisher(cfg Config, store *RedisStore) EventPublisher {
 			cfg.PublisherWorkers,
 			cfg.PublisherBatch,
 			time.Duration(cfg.PublisherFlush)*time.Millisecond,
+			time.Duration(cfg.PublisherRetryInitial)*time.Millisecond,
+			time.Duration(cfg.PublisherRetryMax)*time.Millisecond,
 		)
 	}
 	return publisher
@@ -74,7 +75,7 @@ func (p *RedisEventPublisher) Publish(ctx context.Context, event AccessEvent) er
 
 func (p *RedisEventPublisher) PublishBatch(ctx context.Context, events []AccessEvent) error {
 	for _, event := range events {
-		if err := p.store.AppendEvent(ctx, event); err != nil {
+		if err := p.store.AppendEventOnce(ctx, event); err != nil {
 			p.stats.Failed.Add(int64(len(events)))
 			return err
 		}
@@ -100,12 +101,10 @@ func (p *RedisEventPublisher) Stats() PublisherStats {
 }
 
 type KafkaEventPublisher struct {
-	writer      *kafka.Writer
-	brokers     []string
-	topic       string
-	mirrorRedis bool
-	store       *RedisStore
-	stats       PublisherStats
+	writer  *kafka.Writer
+	brokers []string
+	topic   string
+	stats   PublisherStats
 }
 
 func (p *KafkaEventPublisher) Publish(ctx context.Context, event AccessEvent) error {
@@ -139,15 +138,6 @@ func (p *KafkaEventPublisher) PublishBatch(ctx context.Context, events []AccessE
 	if err := p.writer.WriteMessages(ctx, messages...); err != nil {
 		p.stats.Failed.Add(int64(len(events)))
 		return err
-	}
-
-	if p.mirrorRedis {
-		for _, event := range events {
-			if err := p.store.AppendEvent(ctx, event); err != nil {
-				p.stats.Failed.Add(int64(len(events)))
-				return err
-			}
-		}
 	}
 
 	p.stats.Published.Add(int64(len(events)))
@@ -187,11 +177,13 @@ type AsyncEventPublisher struct {
 	stats        PublisherStats
 	batchSize    int
 	flushTimeout time.Duration
+	retryInitial time.Duration
+	retryMax     time.Duration
 }
 
 var errPublisherQueueFull = errors.New("event publisher queue is full")
 
-func NewAsyncEventPublisher(inner EventPublisher, queueSize, workers, batchSize int, flushTimeout time.Duration) *AsyncEventPublisher {
+func NewAsyncEventPublisher(inner EventPublisher, queueSize, workers, batchSize int, flushTimeout, retryInitial, retryMax time.Duration) *AsyncEventPublisher {
 	if queueSize <= 0 {
 		queueSize = 100000
 	}
@@ -204,6 +196,15 @@ func NewAsyncEventPublisher(inner EventPublisher, queueSize, workers, batchSize 
 	if flushTimeout <= 0 {
 		flushTimeout = 10 * time.Millisecond
 	}
+	if retryInitial <= 0 {
+		retryInitial = 100 * time.Millisecond
+	}
+	if retryMax <= 0 {
+		retryMax = 5 * time.Second
+	}
+	if retryMax < retryInitial {
+		retryMax = retryInitial
+	}
 
 	p := &AsyncEventPublisher{
 		inner:        inner,
@@ -211,6 +212,8 @@ func NewAsyncEventPublisher(inner EventPublisher, queueSize, workers, batchSize 
 		done:         make(chan struct{}),
 		batchSize:    batchSize,
 		flushTimeout: flushTimeout,
+		retryInitial: retryInitial,
+		retryMax:     retryMax,
 	}
 
 	for i := 0; i < workers; i++ {
@@ -271,6 +274,7 @@ func (p *AsyncEventPublisher) Stats() PublisherStats {
 	stats.Queued.Store(p.stats.Queued.Load())
 	stats.Published.Store(innerStats.Published.Load())
 	stats.Failed.Store(innerStats.Failed.Load())
+	stats.Retried.Store(p.stats.Retried.Load())
 	stats.Dropped.Store(p.stats.Dropped.Load())
 	stats.QueueDepth.Store(int64(len(p.queue)))
 	return stats
@@ -286,7 +290,7 @@ func (p *AsyncEventPublisher) worker(id int) {
 			return
 		case event := <-p.queue:
 			batch := p.collectBatch(event)
-			p.publishBatch(id, batch)
+			p.publishBatchWithRecovery(id, batch)
 		}
 	}
 }
@@ -318,12 +322,12 @@ func (p *AsyncEventPublisher) drain(workerID int) {
 		case event := <-p.queue:
 			batch = append(batch, event)
 			if len(batch) >= p.batchSize {
-				p.publishBatch(workerID, batch)
+				p.publishBatchOnce(workerID, batch)
 				batch = make([]AccessEvent, 0, p.batchSize)
 			}
 		default:
 			if len(batch) > 0 {
-				p.publishBatch(workerID, batch)
+				p.publishBatchOnce(workerID, batch)
 			}
 			p.stats.QueueDepth.Store(0)
 			return
@@ -331,9 +335,33 @@ func (p *AsyncEventPublisher) drain(workerID int) {
 	}
 }
 
-func (p *AsyncEventPublisher) publishBatch(workerID int, events []AccessEvent) {
+func (p *AsyncEventPublisher) publishBatchWithRecovery(workerID int, events []AccessEvent) {
 	if len(events) == 0 {
 		return
+	}
+
+	backoff := p.retryInitial
+	for {
+		if p.publishBatchOnce(workerID, events) {
+			return
+		}
+
+		p.stats.Retried.Add(int64(len(events)))
+		select {
+		case <-p.done:
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > p.retryMax {
+			backoff = p.retryMax
+		}
+	}
+}
+
+func (p *AsyncEventPublisher) publishBatchOnce(workerID int, events []AccessEvent) bool {
+	if len(events) == 0 {
+		return true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -341,6 +369,9 @@ func (p *AsyncEventPublisher) publishBatch(workerID int, events []AccessEvent) {
 
 	if err := p.inner.PublishBatch(ctx, events); err != nil {
 		log.Printf("async publisher worker=%d failed batchSize=%d firstRequestId=%s publisher=%s: %v", workerID, len(events), events[0].RequestID, p.inner.Name(), err)
+		p.stats.QueueDepth.Store(int64(len(p.queue)))
+		return false
 	}
 	p.stats.QueueDepth.Store(int64(len(p.queue)))
+	return true
 }

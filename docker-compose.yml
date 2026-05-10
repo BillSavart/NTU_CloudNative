@@ -17,14 +17,16 @@ services:
       PORT: "8080"
       REDIS_SENTINEL_ADDRS: redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
       REDIS_MASTER_NAME: mymaster
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       KAFKA_TOPIC: access-events
-      KAFKA_MIRROR_REDIS: "true"
       PUBLISHER_ASYNC: "true"
       PUBLISHER_QUEUE_SIZE: "100000"
       PUBLISHER_WORKERS: "8"
       PUBLISHER_BATCH_SIZE: "100"
       PUBLISHER_FLUSH_MS: "10"
+      PUBLISHER_RETRY_INITIAL_MS: "100"
+      PUBLISHER_RETRY_MAX_MS: "5000"
     depends_on:
       - redis-sentinel-1
       - redis-sentinel-2
@@ -57,6 +59,18 @@ services:
       POSTGRES_PORT: "5432"
       KAFKA_BROKERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
       KAFKA_ACCESS_EVENTS_TOPIC: access-events
+      KAFKA_CONSUMER_ENABLED: "true"
+      KAFKA_CONSUMER_GROUP_ID: reporting-api
+      KAFKA_AUTO_OFFSET_RESET: earliest
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      REDIS_DB: "0"
+      REDIS_EVENT_STREAM_KEY: access:events
+      REDIS_RECOVERY_ENABLED: "true"
+      REDIS_RECOVERY_GROUP: reporting-api
+      REDIS_RECOVERY_CONSUMER_NAME: reporting-api-1
+      REDIS_RECOVERY_BLOCK_MS: "5000"
+      REDIS_RECOVERY_BATCH_SIZE: "100"
     ports:
       - "8000:8000"
     depends_on:
@@ -95,7 +109,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command: sh -c "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""
     ports:
       - "6379:6379"
     volumes:
@@ -103,21 +119,27 @@ services:
 
   redis-replica-1:
     image: redis:7-alpine
-    command: redis-server --replicaof redis 6379
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command: sh -c "redis-server --replicaof redis 6379 --masterauth \"$$REDIS_PASSWORD\" --requirepass \"$$REDIS_PASSWORD\""
     depends_on:
       - redis
 
   redis-replica-2:
     image: redis:7-alpine
-    command: redis-server --replicaof redis 6379
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command: sh -c "redis-server --replicaof redis 6379 --masterauth \"$$REDIS_PASSWORD\" --requirepass \"$$REDIS_PASSWORD\""
     depends_on:
       - redis
 
   redis-sentinel-1:
     image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
       - "26379:26379"
-    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
     depends_on:
@@ -127,9 +149,11 @@ services:
 
   redis-sentinel-2:
     image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
       - "26380:26379"
-    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
     depends_on:
@@ -139,9 +163,11 @@ services:
 
   redis-sentinel-3:
     image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
       - "26381:26379"
-    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
+    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
     depends_on:

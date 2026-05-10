@@ -1,6 +1,6 @@
 # Access API
 
-這是用 Go/Gin 實作的門禁決策服務，負責接收假的刷卡訊號、透過 Redis 做 Anti-Passback 判斷，並把刷卡事件非同步送進 Kafka。
+這是用 Go/Gin 實作的門禁決策服務，負責接收假的刷卡訊號、透過 Redis 做 Anti-Passback 判斷，先把刷卡事件寫進 Redis Stream 作為 recovery buffer，再非同步送進 Kafka。
 
 ## 啟動方式
 
@@ -43,6 +43,7 @@ docker-compose exec kafka-1 /opt/kafka/bin/kafka-topics.sh \
 ```bash
 cd access-api
 REDIS_ADDR=localhost:6379 \
+REDIS_PASSWORD=你的Redis密碼 \
 KAFKA_BROKERS=localhost:19092,localhost:29092,localhost:39092 \
 go run .
 ```
@@ -70,26 +71,52 @@ lookup redis: no such host
 
 ```text
 docker-compose 跑 Access API -> 使用 Redis Sentinel
-本機 go run Access API       -> 使用 REDIS_ADDR=localhost:6379
+本機 go run Access API       -> 使用 REDIS_ADDR=localhost:6379 + REDIS_PASSWORD
 ```
+
+## Redis 密碼
+
+Docker Compose 會從專案根目錄 `.env` 讀取 `REDIS_PASSWORD`，並套用到：
+
+- Redis 主節點：`--requirepass`
+- Redis 複本：`--masterauth` 與 `--requirepass`
+- Redis Sentinel：`sentinel auth-pass mymaster`
+- Access API：`REDIS_PASSWORD`
+
+修改 `.env` 的 `REDIS_PASSWORD` 後，請重啟 Redis stack 與 Access API：
+
+```bash
+docker-compose up -d --force-recreate redis redis-replica-1 redis-replica-2 redis-sentinel-1 redis-sentinel-2 redis-sentinel-3 access-api access-lb
+```
+
+驗證 Redis 需要密碼：
+
+```bash
+docker-compose exec redis redis-cli ping
+docker-compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
+```
+
+第一個指令應該失敗，第二個指令應該回 `PONG`。
 
 ## 系統流程
 
 目前預設事件路徑：
 
 ```text
-假刷卡訊號 -> 負載平衡器 -> Access API 叢集 -> Redis Anti-Passback -> 非同步發布佇列 -> Kafka topic access-events
+假刷卡訊號 -> 負載平衡器 -> Access API 叢集 -> Redis Anti-Passback
+                                       ├-> Redis Stream access:events
+                                       └-> 非同步發布佇列 -> Kafka topic access-events
 ```
 
-門禁決策只依賴 Redis。Kafka 發布事件由背景 worker 非同步處理，所以 Kafka 變慢時不會阻塞 HTTP 回應，除非記憶體佇列已滿。
+門禁決策只依賴本地 Redis。每次刷卡完成決策後，Access API 會在 HTTP request 當下同步把事件寫進 Redis Stream，讓 Reporting API 可以在 Kafka、DB 或跨區網路中斷後從 Redis 補資料。Kafka 發布事件由背景 worker 非同步處理，所以 Kafka 變慢時不會阻塞開門決策；就算 Kafka queue 滿了，已寫入 Redis Stream 的事件仍可用於 recovery。
 
-預設也會把事件 mirror 到 Redis Stream：
+Recovery buffer 使用 Redis Stream：
 
 ```text
 access:events
 ```
 
-這是為了方便本地展示時查詢最近事件。
+`requestId` 會用 `EVENT_DEDUPE_KEY_PREFIX` 做去重，避免 Kafka retry 時把同一筆 event 重複塞進 Redis Stream。
 
 常用 publisher 設定：
 
@@ -99,15 +126,22 @@ PUBLISHER_QUEUE_SIZE=100000
 PUBLISHER_WORKERS=8
 PUBLISHER_BATCH_SIZE=100
 PUBLISHER_FLUSH_MS=10
+PUBLISHER_RETRY_INITIAL_MS=100
+PUBLISHER_RETRY_MAX_MS=5000
+EVENT_DEDUPE_KEY_PREFIX=access:event-buffered:
+EVENT_DEDUPE_TTL_SECONDS=86400
 ```
 
 背景 worker 會批次寫入 Kafka。`PUBLISHER_BATCH_SIZE` 控制每次最多寫幾筆，`PUBLISHER_FLUSH_MS` 控制 worker 最多等待多久來湊一個批次。
+如果 Kafka 短暫斷線，worker 會保留失敗 batch 並用 exponential backoff 重試；`PUBLISHER_RETRY_INITIAL_MS` 與 `PUBLISHER_RETRY_MAX_MS` 控制重試間隔。這讓 Kafka 恢復後事件可以繼續送出，不會因為一次 write failure 直接遺失。
 
-`eventBuffered` 的意義：
+`eventBuffered` 與 `kafkaQueued` 的意義：
 
 ```text
-true  -> 事件已放進非同步佇列，之後會由背景 worker 寫入 Kafka
-false -> 門禁決策已完成，但事件沒有成功排入 Kafka
+eventBuffered=true -> 事件已寫入本地 Redis Stream recovery buffer
+eventBuffered=false -> 門禁決策已完成，但 recovery buffer 寫入失敗
+kafkaQueued=true -> 事件已放進 Kafka 非同步發布佇列
+kafkaQueued=false -> recovery buffer 仍可能有資料，但 Kafka queue 沒接住
 ```
 
 若尖峰測試出現事件遺失，可以提高 `PUBLISHER_QUEUE_SIZE`、提高 `PUBLISHER_WORKERS`，或降低模擬器的 `--time-scale`。

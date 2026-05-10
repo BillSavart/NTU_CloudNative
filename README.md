@@ -10,7 +10,7 @@
 
 ### 系統核心特性
 * **防跟隨機制 (Anti-Passback)**：使用者在未「退出」前無法再次「進入」，透過 Redis Cache 進行即時驗證。
-* **非同步緩衝**：進出紀錄透過訊息元件（Message Broker）進行非同步緩衝，再寫入資料庫以確保資料完整性。
+* **非同步緩衝與恢復**：進出紀錄會先寫入 Redis Stream 作為 recovery buffer，再透過 Kafka 進入報表寫入路徑；Reporting API 也會讀 Redis Stream 補回中斷期間的資料。
 * **系統韌性 (Resilience)**：即使資料庫故障，系統仍須能維持開門功能，並將事件緩衝至資料庫恢復。
 * **權限控管與階層報表**：管理員自動擁有其轄下團隊與所有子團隊的數據檢視權限。
 
@@ -43,7 +43,7 @@
    ```bash
    cp .env.example .env
    ```
-   請將 `.env` 內的 `POSTGRES_PASSWORD` 改為你自己的密碼。
+   請將 `.env` 內的 `POSTGRES_PASSWORD`、`REDIS_PASSWORD` 與 `GRAFANA_ADMIN_PASSWORD` 改為你自己的密碼。
 3. 在背景啟動服務：
    ```bash
    docker-compose up -d
@@ -54,6 +54,7 @@
 - 專案根目錄 `.env`：提供給 Docker Compose（啟動 PostgreSQL 容器時使用）。
 - `reporting-api/.env`：提供給 FastAPI（應用程式連接資料庫、Kafka 與 CORS 設定使用）。
 - 這兩份檔案中的 `POSTGRES_PASSWORD` 必須一致。
+- `REDIS_PASSWORD` 會提供給 Redis 主節點、複本、Sentinel 與 Access API，這些服務必須使用同一組密碼。
 
 ### 2. Access API（Go）
 1. 開啟新的終端機並進入 `access-api` 目錄：
@@ -67,6 +68,7 @@
 3. 若只想在本機開發 Go API，請直接連 `localhost:6379` 的 Redis，不要使用 Docker 內部 Sentinel hostname：
    ```bash
    REDIS_ADDR=localhost:6379 \
+   REDIS_PASSWORD=你的Redis密碼 \
    KAFKA_BROKERS=localhost:19092,localhost:29092,localhost:39092 \
    go run .
    ```
@@ -77,10 +79,12 @@
    ```
    *您應會看見包含 `{"message":"pong","status":"Access API is running"}` 的 JSON 回應。*
 
-Access API 目前採用 Redis Sentinel 管理的主節點/複本快取做門禁即時決策，Kafka 3 節點叢集作為非同步事件流：
+Access API 目前採用區域本地 Redis Sentinel 管理的主節點/複本快取做門禁即時決策，並在每次刷卡 request 當下將事件寫入 Redis Stream 作為 recovery source；Kafka 3 節點叢集作為正常非同步事件流：
 
 ```text
-假刷卡訊號 -> 負載平衡器 -> Access API 叢集 -> Redis Sentinel/主節點 -> 非同步批次佇列 -> Kafka access-events
+假刷卡訊號 -> 負載平衡器 -> Access API 叢集 -> Redis Anti-Passback
+                                       ├-> Redis Stream access:events
+                                       └-> 非同步批次佇列 -> Kafka access-events
 ```
 
 本地可用 Docker Compose 啟動 3 個 Access API 複本與 Nginx 負載平衡器：
@@ -89,7 +93,7 @@ Access API 目前採用 Redis Sentinel 管理的主節點/複本快取做門禁�
 docker-compose up -d --scale access-api=3 access-lb
 ```
 
-注意：如果是在 Mac 主機端直接 `go run .`，請使用 `REDIS_ADDR=localhost:6379`。Redis Sentinel 會回傳 Docker network 內的 `redis:6379`，該 hostname 只有容器內能解析。
+注意：如果是在 Mac 主機端直接 `go run .`，請使用 `REDIS_ADDR=localhost:6379` 與同一組 `REDIS_PASSWORD`。Redis Sentinel 會回傳 Docker network 內的 `redis:6379`，該 hostname 只有容器內能解析。
 
 可使用內建模擬器壓測 90,000 人、50 扇門、30 分鐘上班尖峰：
 
@@ -135,7 +139,7 @@ k8s/access-api-hpa.yaml
 ```
 
 ### 3. Reporting API（Python/FastAPI）
-此專案的 Python 需求為 **3.12**。目前 Reporting API 已改成 FastAPI 骨架，只負責把環境架好；Kafka 寫入 DB、報表查詢與 dashboard API 會留給後續分工實作。
+此專案的 Python 需求為 **3.12**。Reporting API 會啟動 Kafka consumer 與 Redis Stream recovery consumer，將 `access-events` 寫入 PostgreSQL，並提供報表查詢 API 的基礎。
 1. 開啟新的終端機並進入 `reporting-api` 目錄：
    ```bash
    cd reporting-api
@@ -169,12 +173,42 @@ k8s/access-api-hpa.yaml
    ```bash
    curl http://127.0.0.1:8000/api/health/
    ```
+8. 查詢已落庫的刷卡事件與即時統計：
+   ```bash
+   curl http://127.0.0.1:8000/api/reports/access/summary
+   curl 'http://127.0.0.1:8000/api/reports/access/events?limit=20'
+   ```
 
 也可以直接用 Docker Compose 啟動：
 
 ```bash
 docker-compose up -d reporting-api
 curl http://127.0.0.1:8000/api/health/
+curl http://127.0.0.1:8000/api/reports/access/summary
+```
+
+Reporting API 啟動時會自動執行 Alembic migrations。若要手動套用：
+
+```bash
+docker-compose exec reporting-api alembic upgrade head
+```
+
+若 demo 前想清空報表資料庫，只保留下一輪新刷卡資料：
+
+```bash
+./scripts/reset-reporting-db.sh --yes
+```
+
+若要一鍵執行完整 demo，包括啟動服務、清資料、基本刷卡、壓力測試與斷線恢復測試：
+
+```bash
+./scripts/demo-full-system.sh
+```
+
+正式 90,000 人尖峰壓測 demo：
+
+```bash
+./scripts/demo-full-system.sh --full
 ```
 
 ### 4. 前端（React / Vite）
@@ -227,8 +261,10 @@ access_api_swipes_total
 access_api_swipes_granted_total
 access_api_swipes_denied_total
 access_api_events_queued_total
+access_api_events_buffered_total
 access_api_events_published_total
 access_api_events_failed_total
+access_api_events_retried_total
 access_api_events_dropped_total
 access_api_event_queue_depth
 ```
@@ -248,7 +284,7 @@ Grafana 已自動 provision Prometheus datasource。Dashboard、告警規則、K
 NTU_CloudNative/
 ├── docker-compose.yml   # 本地開發資料庫、Redis Sentinel、Kafka、API 與可觀測性服務配置
 ├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯
-├── reporting-api/       # FastAPI: 報表服務骨架，預留 Kafka -> DB 與報表 API 分工
+├── reporting-api/       # FastAPI: Kafka -> DB consumer、報表 API 基礎、使用者/部門權限 schema
 ├── frontend/            # React + TS: 主管報表視覺化儀表板 
 ├── infra/               # Nginx、Redis Sentinel、Prometheus、Grafana 設定
 ├── k8s/                 # Kubernetes 部署與 HPA (水平擴展) 設定檔 

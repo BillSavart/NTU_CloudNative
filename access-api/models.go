@@ -33,6 +33,7 @@ type SwipeResponse struct {
 	LatencyMs     int64  `json:"latencyMs"`
 	Timestamp     string `json:"timestamp"`
 	EventBuffered bool   `json:"eventBuffered"`
+	KafkaQueued   bool   `json:"kafkaQueued"`
 }
 
 type AccessDecision struct {

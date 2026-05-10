@@ -35,8 +35,6 @@ spec:
               value: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
             - name: KAFKA_TOPIC
               value: "access-events"
-            - name: KAFKA_MIRROR_REDIS
-              value: "true"
             - name: PUBLISHER_ASYNC
               value: "true"
             - name: PUBLISHER_QUEUE_SIZE

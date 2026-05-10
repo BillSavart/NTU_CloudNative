@@ -38,6 +38,26 @@ end
 return {0, current, current, "ANTI_PASSBACK_VIOLATION"}
 `
 
+const appendEventOnceScript = `
+local dedupeSet = redis.call("SET", KEYS[1], "1", "NX", "EX", ARGV[10])
+if not dedupeSet then
+	return 0
+end
+
+redis.call("XADD", KEYS[2], "*",
+	"requestId", ARGV[1],
+	"employeeId", ARGV[2],
+	"gateId", ARGV[3],
+	"direction", ARGV[4],
+	"decision", ARGV[5],
+	"reason", ARGV[6],
+	"previousState", ARGV[7],
+	"currentState", ARGV[8],
+	"latencyMs", ARGV[9],
+	"timestamp", ARGV[11])
+return 1
+`
+
 type RedisStore struct {
 	client redis.UniversalClient
 	cfg    Config
@@ -131,6 +151,31 @@ func (s *RedisStore) AppendEvent(ctx context.Context, event AccessEvent) error {
 			"timestamp":     event.Timestamp.Format(time.RFC3339Nano),
 		},
 	}).Err()
+}
+
+func (s *RedisStore) AppendEventOnce(ctx context.Context, event AccessEvent) error {
+	dedupeKey := s.cfg.EventDedupeKeyPrefix + event.RequestID
+	ttlSeconds := s.cfg.EventDedupeTTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = 86400
+	}
+
+	return s.client.Eval(
+		ctx,
+		appendEventOnceScript,
+		[]string{dedupeKey, s.cfg.EventStreamKey},
+		event.RequestID,
+		event.EmployeeID,
+		event.GateID,
+		event.Direction,
+		event.Decision,
+		event.Reason,
+		event.PreviousState,
+		event.CurrentState,
+		event.LatencyMs,
+		ttlSeconds,
+		event.Timestamp.Format(time.RFC3339Nano),
+	).Err()
 }
 
 func (s *RedisStore) ListEvents(ctx context.Context, limit int64) ([]EventDTO, error) {

@@ -19,9 +19,10 @@ type App struct {
 	publisher  EventPublisher
 	instanceID string
 
-	totalSwipes   atomic.Int64
-	grantedSwipes atomic.Int64
-	deniedSwipes  atomic.Int64
+	totalSwipes    atomic.Int64
+	grantedSwipes  atomic.Int64
+	deniedSwipes   atomic.Int64
+	bufferedEvents atomic.Int64
 }
 
 func NewApp(cfg Config, store *RedisStore, publisher EventPublisher) *App {
@@ -131,9 +132,17 @@ func (a *App) Swipe(c *gin.Context) {
 	}
 
 	eventBuffered := true
+	if err := a.store.AppendEventOnce(c.Request.Context(), event); err != nil {
+		log.Printf("failed to buffer access event in redis requestId=%s: %v", requestID, err)
+		eventBuffered = false
+	} else {
+		a.bufferedEvents.Add(1)
+	}
+
+	kafkaQueued := true
 	if err := a.publisher.Publish(c.Request.Context(), event); err != nil {
 		log.Printf("failed to publish access event requestId=%s publisher=%s: %v", requestID, a.publisher.Name(), err)
-		eventBuffered = false
+		kafkaQueued = false
 	}
 
 	c.JSON(http.StatusOK, SwipeResponse{
@@ -148,6 +157,7 @@ func (a *App) Swipe(c *gin.Context) {
 		LatencyMs:     latencyMs,
 		Timestamp:     now.Format(time.RFC3339Nano),
 		EventBuffered: eventBuffered,
+		KafkaQueued:   kafkaQueued,
 	})
 }
 
@@ -206,12 +216,18 @@ access_api_swipes_denied_total %d
 # HELP access_api_events_queued_total Total events accepted into the async publisher queue.
 # TYPE access_api_events_queued_total counter
 access_api_events_queued_total %d
+# HELP access_api_events_buffered_total Total events persisted to the local Redis recovery buffer.
+# TYPE access_api_events_buffered_total counter
+access_api_events_buffered_total %d
 # HELP access_api_events_published_total Total events published to the configured publisher.
 # TYPE access_api_events_published_total counter
 access_api_events_published_total %d
 # HELP access_api_events_failed_total Total publisher failures.
 # TYPE access_api_events_failed_total counter
 access_api_events_failed_total %d
+# HELP access_api_events_retried_total Total events retried after publisher failures.
+# TYPE access_api_events_retried_total counter
+access_api_events_retried_total %d
 # HELP access_api_events_dropped_total Total events dropped before publishing.
 # TYPE access_api_events_dropped_total counter
 access_api_events_dropped_total %d
@@ -223,8 +239,10 @@ access_api_event_queue_depth %d
 		a.grantedSwipes.Load(),
 		a.deniedSwipes.Load(),
 		publisherStats.Queued.Load(),
+		a.bufferedEvents.Load(),
 		publisherStats.Published.Load(),
 		publisherStats.Failed.Load(),
+		publisherStats.Retried.Load(),
 		publisherStats.Dropped.Load(),
 		publisherStats.QueueDepth.Load(),
 	))
