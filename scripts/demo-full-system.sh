@@ -172,6 +172,7 @@ docker-compose exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
 
 log "4/9 清空舊 demo 資料"
 ./scripts/reset-reporting-db.sh --yes
+./scripts/seed-reporting-demo-data.sh
 
 log "5/9 基本 Anti-Passback demo"
 basic_employee="DEMO${RUN_ID}"

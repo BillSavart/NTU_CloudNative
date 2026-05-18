@@ -108,11 +108,54 @@ Reporting API 啟動時會：
 
 ## API 端點
 
+前端串接時可以直接看完整 contract：
+
+- [API.md](./API.md)
+
 健康檢查與 consumer 狀態：
 
 ```bash
 curl http://127.0.0.1:8000/api/health/
 ```
+
+### Auth
+
+前端現有登入頁可直接使用：
+
+```bash
+curl http://127.0.0.1:8000/api/csrf/
+curl -X POST http://127.0.0.1:8000/api/login/ \
+  -H 'Content-Type: application/json' \
+  -d '{"employeeId":"manager","password":"demo123"}'
+```
+
+也提供較新的 auth path：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"employeeId":"manager","password":"demo123"}'
+
+curl http://127.0.0.1:8000/api/auth/me
+curl -X POST http://127.0.0.1:8000/api/auth/logout
+```
+
+Demo users 可用：
+
+```text
+admin / demo123
+executive / demo123
+manager / demo123
+employee / demo123
+```
+
+建立 demo users / departments：
+
+```bash
+./scripts/seed-reporting-demo-data.sh
+```
+
+### Reports
 
 即時彙總：
 
@@ -120,10 +163,41 @@ curl http://127.0.0.1:8000/api/health/
 curl http://127.0.0.1:8000/api/reports/access/summary
 ```
 
+Dashboard 首頁資料：
+
+```bash
+curl 'http://127.0.0.1:8000/api/reports/dashboard?departmentId=FAB_A'
+```
+
 最近刷卡事件：
 
 ```bash
-curl 'http://127.0.0.1:8000/api/reports/access/events?limit=20'
+curl 'http://127.0.0.1:8000/api/reports/access/events?departmentId=FAB_A&decision=DENIED&limit=20&offset=0'
+```
+
+部門樹：
+
+```bash
+curl http://127.0.0.1:8000/api/reports/departments/tree
+```
+
+部門 summary：
+
+```bash
+curl http://127.0.0.1:8000/api/reports/departments/FAB_A/summary
+```
+
+員工目前狀態：
+
+```bash
+curl 'http://127.0.0.1:8000/api/reports/employees/current-state?departmentId=FAB_A&state=IN'
+```
+
+異常事件與趨勢圖：
+
+```bash
+curl 'http://127.0.0.1:8000/api/reports/anomalies?limit=20'
+curl http://127.0.0.1:8000/api/reports/timeseries
 ```
 
 ## DB migration
@@ -142,6 +216,7 @@ docker-compose exec reporting-api alembic upgrade head
 
 ```bash
 ./scripts/reset-reporting-db.sh --yes
+./scripts/seed-reporting-demo-data.sh
 ```
 
 這會清空 `access_events`、`user_department_scopes`、`user_accounts`、`employees`、`departments`，但不會刪除 PostgreSQL volume，也不會動 Kafka 或 Redis。

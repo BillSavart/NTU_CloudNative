@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "reporting-api"
     app_env: str = "local"
     app_debug: bool = True
+    app_secret_key: str = "replace-with-a-long-random-secret"
     cors_origins: str = ""
 
     postgres_db: str = "access_control"

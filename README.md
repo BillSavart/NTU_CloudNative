@@ -197,6 +197,7 @@ docker-compose exec reporting-api alembic upgrade head
 
 ```bash
 ./scripts/reset-reporting-db.sh --yes
+./scripts/seed-reporting-demo-data.sh
 ```
 
 若要一鍵執行完整 demo，包括啟動服務、清資料、基本刷卡、壓力測試與斷線恢復測試：
