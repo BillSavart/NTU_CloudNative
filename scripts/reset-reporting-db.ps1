@@ -88,13 +88,7 @@ try {
     $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
     Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli DEL access:events | Out-Null
 
-    $bufferedKeys = Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli --scan --pattern "access:event-buffered:*"
-    foreach ($key in $bufferedKeys) {
-        $trimmedKey = "$key".Trim()
-        if ($trimmedKey) {
-            Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli DEL $trimmedKey | Out-Null
-        }
-    }
+    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis sh -c 'redis-cli --scan --pattern "access:event-buffered:*" | xargs -r redis-cli UNLINK' | Out-Null
 
     Write-Host "Reporting demo database reset complete."
 }
