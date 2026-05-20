@@ -23,8 +23,7 @@ Clears:
   - user_accounts
   - employees
   - departments
-  - Redis Stream access:events
-  - Redis event dedupe keys
+  - Redis demo DB state, streams, and dedupe keys
 
 Options:
   -Yes   Skip confirmation and clear data immediately
@@ -86,9 +85,7 @@ try {
     Invoke-Compose exec -T db psql -U root -d access_control -c "TRUNCATE TABLE access_events, user_department_scopes, user_accounts, employees, departments RESTART IDENTITY CASCADE;"
 
     $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
-    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli DEL access:events | Out-Null
-
-    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis sh -c 'redis-cli --scan --pattern "access:event-buffered:*" | xargs -r redis-cli UNLINK' | Out-Null
+    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli FLUSHDB ASYNC | Out-Null
 
     Write-Host "Reporting demo database reset complete."
 }
