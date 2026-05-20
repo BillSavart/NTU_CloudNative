@@ -18,8 +18,7 @@ usage() {
   - user_accounts
   - employees
   - departments
-  - Redis Stream access:events
-  - Redis event dedupe keys
+  - Redis demo DB state, streams, and dedupe keys
 
 選項：
   --yes      不詢問確認，直接清空
@@ -62,11 +61,7 @@ SQL
 
 docker-compose exec -T redis sh -c '
 export REDISCLI_AUTH="$REDIS_PASSWORD"
-redis-cli DEL access:events >/dev/null
-redis-cli --scan --pattern "access:event-buffered:*" |
-while IFS= read -r key; do
-  [ -n "$key" ] && redis-cli DEL "$key" >/dev/null
-done
+redis-cli FLUSHDB ASYNC >/dev/null
 '
 
 echo "Reporting demo database reset complete."

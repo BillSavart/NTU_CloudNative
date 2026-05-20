@@ -13,6 +13,7 @@ services:
   access-api:
     build:
       context: ./access-api
+    restart: on-failure
     environment:
       PORT: "8080"
       REDIS_SENTINEL_ADDRS: redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
@@ -27,6 +28,12 @@ services:
       PUBLISHER_FLUSH_MS: "10"
       PUBLISHER_RETRY_INITIAL_MS: "100"
       PUBLISHER_RETRY_MAX_MS: "5000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
     depends_on:
       - redis-sentinel-1
       - redis-sentinel-2
@@ -42,7 +49,8 @@ services:
     volumes:
       - ./infra/nginx/access-api.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - access-api
+      access-api:
+        condition: service_healthy
 
   reporting-api:
     build:
