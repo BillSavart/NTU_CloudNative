@@ -92,14 +92,14 @@ function Get-HttpErrorBody($ErrorRecord) {
     }
 }
 
-function Invoke-Http([string]$Method, [string]$Url, [string]$Body = $null, [string]$ContentType = $null) {
+function Invoke-Http([string]$Method, [string]$Url, [AllowNull()][object]$Body = $null, [string]$ContentType = $null) {
     $params = @{
         Method          = $Method
         Uri             = $Url
         UseBasicParsing = $true
         Proxy           = $null
     }
-    if ($null -ne $Body) {
+    if ($null -ne $Body -and "$Body" -ne "") {
         $params.Body = $Body
     }
     if ($ContentType) {
