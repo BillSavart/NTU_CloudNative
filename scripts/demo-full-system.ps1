@@ -143,7 +143,7 @@ function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
         }
     }
     Write-Host ""
-    Write-Host "Container status while waiting for $Name:"
+    Write-Host "Container status while waiting for ${Name}:"
     try {
         Invoke-Compose ps
     }
