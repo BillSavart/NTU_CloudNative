@@ -71,7 +71,11 @@ function Get-HttpErrorBody($ErrorRecord) {
     if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
         return $ErrorRecord.ErrorDetails.Message
     }
-    $response = $ErrorRecord.Exception.Response
+    $responseProperty = $ErrorRecord.Exception.PSObject.Properties["Response"]
+    if (-not $responseProperty) {
+        return ""
+    }
+    $response = $responseProperty.Value
     if (-not $response) {
         return ""
     }
