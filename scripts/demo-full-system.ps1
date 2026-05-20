@@ -176,7 +176,12 @@ try {
 
     Write-Section "5/9 Basic Anti-Passback demo"
     $basicEmployee = "DEMO$RunId"
-    Invoke-Curl -fsS -X POST "$AccessUrl/api/access/reset/$basicEmployee" | Out-Null
+    try {
+        Invoke-Curl -fsS -X POST "$AccessUrl/api/access/reset/$basicEmployee" | Out-Null
+    }
+    catch {
+        Write-Host "Warning: reset failed for $basicEmployee; continuing because this demo id is unique for this run."
+    }
 
     $entry1 = Invoke-Swipe $basicEmployee "GATE_A" "IN"
     $entry2 = Invoke-Swipe $basicEmployee "GATE_A" "IN"
