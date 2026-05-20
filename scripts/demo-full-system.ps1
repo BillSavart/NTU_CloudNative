@@ -67,13 +67,51 @@ function Invoke-Compose {
     throw "Missing required command: docker-compose or docker compose"
 }
 
-function Invoke-Curl {
-    Assert-Command curl.exe
-    $output = & curl.exe @args
-    if ($LASTEXITCODE -ne 0) {
-        throw "curl.exe failed with exit code $LASTEXITCODE"
+function Get-HttpErrorBody($ErrorRecord) {
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        return $ErrorRecord.ErrorDetails.Message
     }
-    return $output
+    $response = $ErrorRecord.Exception.Response
+    if (-not $response) {
+        return ""
+    }
+    try {
+        $stream = $response.GetResponseStream()
+        if (-not $stream) {
+            return ""
+        }
+        $reader = New-Object System.IO.StreamReader($stream)
+        return $reader.ReadToEnd()
+    }
+    catch {
+        return ""
+    }
+}
+
+function Invoke-Http([string]$Method, [string]$Url, [string]$Body = $null, [string]$ContentType = $null) {
+    $params = @{
+        Method          = $Method
+        Uri             = $Url
+        UseBasicParsing = $true
+    }
+    if ($null -ne $Body) {
+        $params.Body = $Body
+    }
+    if ($ContentType) {
+        $params.ContentType = $ContentType
+    }
+
+    try {
+        $response = Invoke-WebRequest @params
+        return $response.Content
+    }
+    catch {
+        $bodyText = Get-HttpErrorBody $_
+        if ($bodyText) {
+            throw "HTTP $Method $Url failed. Response body: $bodyText"
+        }
+        throw "HTTP $Method $Url failed. $($_.Exception.Message)"
+    }
 }
 
 function Get-JsonField([string]$Json, [string]$Field) {
@@ -92,7 +130,7 @@ function Get-JsonField([string]$Json, [string]$Field) {
 function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
-            return Invoke-Curl -fsS $Url 2>$null
+            return Invoke-Http "GET" $Url
         }
         catch {
             Start-Sleep -Seconds 2
@@ -104,7 +142,7 @@ function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
 function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
-            $events = Invoke-Curl -fsS "$ReportingUrl/api/reports/access/events?limit=200"
+            $events = Invoke-Http "GET" "$ReportingUrl/api/reports/access/events?limit=200"
             if ($events -match [regex]::Escape($EmployeeId)) {
                 return
             }
@@ -128,7 +166,7 @@ function Assert-EnvFile {
 
 function Invoke-Swipe([string]$EmployeeId, [string]$GateId, [string]$Direction) {
     $body = @{ employeeId = $EmployeeId; gateId = $GateId; direction = $Direction } | ConvertTo-Json -Compress
-    Invoke-Curl -fsS -X POST "$AccessUrl/api/access/swipe" -H "Content-Type: application/json" -d $body
+    Invoke-Http "POST" "$AccessUrl/api/access/swipe" $body "application/json"
 }
 
 if ($Help) {
@@ -136,7 +174,6 @@ if ($Help) {
     exit 0
 }
 
-Assert-Command curl.exe
 Assert-Command go
 
 Push-Location $RootDir
@@ -177,7 +214,7 @@ try {
     Write-Section "5/9 Basic Anti-Passback demo"
     $basicEmployee = "DEMO$RunId"
     try {
-        Invoke-Curl -fsS -X POST "$AccessUrl/api/access/reset/$basicEmployee" | Out-Null
+        Invoke-Http "POST" "$AccessUrl/api/access/reset/$basicEmployee" | Out-Null
     }
     catch {
         Write-Host "Warning: reset failed for $basicEmployee; continuing because this demo id is unique for this run."
@@ -195,7 +232,7 @@ try {
 
     Start-Sleep -Seconds 3
     Write-Host "Reporting summary after basic demo:"
-    Invoke-Curl -fsS "$ReportingUrl/api/reports/access/summary"
+    Invoke-Http "GET" "$ReportingUrl/api/reports/access/summary"
     Write-Host ""
 
     Write-Section "6/9 Run load test"
@@ -215,7 +252,7 @@ try {
 
     Start-Sleep -Seconds 5
     Write-Host "Reporting summary after load test:"
-    Invoke-Curl -fsS "$ReportingUrl/api/reports/access/summary"
+    Invoke-Http "GET" "$ReportingUrl/api/reports/access/summary"
     Write-Host ""
 
     Write-Section "7/9 Simulate outage: stop Reporting API and Kafka"
@@ -225,7 +262,7 @@ try {
 
     Write-Host "Reporting API and Kafka are stopped. Access API should still decide by local Redis."
     try {
-        Invoke-Curl -fsS -X POST "$AccessUrl/api/access/reset/$recoveryEmployee" | Out-Null
+        Invoke-Http "POST" "$AccessUrl/api/access/reset/$recoveryEmployee" | Out-Null
     }
     catch {
     }
@@ -241,7 +278,7 @@ try {
     Wait-ForEventInReporting $recoveryEmployee
 
     Write-Host "Recovered events:"
-    $recoveredEvents = Invoke-Curl -fsS "$ReportingUrl/api/reports/access/events?limit=20"
+    $recoveredEvents = Invoke-Http "GET" "$ReportingUrl/api/reports/access/events?limit=20"
     $recoveredEvents | ConvertFrom-Json | ConvertTo-Json -Depth 20
 
     Write-Section "9/9 Restore Kafka and show final status"
@@ -249,16 +286,16 @@ try {
     Start-Sleep -Seconds 5
 
     Write-Host "Access API health:"
-    Invoke-Curl -fsS "$AccessUrl/healthz"
+    Invoke-Http "GET" "$AccessUrl/healthz"
     Write-Host ""
     Write-Host "Reporting API health:"
-    Invoke-Curl -fsS "$ReportingUrl/api/health/"
+    Invoke-Http "GET" "$ReportingUrl/api/health/"
     Write-Host ""
     Write-Host "Access metrics:"
-    Invoke-Curl -fsS "$AccessUrl/metrics"
+    Invoke-Http "GET" "$AccessUrl/metrics"
     Write-Host ""
     Write-Host "Reporting summary:"
-    Invoke-Curl -fsS "$ReportingUrl/api/reports/access/summary"
+    Invoke-Http "GET" "$ReportingUrl/api/reports/access/summary"
     Write-Host ""
 
     @"
