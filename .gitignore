@@ -242,3 +242,8 @@ Thumbs.db
 
 # 允許上傳環境變數的範本檔 (讓隊友知道要填哪些變數)
 !.env.example
+
+# 其他
+STARTUP_GUIDE.md
+health-check.ps1
+run-all-services.ps1

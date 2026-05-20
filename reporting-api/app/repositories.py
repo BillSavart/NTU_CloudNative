@@ -64,7 +64,15 @@ def save_access_event_with_session(db: Session, payload: dict[str, Any]) -> bool
 
     employee = db.get(Employee, employee_id)
     if employee is None:
-        employee = Employee(employee_id=employee_id)
+        # Ensure a default department exists so every employee has a department_id
+        default_dept_id = "UNASSIGNED"
+        dept = db.get(Department, default_dept_id)
+        if dept is None:
+            dept = Department(department_id=default_dept_id, name="Unassigned")
+            db.add(dept)
+            db.flush()
+
+        employee = Employee(employee_id=employee_id, department_id=default_dept_id)
         db.add(employee)
 
     employee.last_known_state = current_state

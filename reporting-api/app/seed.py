@@ -12,6 +12,7 @@ def seed_demo_data() -> None:
     with SessionLocal() as db:
         departments = [
             Department(department_id="TSMC", name="TSMC Demo HQ"),
+            Department(department_id="UNASSIGNED", name="Unassigned"),
             Department(department_id="FAB_A", name="Fab A", parent_department_id="TSMC"),
             Department(department_id="FAB_B", name="Fab B", parent_department_id="TSMC"),
             Department(department_id="SECURITY", name="Security", parent_department_id="TSMC"),
@@ -42,6 +43,64 @@ def seed_demo_data() -> None:
                 existing.manager_employee_id = employee.manager_employee_id
 
         db.flush()
+
+        # Ensure exactly one top-level manager (unique) with no manager
+        # and ensure all other employees have a valid manager and their
+        # department is the same as or a descendant of their manager's department.
+        all_departments = {d.department_id: d for d in db.scalars(select(Department)).all()}
+
+        def get_ancestors(dept_id: str | None) -> list[str]:
+            if not dept_id:
+                return []
+            res = []
+            cur = dept_id
+            while cur:
+                res.append(cur)
+                cur = all_departments.get(cur).parent_department_id if all_departments.get(cur) else None
+            return res
+
+        all_emps = {e.employee_id: e for e in db.scalars(select(Employee)).all()}
+        # Choose default top manager: prefer ADMIN001 if present, else pick first employee
+        top_manager_id = 'ADMIN001' if 'ADMIN001' in all_emps else (next(iter(all_emps)) if all_emps else None)
+        if top_manager_id is not None:
+            # clear manager for top
+            top = all_emps[top_manager_id]
+            top.manager_employee_id = None
+
+        for emp_id, emp in all_emps.items():
+            if top_manager_id is not None and emp_id == top_manager_id:
+                continue
+
+            # If manager is set but doesn't exist, reset it
+            if emp.manager_employee_id and emp.manager_employee_id not in all_emps:
+                emp.manager_employee_id = None
+
+            # If no manager, try to find one in ancestor departments
+            if not emp.manager_employee_id:
+                emp_dept = emp.department_id
+                chosen = None
+                if emp_dept:
+                    ancestors = get_ancestors(emp_dept)
+                    # prefer manager in nearest ancestor dept
+                    for cand in all_emps.values():
+                        if cand.employee_id == emp.employee_id:
+                            continue
+                        if cand.department_id and cand.department_id in ancestors:
+                            chosen = cand
+                            break
+
+                if chosen is None:
+                    # fallback to top manager
+                    emp.manager_employee_id = top_manager_id
+                else:
+                    emp.manager_employee_id = chosen.employee_id
+
+            # Ensure employee department is same as or descendant of manager's department
+            mgr = db.get(Employee, emp.manager_employee_id) if emp.manager_employee_id else None
+            if mgr is not None and mgr.department_id:
+                if not emp.department_id or mgr.department_id not in get_ancestors(emp.department_id):
+                    emp.department_id = mgr.department_id
+
 
         users = [
             ("admin", "ADMIN", "ADMIN001"),

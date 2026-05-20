@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { login } from '../../services/auth'
+import { useNavigate } from 'react-router-dom'
 
 function LoginForm() {
   const [employeeId, setEmployeeId] = useState('')
@@ -18,6 +19,8 @@ function LoginForm() {
     try {
       const result = await login({ employeeId, password })
       setSuccess(result.message)
+      // 導向儀表板
+      navigate('/dashboard', { replace: true })
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : '登入失敗'
       setError(message)
@@ -25,6 +28,8 @@ function LoginForm() {
       setIsSubmitting(false)
     }
   }
+
+  const navigate = useNavigate()
 
   return (
     <form onSubmit={handleSubmit}>

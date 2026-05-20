@@ -32,6 +32,9 @@ async def run_migrations_with_retry(max_attempts: int = 30) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import os
+    print("PID:", os.getpid(), flush=True)
+    
     await run_migrations_with_retry()
     kafka_consumer = AccessEventConsumerService(settings)
     redis_recovery_consumer = RedisRecoveryConsumerService(settings)

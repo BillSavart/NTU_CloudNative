@@ -13,6 +13,7 @@
 ## 本地啟動
 
 ```bash
+cd frontend
 npm install
 npm run dev
 ```
