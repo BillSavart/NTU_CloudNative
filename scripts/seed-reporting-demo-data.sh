@@ -23,5 +23,7 @@ Demo users:
   admin / demo123
   executive / demo123
   manager / demo123
+  manager_fab_b / demo123
+  manager_security / demo123
   employee / demo123
 EOF

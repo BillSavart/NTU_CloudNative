@@ -10,16 +10,74 @@ from app.security import hash_password
 DEMO_PASSWORD = "demo123"
 DEMO_DEPARTMENTS = ("OPS_A", "FAB_A", "FAB_B", "SECURITY")
 BATCH_SIZE = 1000
+DEPARTMENT_PARENT_IDS = {
+    "TSMC": None,
+    "FAB_A": "TSMC",
+    "FAB_B": "TSMC",
+    "SECURITY": "TSMC",
+    "OPS_A": "FAB_A",
+}
+DEMO_EMPLOYEES = [
+    {
+        "employee_id": "EXEC001",
+        "display_name": "Executive User",
+        "department_id": "TSMC",
+        "manager_employee_id": None,
+    },
+    {
+        "employee_id": "MGR001",
+        "display_name": "Fab A Manager",
+        "department_id": "FAB_A",
+        "manager_employee_id": "EXEC001",
+    },
+    {
+        "employee_id": "MGR002",
+        "display_name": "Fab B Manager",
+        "department_id": "FAB_B",
+        "manager_employee_id": "EXEC001",
+    },
+    {
+        "employee_id": "MGR003",
+        "display_name": "Security Manager",
+        "department_id": "SECURITY",
+        "manager_employee_id": "EXEC001",
+    },
+    {
+        "employee_id": "ADMIN001",
+        "display_name": "Admin User",
+        "department_id": "SECURITY",
+        "manager_employee_id": "MGR003",
+    },
+    {
+        "employee_id": "EMP001",
+        "display_name": "Fab A Operator",
+        "department_id": "OPS_A",
+        "manager_employee_id": "MGR001",
+    },
+    {
+        "employee_id": "EMP002",
+        "display_name": "Fab B Operator",
+        "department_id": "FAB_B",
+        "manager_employee_id": "MGR002",
+    },
+]
+DEMO_MANAGER_BY_DEPARTMENT = {
+    "OPS_A": "MGR001",
+    "FAB_A": "MGR001",
+    "FAB_B": "MGR002",
+    "SECURITY": "MGR003",
+}
 
 
 def seed_demo_data() -> None:
     with SessionLocal() as db:
         departments = [
-            Department(department_id="TSMC", name="TSMC Demo HQ"),
-            Department(department_id="FAB_A", name="Fab A", parent_department_id="TSMC"),
-            Department(department_id="FAB_B", name="Fab B", parent_department_id="TSMC"),
-            Department(department_id="SECURITY", name="Security", parent_department_id="TSMC"),
-            Department(department_id="OPS_A", name="Operations A", parent_department_id="FAB_A"),
+            Department(
+                department_id=department_id,
+                name=department_name(department_id),
+                parent_department_id=parent_department_id,
+            )
+            for department_id, parent_department_id in DEPARTMENT_PARENT_IDS.items()
         ]
         for department in departments:
             existing = db.get(Department, department.department_id)
@@ -29,13 +87,7 @@ def seed_demo_data() -> None:
                 existing.name = department.name
                 existing.parent_department_id = department.parent_department_id
 
-        employees = [
-            Employee(employee_id="ADMIN001", display_name="Admin User", department_id="SECURITY"),
-            Employee(employee_id="EXEC001", display_name="Executive User", department_id="TSMC"),
-            Employee(employee_id="MGR001", display_name="Fab A Manager", department_id="FAB_A"),
-            Employee(employee_id="EMP001", display_name="Fab A Operator", department_id="OPS_A", manager_employee_id="MGR001"),
-            Employee(employee_id="EMP002", display_name="Fab B Operator", department_id="FAB_B", manager_employee_id="MGR001"),
-        ]
+        employees = [Employee(**employee) for employee in DEMO_EMPLOYEES]
         for employee in employees:
             existing = db.get(Employee, employee.employee_id)
             if existing is None:
@@ -51,6 +103,8 @@ def seed_demo_data() -> None:
             ("admin", "ADMIN", "ADMIN001"),
             ("executive", "EXECUTIVE", "EXEC001"),
             ("manager", "MANAGER", "MGR001"),
+            ("manager_fab_b", "MANAGER", "MGR002"),
+            ("manager_security", "MANAGER", "MGR003"),
             ("employee", "EMPLOYEE", "EMP001"),
         ]
         for username, role, employee_id in users:
@@ -65,29 +119,49 @@ def seed_demo_data() -> None:
 
         db.flush()
 
-        manager = db.scalar(select(UserAccount).where(UserAccount.username == "manager"))
-        if manager is not None:
-            existing_scope = db.scalar(
-                select(UserDepartmentScope).where(
-                    UserDepartmentScope.user_id == manager.user_id,
-                    UserDepartmentScope.department_id == "FAB_A",
-                )
-            )
-            if existing_scope is None:
-                db.add(
-                    UserDepartmentScope(
-                        user_id=manager.user_id,
-                        department_id="FAB_A",
-                        include_descendants=True,
-                    )
-                )
-            else:
-                existing_scope.include_descendants = True
+        manager_scopes = {
+            "manager": "FAB_A",
+            "manager_fab_b": "FAB_B",
+            "manager_security": "SECURITY",
+        }
+        for username, department_id in manager_scopes.items():
+            manager = db.scalar(select(UserAccount).where(UserAccount.username == username))
+            if manager is not None:
+                upsert_department_scope(db, manager.user_id, department_id)
 
         generated_count = seed_generated_demo_employees(db)
         db.commit()
         if generated_count:
             print(f"Seeded {generated_count} generated demo employees.")
+
+
+def department_name(department_id: str) -> str:
+    return {
+        "TSMC": "TSMC Demo HQ",
+        "FAB_A": "Fab A",
+        "FAB_B": "Fab B",
+        "SECURITY": "Security",
+        "OPS_A": "Operations A",
+    }[department_id]
+
+
+def upsert_department_scope(db, user_id: int, department_id: str) -> None:
+    existing_scope = db.scalar(
+        select(UserDepartmentScope).where(
+            UserDepartmentScope.user_id == user_id,
+            UserDepartmentScope.department_id == department_id,
+        )
+    )
+    if existing_scope is None:
+        db.add(
+            UserDepartmentScope(
+                user_id=user_id,
+                department_id=department_id,
+                include_descendants=True,
+            )
+        )
+    else:
+        existing_scope.include_descendants = True
 
 
 def seed_generated_demo_employees(db) -> int:
@@ -167,9 +241,7 @@ def upsert_load_demo_employees(db, prefix: str, count: int) -> int:
 
 
 def manager_for_department(department_id: str) -> str | None:
-    if department_id in {"OPS_A", "FAB_A"}:
-        return "MGR001"
-    return None
+    return DEMO_MANAGER_BY_DEPARTMENT[department_id]
 
 
 def upsert_employees(db, rows: list[dict[str, str | None]]) -> None:
