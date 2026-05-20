@@ -86,13 +86,13 @@ try {
     Invoke-Compose exec -T db psql -U root -d access_control -c "TRUNCATE TABLE access_events, user_department_scopes, user_accounts, employees, departments RESTART IDENTITY CASCADE;"
 
     $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
-    Invoke-Compose exec -T redis redis-cli -a $redisPassword DEL access:events | Out-Null
+    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli DEL access:events | Out-Null
 
-    $bufferedKeys = Invoke-Compose exec -T redis redis-cli -a $redisPassword --scan --pattern "access:event-buffered:*"
+    $bufferedKeys = Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli --scan --pattern "access:event-buffered:*"
     foreach ($key in $bufferedKeys) {
         $trimmedKey = "$key".Trim()
         if ($trimmedKey) {
-            Invoke-Compose exec -T redis redis-cli -a $redisPassword DEL $trimmedKey | Out-Null
+            Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli DEL $trimmedKey | Out-Null
         }
     }
 
