@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -58,6 +59,11 @@ redis.call("XADD", KEYS[2], "*",
 return 1
 `
 
+const (
+	redisStartupRetryInterval = 2 * time.Second
+	redisStartupRetryTimeout  = 120 * time.Second
+)
+
 type RedisStore struct {
 	client redis.UniversalClient
 	cfg    Config
@@ -80,11 +86,38 @@ func NewRedisStore(ctx context.Context, cfg Config) (*RedisStore, error) {
 		})
 	}
 
-	if err := client.Ping(ctx).Err(); err != nil {
+	if err := waitForRedis(ctx, client); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 
 	return &RedisStore{client: client, cfg: cfg}, nil
+}
+
+func waitForRedis(ctx context.Context, client redis.UniversalClient) error {
+	deadline := time.NewTimer(redisStartupRetryTimeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(redisStartupRetryInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		if err := client.Ping(ctx).Err(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			log.Printf("redis is not ready yet; retrying in %s: %v", redisStartupRetryInterval, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("redis was not ready after %s: %w", redisStartupRetryTimeout, lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *RedisStore) Close() error {

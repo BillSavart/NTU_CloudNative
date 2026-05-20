@@ -61,10 +61,11 @@ TRUNCATE TABLE access_events, user_department_scopes, user_accounts, employees, 
 SQL
 
 docker-compose exec -T redis sh -c '
-redis-cli -a "$REDIS_PASSWORD" DEL access:events >/dev/null
-redis-cli -a "$REDIS_PASSWORD" --scan --pattern "access:event-buffered:*" |
+export REDISCLI_AUTH="$REDIS_PASSWORD"
+redis-cli DEL access:events >/dev/null
+redis-cli --scan --pattern "access:event-buffered:*" |
 while IFS= read -r key; do
-  [ -n "$key" ] && redis-cli -a "$REDIS_PASSWORD" DEL "$key" >/dev/null
+  [ -n "$key" ] && redis-cli DEL "$key" >/dev/null
 done
 '
 
