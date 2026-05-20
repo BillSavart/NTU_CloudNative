@@ -50,6 +50,23 @@ function Invoke-Compose {
     throw "Missing required command: docker-compose or docker compose"
 }
 
+function Get-DotEnvValue([string]$Name) {
+    if (-not (Test-Path ".env")) {
+        throw "Missing .env. Run: Copy-Item .env.example .env, then set passwords."
+    }
+
+    foreach ($line in Get-Content ".env") {
+        if ($line -match "^\s*#") {
+            continue
+        }
+        if ($line -match "^\s*$([regex]::Escape($Name))=(.*)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+
+    throw ".env is missing $Name."
+}
+
 if ($Help) {
     Show-Usage
     exit 0
@@ -68,8 +85,16 @@ try {
 
     Invoke-Compose exec -T db psql -U root -d access_control -c "TRUNCATE TABLE access_events, user_department_scopes, user_accounts, employees, departments RESTART IDENTITY CASCADE;"
 
-    $redisScript = 'redis-cli -a "$REDIS_PASSWORD" DEL access:events >/dev/null; keys="$(redis-cli -a "$REDIS_PASSWORD" --scan --pattern "access:event-buffered:*")"; [ -z "$keys" ] || printf "%s\n" "$keys" | xargs redis-cli -a "$REDIS_PASSWORD" DEL >/dev/null'
-    Invoke-Compose exec -T redis sh -c $redisScript
+    $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
+    Invoke-Compose exec -T redis redis-cli -a $redisPassword DEL access:events | Out-Null
+
+    $bufferedKeys = Invoke-Compose exec -T redis redis-cli -a $redisPassword --scan --pattern "access:event-buffered:*"
+    foreach ($key in $bufferedKeys) {
+        $trimmedKey = "$key".Trim()
+        if ($trimmedKey) {
+            Invoke-Compose exec -T redis redis-cli -a $redisPassword DEL $trimmedKey | Out-Null
+        }
+    }
 
     Write-Host "Reporting demo database reset complete."
 }
