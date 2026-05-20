@@ -157,6 +157,40 @@ function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
     throw "$Name did not become ready: $Url. Last error: $lastError"
 }
 
+function Wait-ReportingPort([int]$Attempts = 90) {
+    $uri = [Uri]$ReportingUrl
+    $hostName = $uri.Host
+    $port = $uri.Port
+    if ($port -lt 0) {
+        $port = if ($uri.Scheme -eq "https") { 443 } else { 80 }
+    }
+
+    for ($i = 0; $i -lt $Attempts; $i++) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $async = $client.BeginConnect($hostName, $port, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
+                $client.EndConnect($async)
+                return
+            }
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for Reporting API TCP port ${hostName}:${port} ($($i + 1)/$Attempts)"
+            }
+        }
+        catch {
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for Reporting API TCP port ${hostName}:${port} ($($i + 1)/$Attempts): $($_.Exception.Message)"
+            }
+        }
+        finally {
+            $client.Close()
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "Reporting API TCP port did not become ready: ${hostName}:${port}"
+}
+
 function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
@@ -255,6 +289,14 @@ try {
 
     Write-Section "6/9 Run load test"
     if ($Full) {
+        $env:EMPLOYEES = "90000"
+        $env:EMPLOYEE_PREFIX = "E$RunId"
+        $env:GATES = "50"
+        $env:DURATION = "30m"
+        $env:TIME_SCALE = "10"
+        $env:WORKERS = "200"
+        $env:ENTRY_RATIO = "0.995"
+        $env:DUPLICATE_PCT = "0.005"
         & (Join-Path $PSScriptRoot "run-access-load-test.ps1") -Full
     }
     else {
@@ -290,7 +332,7 @@ try {
 
     Write-Section "8/9 Keep Kafka down, start Reporting API, verify Redis recovery"
     Invoke-Compose start reporting-api
-    Wait-Url "Reporting API" "$ReportingUrl/api/health/" | Out-Null
+    Wait-ReportingPort
 
     Write-Host "Waiting for Redis recovery to write employeeId=$recoveryEmployee into DB..."
     Wait-ForEventInReporting $recoveryEmployee
