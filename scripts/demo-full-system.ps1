@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 Set-StrictMode -Version Latest
 
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -192,18 +193,53 @@ function Wait-ReportingPort([int]$Attempts = 90) {
 }
 
 function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
+    $lastError = ""
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
-            $events = Invoke-Http "GET" "$ReportingUrl/api/reports/access/events?limit=200"
-            if ($events -match [regex]::Escape($EmployeeId)) {
+            $count = Invoke-Compose exec -T db psql -U root -d access_control -t -A -c "SELECT count(*) FROM access_events WHERE employee_id = '$EmployeeId';"
+            $countText = ($count -join "").Trim()
+            if ([int]$countText -gt 0) {
+                Write-Host "Recovered employeeId=$EmployeeId is visible in PostgreSQL."
                 return
+            }
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for Redis recovery DB row employeeId=$EmployeeId ($($i + 1)/$Attempts), current count=$countText"
             }
         }
         catch {
+            $lastError = $_.Exception.Message
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for Redis recovery DB row employeeId=$EmployeeId ($($i + 1)/$Attempts): $lastError"
+            }
         }
         Start-Sleep -Seconds 2
     }
-    throw "Reporting API did not show recovered employeeId=$EmployeeId"
+
+    Write-Host ""
+    Write-Host "Container status while waiting for Redis recovery:"
+    try {
+        Invoke-Compose ps
+    }
+    catch {
+        Write-Host "Could not read docker compose status: $($_.Exception.Message)"
+    }
+    Write-Host ""
+    Write-Host "Recent reporting-api logs:"
+    try {
+        Invoke-Compose logs --tail 80 reporting-api
+    }
+    catch {
+        Write-Host "Could not read reporting-api logs: $($_.Exception.Message)"
+    }
+    Write-Host ""
+    Write-Host "Redis stream entries for employeeId=$EmployeeId:"
+    try {
+        Invoke-Compose exec -T redis redis-cli XRANGE access:events - + COUNT 200
+    }
+    catch {
+        Write-Host "Could not inspect Redis stream: $($_.Exception.Message)"
+    }
+    throw "PostgreSQL did not show recovered employeeId=$EmployeeId. Last error: $lastError"
 }
 
 function Assert-EnvFile {
@@ -338,7 +374,7 @@ try {
     Wait-ForEventInReporting $recoveryEmployee
 
     Write-Host "Recovered events:"
-    $recoveredEvents = Invoke-Http "GET" "$ReportingUrl/api/reports/access/events?limit=20"
+    $recoveredEvents = Invoke-Http "GET" "$ReportingUrl/api/reports/access/events?employeeId=$recoveryEmployee&limit=20"
     $recoveredEvents | ConvertFrom-Json | ConvertTo-Json -Depth 20
 
     Write-Section "9/9 Restore Kafka and show final status"
