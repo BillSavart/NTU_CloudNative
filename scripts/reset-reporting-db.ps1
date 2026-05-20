@@ -68,13 +68,7 @@ try {
 
     Invoke-Compose exec -T db psql -U root -d access_control -c "TRUNCATE TABLE access_events, user_department_scopes, user_accounts, employees, departments RESTART IDENTITY CASCADE;"
 
-    $redisScript = @'
-redis-cli -a "$REDIS_PASSWORD" DEL access:events >/dev/null
-redis-cli -a "$REDIS_PASSWORD" --scan --pattern "access:event-buffered:*" |
-while IFS= read -r key; do
-  [ -n "$key" ] && redis-cli -a "$REDIS_PASSWORD" DEL "$key" >/dev/null
-done
-'@
+    $redisScript = 'redis-cli -a "$REDIS_PASSWORD" DEL access:events >/dev/null; keys="$(redis-cli -a "$REDIS_PASSWORD" --scan --pattern "access:event-buffered:*")"; [ -z "$keys" ] || printf "%s\n" "$keys" | xargs redis-cli -a "$REDIS_PASSWORD" DEL >/dev/null'
     Invoke-Compose exec -T redis sh -c $redisScript
 
     Write-Host "Reporting demo database reset complete."
