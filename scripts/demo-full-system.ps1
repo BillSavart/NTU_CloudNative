@@ -290,6 +290,11 @@ function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
     throw "PostgreSQL did not show recovered employeeId=$EmployeeId. Last error: $lastError"
 }
 
+function Reset-RedisDemoDb {
+    $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
+    Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli FLUSHDB ASYNC | Out-Null
+}
+
 function Assert-EnvFile {
     if (-not (Test-Path ".env")) {
         throw "Missing .env. Run: Copy-Item .env.example .env, then set passwords."
@@ -418,6 +423,8 @@ try {
     Write-Host ""
 
     Write-Section "7/9 Simulate outage: stop Reporting API and Kafka"
+    Write-Host "Clearing Redis recovery buffer so the outage test only replays new outage events..."
+    Reset-RedisDemoDb
     Invoke-Compose stop reporting-api
     Invoke-Compose stop kafka-1 kafka-2 kafka-3
 
