@@ -133,6 +133,23 @@ function Get-JsonField([string]$Json, [string]$Field) {
     return [string]$value
 }
 
+function Get-DotEnvValue([string]$Name) {
+    if (-not (Test-Path ".env")) {
+        throw "Missing .env. Run: Copy-Item .env.example .env, then set passwords."
+    }
+
+    foreach ($line in Get-Content ".env") {
+        if ($line -match "^\s*#") {
+            continue
+        }
+        if ($line -match "^\s*$([regex]::Escape($Name))=(.*)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+
+    throw ".env is missing $Name."
+}
+
 function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
     $lastError = ""
     for ($i = 0; $i -lt $Attempts; $i++) {
@@ -192,6 +209,35 @@ function Wait-ReportingPort([int]$Attempts = 90) {
     throw "Reporting API TCP port did not become ready: ${hostName}:${port}"
 }
 
+function Wait-ReportingRecovery([int]$Attempts = 90) {
+    $lastStatus = ""
+    for ($i = 0; $i -lt $Attempts; $i++) {
+        try {
+            $health = Invoke-Http "GET" "$ReportingUrl/api/health/"
+            $healthObject = $health | ConvertFrom-Json
+            $lastStatus = $health
+            if ($healthObject.redisRecovery -and $healthObject.redisRecovery.running -eq $true) {
+                Write-Host "Reporting API redisRecovery is running."
+                return
+            }
+            if (($i % 5) -eq 0) {
+                $running = if ($healthObject.redisRecovery) { $healthObject.redisRecovery.running } else { "<missing>" }
+                $lastError = if ($healthObject.redisRecovery) { $healthObject.redisRecovery.last_error } else { "<missing>" }
+                Write-Host "Waiting for redisRecovery running=true ($($i + 1)/$Attempts), running=$running lastError=$lastError"
+            }
+        }
+        catch {
+            $lastStatus = $_.Exception.Message
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for Reporting API health ($($i + 1)/$Attempts): $lastStatus"
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "Reporting API redisRecovery did not become ready. Last status: $lastStatus"
+}
+
 function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
     $lastError = ""
     for ($i = 0; $i -lt $Attempts; $i++) {
@@ -234,7 +280,9 @@ function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
     Write-Host ""
     Write-Host "Redis stream entries for employeeId=${EmployeeId}:"
     try {
-        Invoke-Compose exec -T redis redis-cli XRANGE access:events - + COUNT 200
+        $redisPassword = Get-DotEnvValue "REDIS_PASSWORD"
+        Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli XINFO GROUPS access:events
+        Invoke-Compose exec -T -e "REDISCLI_AUTH=$redisPassword" redis redis-cli XRANGE access:events - + COUNT 500
     }
     catch {
         Write-Host "Could not inspect Redis stream: $($_.Exception.Message)"
@@ -381,11 +429,15 @@ try {
     }
     $recoverySwipe = Invoke-Swipe $recoveryEmployee "GATE_RECOVERY" "IN"
     Write-Host "Recovery swipe during outage: $recoverySwipe"
-    Write-Host ("Recovery decision={0} eventBuffered={1} kafkaQueued={2}" -f (Get-JsonField $recoverySwipe "decision"), (Get-JsonField $recoverySwipe "eventBuffered"), (Get-JsonField $recoverySwipe "kafkaQueued"))
+    $recoveryEventBuffered = Get-JsonField $recoverySwipe "eventBuffered"
+    Write-Host ("Recovery decision={0} eventBuffered={1} kafkaQueued={2}" -f (Get-JsonField $recoverySwipe "decision"), $recoveryEventBuffered, (Get-JsonField $recoverySwipe "kafkaQueued"))
+    if ($recoveryEventBuffered -ne "true") {
+        throw "Recovery swipe was not written to Redis Stream because eventBuffered=$recoveryEventBuffered. Response: $recoverySwipe"
+    }
 
     Write-Section "8/9 Keep Kafka down, start Reporting API, verify Redis recovery"
     Invoke-Compose start reporting-api
-    Wait-ReportingPort
+    Wait-ReportingRecovery
 
     Write-Host "Waiting for Redis recovery to write employeeId=$recoveryEmployee into DB..."
     Wait-ForEventInReporting $recoveryEmployee
