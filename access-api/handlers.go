@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 
 type App struct {
 	cfg        Config
-	store      *RedisStore
+	store      AccessStore
 	publisher  EventPublisher
 	instanceID string
 
@@ -25,7 +26,16 @@ type App struct {
 	bufferedEvents atomic.Int64
 }
 
-func NewApp(cfg Config, store *RedisStore, publisher EventPublisher) *App {
+type AccessStore interface {
+	Ping(ctx context.Context) error
+	DecideAccess(ctx context.Context, employeeID, direction string) (AccessDecision, error)
+	GetState(ctx context.Context, employeeID string) (string, bool, error)
+	ResetState(ctx context.Context, employeeID string) error
+	AppendEventOnce(ctx context.Context, event AccessEvent) error
+	ListEvents(ctx context.Context, limit int64) ([]EventDTO, error)
+}
+
+func NewApp(cfg Config, store AccessStore, publisher EventPublisher) *App {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = "unknown"

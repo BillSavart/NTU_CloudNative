@@ -1,0 +1,42 @@
+name: Docker Compose E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 18 * * *'
+
+jobs:
+  e2e-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create CI environment file
+        run: |
+          cat > .env <<'ENV'
+          POSTGRES_DB=access_control
+          POSTGRES_USER=root
+          POSTGRES_PASSWORD=ntu-cloudnative-ci
+          REDIS_PASSWORD=ntu-cloudnative-ci
+          GRAFANA_ADMIN_USER=admin
+          GRAFANA_ADMIN_PASSWORD=ntu-cloudnative-ci
+          APP_SECRET_KEY=ntu-cloudnative-ci-secret
+          ENV
+      - name: Run Docker Compose E2E
+        env:
+          E2E_CLEANUP: 'true'
+        run: ./scripts/test-e2e-compose.sh
+      - name: Upload docker logs on failure
+        if: failure()
+        run: |
+          docker compose ps > compose-ps.txt || true
+          docker compose logs --no-color > compose-logs.txt || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: compose-debug-logs
+          path: |
+            compose-ps.txt
+            compose-logs.txt
