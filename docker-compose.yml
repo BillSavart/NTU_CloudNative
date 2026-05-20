@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -38,7 +38,7 @@ services:
   access-lb:
     image: nginx:1.27-alpine
     ports:
-      - "8080:8080"
+      - "${ACCESS_HOST_PORT:-8080}:8080"
     volumes:
       - ./infra/nginx/access-api.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -73,7 +73,7 @@ services:
       REDIS_RECOVERY_BLOCK_MS: "5000"
       REDIS_RECOVERY_BATCH_SIZE: "100"
     ports:
-      - "8000:8000"
+      - "${REPORTING_HOST_PORT:-8000}:8000"
     depends_on:
       - db
       - kafka-1
@@ -83,7 +83,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.0.1
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -97,7 +97,7 @@ services:
   grafana:
     image: grafana/grafana:11.4.0
     ports:
-      - "3000:3000"
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -114,7 +114,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     command: sh -c "redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redisdata:/data
 
@@ -139,7 +139,7 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
-      - "26379:26379"
+      - "${REDIS_SENTINEL_1_HOST_PORT:-26379}:26379"
     command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
@@ -153,7 +153,7 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
-      - "26380:26379"
+      - "${REDIS_SENTINEL_2_HOST_PORT:-26380}:26379"
     command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
@@ -167,7 +167,7 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
-      - "26381:26379"
+      - "${REDIS_SENTINEL_3_HOST_PORT:-26381}:26379"
     command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && echo \"sentinel auth-pass mymaster $$REDIS_PASSWORD\" >> /tmp/sentinel.conf && redis-server /tmp/sentinel.conf --sentinel"
     volumes:
       - ./infra/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
@@ -179,14 +179,14 @@ services:
   kafka-1:
     image: apache/kafka:3.9.0
     ports:
-      - "19092:19092"
+      - "${KAFKA_1_HOST_PORT:-19092}:19092"
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:19092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:${KAFKA_1_HOST_PORT:-19092}
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -200,14 +200,14 @@ services:
   kafka-2:
     image: apache/kafka:3.9.0
     ports:
-      - "29092:29092"
+      - "${KAFKA_2_HOST_PORT:-29092}:29092"
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 2
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,EXTERNAL://localhost:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,EXTERNAL://localhost:${KAFKA_2_HOST_PORT:-29092}
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -221,14 +221,14 @@ services:
   kafka-3:
     image: apache/kafka:3.9.0
     ports:
-      - "39092:39092"
+      - "${KAFKA_3_HOST_PORT:-39092}:39092"
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 3
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:39092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092,EXTERNAL://localhost:39092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092,EXTERNAL://localhost:${KAFKA_3_HOST_PORT:-39092}
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT

@@ -17,6 +17,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+sqlite_autoincrement_id = BigInteger().with_variant(Integer, "sqlite")
+
+
 class Department(Base):
     __tablename__ = "departments"
 
@@ -93,7 +96,7 @@ class Employee(Base):
 class UserAccount(Base):
     __tablename__ = "user_accounts"
 
-    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(sqlite_autoincrement_id, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="EMPLOYEE")
@@ -134,9 +137,9 @@ class UserAccount(Base):
 class UserDepartmentScope(Base):
     __tablename__ = "user_department_scopes"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(sqlite_autoincrement_id, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        BigInteger,
+        sqlite_autoincrement_id,
         ForeignKey("user_accounts.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -165,7 +168,7 @@ class UserDepartmentScope(Base):
 class AccessEvent(Base):
     __tablename__ = "access_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(sqlite_autoincrement_id, primary_key=True, autoincrement=True)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
     employee_id: Mapped[str] = mapped_column(
         String(64),

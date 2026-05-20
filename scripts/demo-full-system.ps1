@@ -268,6 +268,27 @@ Push-Location $RootDir
 try {
     Assert-EnvFile
 
+    $basicEmployee = "DEMO$RunId"
+    $recoveryEmployee = "REC$RunId"
+    if ($Full) {
+        $loadEmployees = if ($env:EMPLOYEES) { $env:EMPLOYEES } else { "90000" }
+        $loadEmployeePrefix = if ($env:EMPLOYEE_PREFIX) { $env:EMPLOYEE_PREFIX } else { "E$RunId" }
+        $loadGates = if ($env:GATES) { $env:GATES } else { "50" }
+        $loadDuration = if ($env:DURATION) { $env:DURATION } else { "30m" }
+        $loadTimeScale = if ($env:TIME_SCALE) { $env:TIME_SCALE } else { "10" }
+        $loadWorkers = if ($env:WORKERS) { $env:WORKERS } else { "200" }
+        $loadProgressEvery = if ($env:PROGRESS_EVERY) { $env:PROGRESS_EVERY } else { "3s" }
+    }
+    else {
+        $loadEmployees = if ($env:EMPLOYEES) { $env:EMPLOYEES } else { "1000" }
+        $loadEmployeePrefix = if ($env:EMPLOYEE_PREFIX) { $env:EMPLOYEE_PREFIX } else { "LOAD$RunId" }
+        $loadGates = if ($env:GATES) { $env:GATES } else { "10" }
+        $loadDuration = if ($env:DURATION) { $env:DURATION } else { "2m" }
+        $loadTimeScale = if ($env:TIME_SCALE) { $env:TIME_SCALE } else { "120" }
+        $loadWorkers = if ($env:WORKERS) { $env:WORKERS } else { "50" }
+        $loadProgressEvery = if ($env:PROGRESS_EVERY) { $env:PROGRESS_EVERY } else { "3s" }
+    }
+
     Write-Section "1/9 Start full stack"
     $composeArgs = @("up", "-d", "--scale", "access-api=3")
     if (-not $NoBuild) {
@@ -297,10 +318,13 @@ try {
 
     Write-Section "4/9 Clear old demo data"
     & (Join-Path $PSScriptRoot "reset-reporting-db.ps1") -Yes
+    $env:DEMO_BASIC_EMPLOYEE_ID = $basicEmployee
+    $env:DEMO_RECOVERY_EMPLOYEE_ID = $recoveryEmployee
+    $env:DEMO_LOAD_EMPLOYEE_PREFIX = $loadEmployeePrefix
+    $env:DEMO_LOAD_EMPLOYEES = $loadEmployees
     & (Join-Path $PSScriptRoot "seed-reporting-demo-data.ps1")
 
     Write-Section "5/9 Basic Anti-Passback demo"
-    $basicEmployee = "DEMO$RunId"
     try {
         Invoke-Http "POST" "$AccessUrl/api/access/reset/$basicEmployee" | Out-Null
     }
@@ -324,25 +348,19 @@ try {
     Write-Host ""
 
     Write-Section "6/9 Run load test"
+    $env:EMPLOYEES = $loadEmployees
+    $env:EMPLOYEE_PREFIX = $loadEmployeePrefix
+    $env:GATES = $loadGates
+    $env:DURATION = $loadDuration
+    $env:TIME_SCALE = $loadTimeScale
+    $env:WORKERS = $loadWorkers
+    $env:PROGRESS_EVERY = $loadProgressEvery
     if ($Full) {
-        $env:EMPLOYEES = "90000"
-        $env:EMPLOYEE_PREFIX = "E$RunId"
-        $env:GATES = "50"
-        $env:DURATION = "30m"
-        $env:TIME_SCALE = "10"
-        $env:WORKERS = "200"
         $env:ENTRY_RATIO = "0.995"
         $env:DUPLICATE_PCT = "0.005"
         & (Join-Path $PSScriptRoot "run-access-load-test.ps1") -Full
     }
     else {
-        if (-not $env:EMPLOYEES) { $env:EMPLOYEES = "1000" }
-        if (-not $env:EMPLOYEE_PREFIX) { $env:EMPLOYEE_PREFIX = "LOAD$RunId" }
-        if (-not $env:GATES) { $env:GATES = "10" }
-        if (-not $env:DURATION) { $env:DURATION = "2m" }
-        if (-not $env:TIME_SCALE) { $env:TIME_SCALE = "120" }
-        if (-not $env:WORKERS) { $env:WORKERS = "50" }
-        if (-not $env:PROGRESS_EVERY) { $env:PROGRESS_EVERY = "3s" }
         & (Join-Path $PSScriptRoot "run-access-load-test.ps1")
     }
 
@@ -352,7 +370,6 @@ try {
     Write-Host ""
 
     Write-Section "7/9 Simulate outage: stop Reporting API and Kafka"
-    $recoveryEmployee = "REC$RunId"
     Invoke-Compose stop reporting-api
     Invoke-Compose stop kafka-1 kafka-2 kafka-3
 

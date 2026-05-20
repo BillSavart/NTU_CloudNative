@@ -137,6 +137,27 @@ need go
 need python3
 ensure_env
 
+basic_employee="DEMO${RUN_ID}"
+recovery_employee="REC${RUN_ID}"
+
+if [[ "$FULL" == true ]]; then
+  LOAD_EMPLOYEES="${EMPLOYEES:-90000}"
+  LOAD_EMPLOYEE_PREFIX="${EMPLOYEE_PREFIX:-E${RUN_ID}}"
+  LOAD_GATES="${GATES:-50}"
+  LOAD_DURATION="${DURATION:-30m}"
+  LOAD_TIME_SCALE="${TIME_SCALE:-10}"
+  LOAD_WORKERS="${WORKERS:-200}"
+  LOAD_PROGRESS_EVERY="${PROGRESS_EVERY:-3s}"
+else
+  LOAD_EMPLOYEES="${EMPLOYEES:-1000}"
+  LOAD_EMPLOYEE_PREFIX="${EMPLOYEE_PREFIX:-LOAD${RUN_ID}}"
+  LOAD_GATES="${GATES:-10}"
+  LOAD_DURATION="${DURATION:-2m}"
+  LOAD_TIME_SCALE="${TIME_SCALE:-120}"
+  LOAD_WORKERS="${WORKERS:-50}"
+  LOAD_PROGRESS_EVERY="${PROGRESS_EVERY:-3s}"
+fi
+
 log "1/9 啟動完整 stack"
 compose_args=(up -d --scale access-api=3)
 if [[ "$REBUILD" == true ]]; then
@@ -172,10 +193,13 @@ docker-compose exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
 
 log "4/9 清空舊 demo 資料"
 ./scripts/reset-reporting-db.sh --yes
-./scripts/seed-reporting-demo-data.sh
+DEMO_BASIC_EMPLOYEE_ID="$basic_employee" \
+DEMO_RECOVERY_EMPLOYEE_ID="$recovery_employee" \
+DEMO_LOAD_EMPLOYEE_PREFIX="$LOAD_EMPLOYEE_PREFIX" \
+DEMO_LOAD_EMPLOYEES="$LOAD_EMPLOYEES" \
+  ./scripts/seed-reporting-demo-data.sh
 
 log "5/9 基本 Anti-Passback demo"
-basic_employee="DEMO${RUN_ID}"
 curl -fsS -X POST "$ACCESS_URL/api/access/reset/$basic_employee" >/dev/null
 
 entry_1="$(swipe "$basic_employee" GATE_A IN)"
@@ -201,15 +225,22 @@ printf '\n'
 
 log "6/9 執行壓力測試"
 if [[ "$FULL" == true ]]; then
-  ./scripts/run-access-load-test.sh --full
+  EMPLOYEES="$LOAD_EMPLOYEES" \
+  EMPLOYEE_PREFIX="$LOAD_EMPLOYEE_PREFIX" \
+  GATES="$LOAD_GATES" \
+  DURATION="$LOAD_DURATION" \
+  TIME_SCALE="$LOAD_TIME_SCALE" \
+  WORKERS="$LOAD_WORKERS" \
+  PROGRESS_EVERY="$LOAD_PROGRESS_EVERY" \
+    ./scripts/run-access-load-test.sh --full
 else
-  EMPLOYEES="${EMPLOYEES:-1000}" \
-  EMPLOYEE_PREFIX="${EMPLOYEE_PREFIX:-LOAD${RUN_ID}}" \
-  GATES="${GATES:-10}" \
-  DURATION="${DURATION:-2m}" \
-  TIME_SCALE="${TIME_SCALE:-120}" \
-  WORKERS="${WORKERS:-50}" \
-  PROGRESS_EVERY="${PROGRESS_EVERY:-3s}" \
+  EMPLOYEES="$LOAD_EMPLOYEES" \
+  EMPLOYEE_PREFIX="$LOAD_EMPLOYEE_PREFIX" \
+  GATES="$LOAD_GATES" \
+  DURATION="$LOAD_DURATION" \
+  TIME_SCALE="$LOAD_TIME_SCALE" \
+  WORKERS="$LOAD_WORKERS" \
+  PROGRESS_EVERY="$LOAD_PROGRESS_EVERY" \
     ./scripts/run-access-load-test.sh
 fi
 
@@ -219,7 +250,6 @@ curl -fsS "$REPORTING_URL/api/reports/access/summary"
 printf '\n'
 
 log "7/9 模擬斷線：停 Reporting API 與 Kafka"
-recovery_employee="REC${RUN_ID}"
 docker-compose stop reporting-api
 docker-compose stop kafka-1 kafka-2 kafka-3
 
