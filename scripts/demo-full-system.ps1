@@ -93,6 +93,7 @@ function Invoke-Http([string]$Method, [string]$Url, [string]$Body = $null, [stri
         Method          = $Method
         Uri             = $Url
         UseBasicParsing = $true
+        Proxy           = $null
     }
     if ($null -ne $Body) {
         $params.Body = $Body
@@ -128,15 +129,28 @@ function Get-JsonField([string]$Json, [string]$Field) {
 }
 
 function Wait-Url([string]$Name, [string]$Url, [int]$Attempts = 90) {
+    $lastError = ""
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
             return Invoke-Http "GET" $Url
         }
         catch {
+            $lastError = $_.Exception.Message
+            if (($i % 5) -eq 0) {
+                Write-Host "Waiting for $Name at $Url ($($i + 1)/$Attempts): $lastError"
+            }
             Start-Sleep -Seconds 2
         }
     }
-    throw "$Name did not become ready: $Url"
+    Write-Host ""
+    Write-Host "Container status while waiting for $Name:"
+    try {
+        Invoke-Compose ps
+    }
+    catch {
+        Write-Host "Could not read docker compose status: $($_.Exception.Message)"
+    }
+    throw "$Name did not become ready: $Url. Last error: $lastError"
 }
 
 function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
