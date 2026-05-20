@@ -232,7 +232,7 @@ function Wait-ForEventInReporting([string]$EmployeeId, [int]$Attempts = 60) {
         Write-Host "Could not read reporting-api logs: $($_.Exception.Message)"
     }
     Write-Host ""
-    Write-Host "Redis stream entries for employeeId=$EmployeeId:"
+    Write-Host "Redis stream entries for employeeId=${EmployeeId}:"
     try {
         Invoke-Compose exec -T redis redis-cli XRANGE access:events - + COUNT 200
     }
