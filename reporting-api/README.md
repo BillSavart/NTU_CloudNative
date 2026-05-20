@@ -155,6 +155,18 @@ employee / demo123
 ./scripts/seed-reporting-demo-data.sh
 ```
 
+`seed-reporting-demo-data.sh` 也可以預先建立壓測會用到的完整員工主檔，避免 full demo 期間只靠 event 自動產生只有 `employee_id` 的 minimal row：
+
+```bash
+DEMO_LOAD_EMPLOYEE_PREFIX=E20260520120000 \
+DEMO_LOAD_EMPLOYEES=90000 \
+DEMO_BASIC_EMPLOYEE_ID=DEMO20260520120000 \
+DEMO_RECOVERY_EMPLOYEE_ID=REC20260520120000 \
+  ./scripts/seed-reporting-demo-data.sh
+```
+
+`scripts/demo-full-system.sh` 會自動用同一組 `RUN_ID`、`EMPLOYEE_PREFIX`、`EMPLOYEES` 先 seed 完整主檔，再執行基本刷卡、壓測與 Redis recovery demo。
+
 ### Reports
 
 即時彙總：

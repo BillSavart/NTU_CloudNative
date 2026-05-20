@@ -23,7 +23,20 @@ function Invoke-Compose {
 
 Push-Location $RootDir
 try {
-    Invoke-Compose exec -T reporting-api python -m app.seed
+    $execArgs = @("exec", "-T")
+    foreach ($envName in @(
+        "DEMO_BASIC_EMPLOYEE_ID",
+        "DEMO_RECOVERY_EMPLOYEE_ID",
+        "DEMO_LOAD_EMPLOYEE_PREFIX",
+        "DEMO_LOAD_EMPLOYEES"
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($envName)
+        if ($value) {
+            $execArgs += @("-e", "$envName=$value")
+        }
+    }
+
+    Invoke-Compose @execArgs reporting-api python -m app.seed
 
     @"
 Demo users:

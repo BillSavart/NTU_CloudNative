@@ -4,7 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT_DIR"
-docker-compose exec -T reporting-api python -m app.seed
+exec_args=(exec -T)
+for env_name in \
+  DEMO_BASIC_EMPLOYEE_ID \
+  DEMO_RECOVERY_EMPLOYEE_ID \
+  DEMO_LOAD_EMPLOYEE_PREFIX \
+  DEMO_LOAD_EMPLOYEES
+do
+  if [[ -n "${!env_name:-}" ]]; then
+    exec_args+=(-e "$env_name=${!env_name}")
+  fi
+done
+
+docker-compose "${exec_args[@]}" reporting-api python -m app.seed
 
 cat <<'EOF'
 Demo users:
