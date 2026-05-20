@@ -109,6 +109,13 @@ wait_for_event_in_reporting() {
   return 1
 }
 
+reset_redis_demo_db() {
+  docker-compose exec -T redis sh -c '
+export REDISCLI_AUTH="$REDIS_PASSWORD"
+redis-cli FLUSHDB ASYNC >/dev/null
+'
+}
+
 ensure_env() {
   [[ -f .env ]] || {
     echo "找不到 .env，請先 cp .env.example .env 並設定密碼。" >&2
@@ -250,6 +257,8 @@ curl -fsS "$REPORTING_URL/api/reports/access/summary"
 printf '\n'
 
 log "7/9 模擬斷線：停 Reporting API 與 Kafka"
+printf 'Clearing Redis recovery buffer so the outage test only replays new outage events...\n'
+reset_redis_demo_db
 docker-compose stop reporting-api
 docker-compose stop kafka-1 kafka-2 kafka-3
 
