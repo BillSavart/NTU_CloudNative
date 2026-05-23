@@ -11,6 +11,11 @@ from app.consumers.redis_recovery import RedisRecoveryConsumerService
 from app.migrations import run_migrations
 from app.routers import auth, health, reports
 
+try:
+    from app.observability import install_observability
+except ImportError:
+    install_observability = None
+
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -68,6 +73,8 @@ if settings.cors_origin_list:
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(reports.router, prefix="/api", tags=["reports"])
+if install_observability is not None:
+    install_observability(app)
 
 
 @app.get("/")
