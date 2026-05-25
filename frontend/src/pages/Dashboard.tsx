@@ -1,52 +1,80 @@
-import HeaderAlert from '../components/dashboard/HeaderAlert'
-import RealTimeOverview from '../components/dashboard/RealTimeOverview'
-import CriticalAlertsPanel from '../components/dashboard/CriticalAlertsPanel'
-import AttendanceReport from '../components/dashboard/AttendanceReport'
-import '../pages/dashboard.css'
+﻿import { Link } from 'react-router-dom'
+import AppShell from '../components/layout/AppShell'
 
 function Dashboard() {
   return (
-    <div className="d-flex" style={{ minHeight: '100vh', backgroundColor: '#f4f7f9' }}>
-      {/* 左側深藍色導覽列 (Sidebar) */}
-      <div className="d-flex flex-column flex-shrink-0 text-white sidebar">
-        <ul className="nav nav-pills nav-flush flex-column mb-auto text-center pt-4">
-          <li className="nav-item mb-4"><a href="#home" className="nav-link active py-3 text-white"><i className="bi bi-house-door-fill fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#calendar" className="nav-link py-3 text-white-50"><i className="bi bi-calendar3 fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#clock" className="nav-link py-3 text-white-50"><i className="bi bi-clock-fill fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#airplane" className="nav-link py-3 text-white-50"><i className="bi bi-airplane-fill fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#send" className="nav-link py-3 text-white-50"><i className="bi bi-send-fill fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#edit" className="nav-link py-3 text-white-50"><i className="bi bi-pencil-square fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#lock" className="nav-link py-3 text-white-50"><i className="bi bi-lock-fill fs-4"></i></a></li>
-          <li className="nav-item mb-4"><a href="#analytics" className="nav-link py-3 text-white-50"><i className="bi bi-bar-chart-line-fill fs-4"></i></a></li>
-        </ul>
-      </div>
+    <AppShell title="首頁總覽" subtitle="今日出勤狀態與異常摘要">
+      <section className="kpi-grid">
+        <div className="kpi-card">
+          <div className="kpi-label">今日出勤</div>
+          <div className="kpi-value">428</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">遲到人數</div>
+          <div className="kpi-value">17</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">缺勤人數</div>
+          <div className="kpi-value">5</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">超時警示</div>
+          <div className="kpi-value danger-text">9</div>
+        </div>
+      </section>
 
-      {/* 右側主內容區 */}
-      <div className="flex-grow-1 d-flex flex-column">
-        <HeaderAlert count={2} />
-
-        <div className="bg-white border-bottom py-3 px-4 d-flex align-items-center">
-          <i className="bi bi-list fs-4 me-3 text-dark"></i>
-          <span className="fw-bold text-dark fs-5">出勤管理</span>
+      <section className="panel-grid">
+        <div className="panel-card">
+          <h2 className="h6 mb-3">即時刷卡事件</h2>
+          <table className="table-clean">
+            <thead>
+              <tr>
+                <th>時間</th>
+                <th>員工</th>
+                <th>部門</th>
+                <th>狀態</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>09:42:18</td>
+                <td>E10352</td>
+                <td>FAB_A</td>
+                <td>IN</td>
+              </tr>
+              <tr>
+                <td>09:41:55</td>
+                <td>E22701</td>
+                <td>FAB_C</td>
+                <td>OUT</td>
+              </tr>
+              <tr>
+                <td>09:41:43</td>
+                <td>E04820</td>
+                <td>FAB_B</td>
+                <td>IN</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
 
-        <div className="p-4 flex-grow-1">
-          <h1 className="h3 fw-bold mb-4 text-dark">2026 年 5 月 20 號</h1>
-
-          <div className="row g-4 align-items-stretch">
-            <div className="col-lg-4">
-              <RealTimeOverview />
-            </div>
-            <div className="col-lg-4">
-              <CriticalAlertsPanel />
-            </div>
-            <div className="col-lg-4">
-              <AttendanceReport />
-            </div>
-          </div>
+        <div className="panel-card">
+          <h2 className="h6 mb-3">待處理異常</h2>
+          <Link className="alert-link-row" to="/alerts?type=overtime_daily">
+            <span>單日超過 12 小時</span>
+            <span className="danger-text">6</span>
+          </Link>
+          <Link className="alert-link-row" to="/alerts?type=overtime_crossday">
+            <span>跨日連續超時</span>
+            <span className="danger-text">2</span>
+          </Link>
+          <Link className="alert-link-row" to="/alerts?type=unpaired_access">
+            <span>未配對進出紀錄</span>
+            <span className="danger-text">1</span>
+          </Link>
         </div>
-      </div>
-    </div>
+      </section>
+    </AppShell>
   )
 }
 
