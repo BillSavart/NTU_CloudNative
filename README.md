@@ -200,6 +200,18 @@ docker-compose exec reporting-api alembic upgrade head
 ./scripts/seed-reporting-demo-data.sh
 ```
 
+若要一鍵準備本機 demo，包括 Docker Compose stack、frontend dashboard、Prometheus/Grafana、demo 帳號 seed、刷卡 smoke test 與 demo URL 清單：
+
+```bash
+./scripts/demo-local-oneclick.sh
+```
+
+若只是重跑健康檢查與刷卡 smoke test，不想重建 image 或清掉既有資料：
+
+```bash
+./scripts/demo-local-oneclick.sh --no-build --no-reset
+```
+
 若要一鍵執行完整 demo，包括啟動服務、清資料、基本刷卡、壓力測試與斷線恢復測試：
 
 ```bash
