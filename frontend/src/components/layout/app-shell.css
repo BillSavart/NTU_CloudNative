@@ -33,10 +33,12 @@
   color: #334155;
   font-size: 14px;
   font-weight: 500;
+  transition: background-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
 .attendance-nav-item:hover {
   background: #eff4fa;
+  transform: translateY(-1px);
 }
 
 .attendance-nav-item.active {
@@ -109,6 +111,7 @@
   border: 1px solid #d9e0e7;
   border-radius: 10px;
   padding: 14px;
+  transition: border-color 160ms ease;
 }
 
 .kpi-label {
@@ -140,6 +143,27 @@
   padding: 10px 8px;
   border-bottom: 1px solid #e2e8f0;
   text-align: left;
+}
+
+.table-clean tbody tr {
+  transition: background-color 160ms ease;
+}
+
+.table-clean tbody tr:hover {
+  background: #f8fafc;
+}
+
+.table-row-new {
+  animation: tableRowNew 1500ms ease-out 1;
+}
+
+@keyframes tableRowNew {
+  0% {
+    background: #fff7ed;
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .table-clean th {

@@ -7,7 +7,7 @@ type AlertType = 'overtime_daily' | 'overtime_crossday' | 'unpaired_access'
 type AlertItem = {
   id: string
   employeeId: string
-  name: string
+  departmentId: string
   type: AlertType
   typeLabel: string
   hours: string
@@ -19,7 +19,7 @@ const seedAlerts: AlertItem[] = [
   {
     id: 'A-1',
     employeeId: 'E14502',
-    name: '王小明',
+    departmentId: 'FAB_A',
     type: 'overtime_daily',
     typeLabel: '超過 12 小時',
     hours: '13.5h',
@@ -29,7 +29,7 @@ const seedAlerts: AlertItem[] = [
   {
     id: 'A-2',
     employeeId: 'E10210',
-    name: '陳怡君',
+    departmentId: 'FAB_B',
     type: 'overtime_crossday',
     typeLabel: '跨日連續超時',
     hours: '12.8h',
@@ -39,7 +39,7 @@ const seedAlerts: AlertItem[] = [
   {
     id: 'A-3',
     employeeId: 'E22031',
-    name: '林俊傑',
+    departmentId: 'SECURITY',
     type: 'unpaired_access',
     typeLabel: '未配對進出紀錄',
     hours: '-',
@@ -63,7 +63,7 @@ function ComplianceAlerts() {
       const keywordMatch =
         keyword.trim() === '' ||
         item.employeeId.toLowerCase().includes(keyword.toLowerCase()) ||
-        item.name.toLowerCase().includes(keyword.toLowerCase())
+        item.departmentId.toLowerCase().includes(keyword.toLowerCase())
 
       return typeMatch && keywordMatch
     })
@@ -139,7 +139,7 @@ function ComplianceAlerts() {
           <thead>
             <tr>
               <th>員工編號</th>
-              <th>姓名</th>
+              <th>部門</th>
               <th>異常類型</th>
               <th>連續工時</th>
               <th>發生時間</th>
@@ -154,7 +154,7 @@ function ComplianceAlerts() {
               return (
                 <tr key={item.id}>
                   <td>{item.employeeId}</td>
-                  <td>{item.name}</td>
+                  <td>{item.departmentId}</td>
                   <td className="danger-text">{item.typeLabel}</td>
                   <td className="danger-text">{item.hours}</td>
                   <td>{item.occurredAt}</td>

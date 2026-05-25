@@ -44,9 +44,12 @@ def serialize_department_tree(departments: list[Department]) -> list[dict[str, A
 
 
 def serialize_access_event(event: AccessEvent) -> dict[str, Any]:
+    employee = event.employee
     return {
         "requestId": event.request_id,
         "employeeId": event.employee_id,
+        "displayName": employee.display_name if employee else None,
+        "departmentId": employee.department_id if employee else None,
         "gateId": event.gate_id,
         "direction": event.direction,
         "decision": event.decision,

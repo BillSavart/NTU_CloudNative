@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.models import AccessEvent, Department, Employee, UserAccount
@@ -323,7 +323,11 @@ def _scoped_event_select(
     from_time: datetime | None,
     to_time: datetime | None,
 ):
-    query = select(AccessEvent).join(Employee, AccessEvent.employee_id == Employee.employee_id)
+    query = (
+        select(AccessEvent)
+        .join(Employee, AccessEvent.employee_id == Employee.employee_id)
+        .options(selectinload(AccessEvent.employee))
+    )
     visible_ids = _visible_department_ids(db, current_user, department_id)
     if visible_ids is not None:
         query = query.where(Employee.department_id.in_(visible_ids))

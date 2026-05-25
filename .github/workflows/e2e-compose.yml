@@ -8,6 +8,9 @@ on:
   schedule:
     - cron: '0 18 * * *'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   e2e-compose:
     runs-on: ubuntu-latest
