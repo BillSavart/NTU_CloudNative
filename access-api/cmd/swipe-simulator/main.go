@@ -29,6 +29,8 @@ type Config struct {
 	TimeScale      float64
 	Workers        int
 	Seed           int64
+	Profile        string
+	InitialInside  float64
 	EntryRatio     float64
 	DuplicatePct   float64
 	HTTPTimeout    time.Duration
@@ -49,6 +51,11 @@ type SwipeResponse struct {
 type ScheduledSwipe struct {
 	At      time.Duration
 	Request SwipeRequest
+}
+
+type Scenario struct {
+	Setup  []SwipeRequest
+	Swipes []ScheduledSwipe
 }
 
 type Result struct {
@@ -78,9 +85,15 @@ func main() {
 	cfg := parseFlags()
 	rng := rand.New(rand.NewSource(cfg.Seed))
 
-	swipes := buildSchedule(cfg, rng)
-	log.Printf("simulating %d swipes: employees=%d gates=%d simulatedDuration=%s timeScale=%.2fx workers=%d",
-		len(swipes), cfg.Employees, cfg.Gates, cfg.Duration, cfg.TimeScale, cfg.Workers)
+	scenario := buildScenario(cfg, rng)
+	log.Printf("simulating %d setup swipes and %d timed swipes: profile=%s employees=%d gates=%d simulatedDuration=%s timeScale=%.2fx workers=%d",
+		len(scenario.Setup), len(scenario.Swipes), cfg.Profile, cfg.Employees, cfg.Gates, cfg.Duration, cfg.TimeScale, cfg.Workers)
+
+	if len(scenario.Setup) > 0 {
+		log.Printf("preloading initial in-factory population: %d employees", len(scenario.Setup))
+		setupStats, setupElapsed := runImmediateRequests(cfg, scenario.Setup)
+		printSetupSummary(&setupStats, len(scenario.Setup), setupElapsed)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -101,9 +114,9 @@ func main() {
 	go collectStats(results, &stats, statsDone)
 
 	start := time.Now()
-	go reportProgress(&stats, len(swipes), start, progressDone, cfg.ProgressEvery)
+	go reportProgress(&stats, len(scenario.Swipes), start, progressDone, cfg.ProgressEvery)
 
-	for _, swipe := range swipes {
+	for _, swipe := range scenario.Swipes {
 		waitUntil(start, swipe.At, cfg.TimeScale)
 		jobs <- swipe.Request
 	}
@@ -115,7 +128,7 @@ func main() {
 	close(progressDone)
 
 	elapsed := time.Since(start)
-	printSummary(&stats, len(swipes), elapsed, cfg)
+	printSummary(&stats, len(scenario.Swipes), elapsed, cfg)
 }
 
 func parseFlags() Config {
@@ -128,6 +141,8 @@ func parseFlags() Config {
 	flag.Float64Var(&cfg.TimeScale, "time-scale", envFloat("SIM_TIME_SCALE", 10), "simulation speedup; 10 means 30 simulated minutes run in about 3 real minutes")
 	flag.IntVar(&cfg.Workers, "workers", envInt("SIM_WORKERS", 200), "concurrent HTTP workers")
 	flag.Int64Var(&cfg.Seed, "seed", envInt64("SIM_SEED", time.Now().UnixNano()), "random seed")
+	flag.StringVar(&cfg.Profile, "profile", envString("SIM_PROFILE", "peak"), "traffic profile: peak or normal")
+	flag.Float64Var(&cfg.InitialInside, "initial-inside-ratio", envFloat("SIM_INITIAL_INSIDE_RATIO", 0.35), "normal profile: fraction of employees already inside before the timed demo starts")
 	flag.Float64Var(&cfg.EntryRatio, "entry-ratio", envFloat("SIM_ENTRY_RATIO", 0.995), "ratio of first swipes that are IN")
 	flag.Float64Var(&cfg.DuplicatePct, "duplicate-pct", envFloat("SIM_DUPLICATE_PCT", 0.005), "extra duplicate swipes as a fraction of employee count")
 	flag.DurationVar(&cfg.HTTPTimeout, "http-timeout", envDuration("SIM_HTTP_TIMEOUT", 3*time.Second), "per-request timeout")
@@ -154,6 +169,13 @@ func parseFlags() Config {
 	if cfg.Workers <= 0 {
 		fail("workers must be > 0")
 	}
+	cfg.Profile = strings.ToLower(strings.TrimSpace(cfg.Profile))
+	if cfg.Profile != "normal" && cfg.Profile != "peak" {
+		fail("profile must be normal or peak")
+	}
+	if cfg.InitialInside < 0 || cfg.InitialInside > 1 {
+		fail("initial-inside-ratio must be between 0 and 1")
+	}
 	if cfg.EntryRatio < 0 || cfg.EntryRatio > 1 {
 		fail("entry-ratio must be between 0 and 1")
 	}
@@ -167,7 +189,15 @@ func parseFlags() Config {
 	return cfg
 }
 
-func buildSchedule(cfg Config, rng *rand.Rand) []ScheduledSwipe {
+func buildScenario(cfg Config, rng *rand.Rand) Scenario {
+	if cfg.Profile == "normal" {
+		return buildNormalScenario(cfg, rng)
+	}
+
+	return Scenario{Swipes: buildPeakSchedule(cfg, rng)}
+}
+
+func buildPeakSchedule(cfg Config, rng *rand.Rand) []ScheduledSwipe {
 	total := cfg.Employees + int(math.Round(float64(cfg.Employees)*cfg.DuplicatePct))
 	swipes := make([]ScheduledSwipe, 0, total)
 
@@ -204,6 +234,63 @@ func buildSchedule(cfg Config, rng *rand.Rand) []ScheduledSwipe {
 	return swipes
 }
 
+func buildNormalScenario(cfg Config, rng *rand.Rand) Scenario {
+	inside := initialInsideSet(cfg.Employees, cfg.InitialInside, rng)
+	duplicates := int(math.Round(float64(cfg.Employees) * cfg.DuplicatePct))
+	swipes := make([]ScheduledSwipe, 0, cfg.Employees+duplicates)
+	setup := make([]SwipeRequest, 0, len(inside))
+
+	for employeeNum := range inside {
+		setup = append(setup, SwipeRequest{
+			EmployeeID: employeeID(cfg.EmployeePrefix, employeeNum),
+			GateID:     gateID(rng.Intn(cfg.Gates) + 1),
+			Direction:  "IN",
+		})
+	}
+
+	primary := make([]ScheduledSwipe, 0, cfg.Employees)
+	for i := 1; i <= cfg.Employees; i++ {
+		direction := "IN"
+		if inside[i] {
+			direction = "OUT"
+		}
+
+		swipe := ScheduledSwipe{
+			At: uniformOffset(cfg.Duration, rng),
+			Request: SwipeRequest{
+				EmployeeID: employeeID(cfg.EmployeePrefix, i),
+				GateID:     gateID(rng.Intn(cfg.Gates) + 1),
+				Direction:  direction,
+			},
+		}
+		primary = append(primary, swipe)
+		swipes = append(swipes, swipe)
+	}
+
+	for i := 0; i < duplicates; i++ {
+		original := primary[rng.Intn(len(primary))]
+		swipes = append(swipes, ScheduledSwipe{
+			At:      clampOffset(original.At+duplicateOffset(rng), cfg.Duration),
+			Request: original.Request,
+		})
+	}
+
+	sort.Slice(setup, func(i, j int) bool {
+		return setup[i].EmployeeID < setup[j].EmployeeID
+	})
+	sortSchedule(swipes)
+	return Scenario{Setup: setup, Swipes: swipes}
+}
+
+func initialInsideSet(employees int, ratio float64, rng *rand.Rand) map[int]bool {
+	count := int(math.Round(float64(employees) * ratio))
+	inside := make(map[int]bool, count)
+	for _, index := range rng.Perm(employees)[:count] {
+		inside[index+1] = true
+	}
+	return inside
+}
+
 func gaussianPeakOffset(duration time.Duration, rng *rand.Rand) time.Duration {
 	center := float64(duration) * 0.45
 	stddev := float64(duration) / 6
@@ -215,10 +302,59 @@ func gaussianPeakOffset(duration time.Duration, rng *rand.Rand) time.Duration {
 	}
 }
 
+func uniformOffset(duration time.Duration, rng *rand.Rand) time.Duration {
+	return time.Duration(rng.Int63n(int64(duration) + 1))
+}
+
+func duplicateOffset(rng *rand.Rand) time.Duration {
+	return time.Duration(rng.Int63n(int64(3*time.Second) + 1))
+}
+
+func clampOffset(offset time.Duration, duration time.Duration) time.Duration {
+	if offset < 0 {
+		return 0
+	}
+	if offset > duration {
+		return duration
+	}
+	return offset
+}
+
 func sortSchedule(swipes []ScheduledSwipe) {
 	sort.Slice(swipes, func(i, j int) bool {
 		return swipes[i].At < swipes[j].At
 	})
+}
+
+func runImmediateRequests(cfg Config, requests []SwipeRequest) (Stats, time.Duration) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobs := make(chan SwipeRequest, cfg.Workers*4)
+	results := make(chan Result, cfg.Workers*4)
+	client := &http.Client{Timeout: cfg.HTTPTimeout}
+
+	var wg sync.WaitGroup
+	for workerID := 0; workerID < cfg.Workers; workerID++ {
+		wg.Add(1)
+		go worker(ctx, &wg, client, cfg.BaseURL, jobs, results)
+	}
+
+	var stats Stats
+	statsDone := make(chan struct{})
+	go collectStats(results, &stats, statsDone)
+
+	start := time.Now()
+	for _, request := range requests {
+		jobs <- request
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(results)
+	<-statsDone
+
+	return stats, time.Since(start)
 }
 
 func worker(ctx context.Context, wg *sync.WaitGroup, client *http.Client, baseURL string, jobs <-chan SwipeRequest, results chan<- Result) {
@@ -461,7 +597,23 @@ func printSummary(stats *Stats, scheduled int, elapsed time.Duration, cfg Config
 	fmt.Printf("Under 50ms target:   %t\n", float64(avgLatencyUs)/1000 < 50)
 	fmt.Printf("Real elapsed time:   %s\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("Real request rate:   %.2f req/s\n", float64(total)/elapsed.Seconds())
-	fmt.Printf("Simulated peak span: %s\n", cfg.Duration)
+	fmt.Printf("Simulated %s span: %s\n", cfg.Profile, cfg.Duration)
+}
+
+func printSetupSummary(stats *Stats, scheduled int, elapsed time.Duration) {
+	total := stats.Total.Load()
+	fmt.Println()
+	fmt.Println("Initial inside setup summary")
+	fmt.Println("----------------------------")
+	fmt.Printf("Setup swipes:         %d\n", scheduled)
+	fmt.Printf("Completed swipes:     %d\n", total)
+	fmt.Printf("Granted:              %d\n", stats.Granted.Load())
+	fmt.Printf("Denied:               %d\n", stats.Denied.Load())
+	fmt.Printf("Errors:               %d\n", stats.Errors.Load())
+	fmt.Printf("Real elapsed time:    %s\n", elapsed.Round(time.Millisecond))
+	if elapsed > 0 {
+		fmt.Printf("Real request rate:    %.2f req/s\n", float64(total)/elapsed.Seconds())
+	}
 }
 
 func employeeID(prefix string, num int) string {

@@ -118,7 +118,7 @@ func (a *App) Swipe(c *gin.Context) {
 		return
 	}
 
-	latencyMs := time.Since(start).Milliseconds()
+	latencyMs := durationToLatencyMs(time.Since(start))
 	requestID := newRequestID(req.EmployeeID)
 	decisionText := DecisionDenied
 	if decision.Granted {
@@ -169,6 +169,13 @@ func (a *App) Swipe(c *gin.Context) {
 		EventBuffered: eventBuffered,
 		KafkaQueued:   kafkaQueued,
 	})
+}
+
+func durationToLatencyMs(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	return int64((duration + time.Millisecond - time.Nanosecond) / time.Millisecond)
 }
 
 func (a *App) GetState(c *gin.Context) {

@@ -127,6 +127,29 @@ wait_for_reporting_event() {
   exit 1
 }
 
+reset_kafka_topic() {
+  compose exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 \
+    --delete \
+    --topic "$TOPIC" >/dev/null 2>&1 || true
+
+  for _ in $(seq 1 30); do
+    if compose exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
+      --bootstrap-server localhost:9092 \
+      --create \
+      --if-not-exists \
+      --topic "$TOPIC" \
+      --partitions 3 \
+      --replication-factor 3 >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Kafka topic $TOPIC could not be recreated in time" >&2
+  exit 1
+}
+
 need docker-compose
 need curl
 need python3
@@ -168,9 +191,13 @@ compose exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
   --replication-factor 3 >/dev/null
 
 if [[ "$RESET" == true ]]; then
-  log "Resetting and seeding demo data"
+  log "Resetting demo data and event backlog"
+  compose stop reporting-api >/dev/null
   ./scripts/reset-reporting-db.sh --yes
-  ./scripts/seed-reporting-demo-data.sh
+  reset_kafka_topic
+  compose up -d reporting-api >/dev/null
+  wait_url "Reporting API" "$REPORTING_URL/api/health/"
+  DEMO_BASIC_EMPLOYEE_ID="$EMPLOYEE_ID" ./scripts/seed-reporting-demo-data.sh
 else
   log "Keeping existing reporting data"
 fi

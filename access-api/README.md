@@ -235,6 +235,26 @@ go run ./cmd/swipe-simulator \
 go run ./cmd/swipe-simulator --employees 1000 --employee-prefix TEST --duration 2m --time-scale 120
 ```
 
+## 正常門禁出入 Demo
+
+如果 demo 不想呈現上班尖峰，而是要模擬公司在 5 分鐘內有人進、有人出的正常門禁流量，可以用 normal profile：
+
+```bash
+go run ./cmd/swipe-simulator \
+  --base-url http://127.0.0.1:8080 \
+  --profile normal \
+  --employees 90000 \
+  --employee-prefix E \
+  --gates 50 \
+  --duration 5m \
+  --time-scale 1 \
+  --workers 200 \
+  --initial-inside-ratio 0.35 \
+  --duplicate-pct 0.005
+```
+
+normal profile 會先用 setup swipes 建立「一開始已經在廠內」的員工狀態，接著在 5 分鐘 timed demo 期間均勻送出門禁事件：初始在廠員工會刷 OUT，其他員工會刷 IN。`duplicate-pct` 仍會保留少量重複刷卡，用來展示 Anti-Passback。
+
 ## 驗證腳本
 
 最簡單的一鍵 demo：
@@ -277,6 +297,12 @@ go run ./cmd/swipe-simulator --employees 1000 --employee-prefix TEST --duration 
 
 ```bash
 ./scripts/run-access-load-test.sh --full
+```
+
+執行 90,000 人、5 分鐘正常門禁出入 demo：
+
+```bash
+./scripts/run-access-normal-demo.sh
 ```
 
 可用環境變數覆蓋測試參數：

@@ -82,9 +82,30 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(summary["totalEvents"], 2)
         self.assertEqual(summary["grantedEvents"], 1)
         self.assertEqual(summary["deniedEvents"], 1)
+        self.assertEqual(summary["knownEmployees"], 2)
+        self.assertEqual(summary["employeesInside"], 1)
+        self.assertEqual(summary["employeesOutside"], 1)
         self.assertEqual(filtered["total"], 1)
         self.assertEqual(filtered["items"][0]["employeeId"], "EMP001")
         self.assertEqual(filtered["items"][0]["decision"], "DENIED")
+
+    def test_summary_counts_unknown_employees_as_outside(self) -> None:
+        with self.SessionLocal() as db:
+            db.add(
+                Employee(
+                    employee_id="EMP003",
+                    display_name="Unknown State Operator",
+                    department_id="FAB_A",
+                    last_known_state="UNKNOWN",
+                )
+            )
+            db.commit()
+
+            summary = get_access_summary(db)
+
+        self.assertEqual(summary["knownEmployees"], 4)
+        self.assertEqual(summary["employeesInside"], 2)
+        self.assertEqual(summary["employeesOutside"], 2)
 
     def test_department_tree_is_scoped_by_role(self) -> None:
         with self.SessionLocal() as db:

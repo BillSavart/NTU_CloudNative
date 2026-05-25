@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -192,6 +193,27 @@ func TestSwipeAntiPassbackFlow(t *testing.T) {
 	rec, second := postSwipe(t, router, `{"employeeId":"E1","gateId":"GATE_1","direction":"IN"}`)
 	if rec.Code != http.StatusOK || second.Decision != DecisionDenied || second.Reason != ReasonAntiPassbackViolation {
 		t.Fatalf("second IN = status %d %+v", rec.Code, second)
+	}
+}
+
+func TestDurationToLatencyMsRoundsUpSubMillisecondDurations(t *testing.T) {
+	tests := []struct {
+		name     string
+		duration time.Duration
+		want     int64
+	}{
+		{name: "zero", duration: 0, want: 0},
+		{name: "sub millisecond", duration: 500 * time.Microsecond, want: 1},
+		{name: "whole millisecond", duration: time.Millisecond, want: 1},
+		{name: "partial next millisecond", duration: 1500 * time.Microsecond, want: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := durationToLatencyMs(tt.duration); got != tt.want {
+				t.Fatalf("durationToLatencyMs(%s) = %d, want %d", tt.duration, got, tt.want)
+			}
+		})
 	}
 }
 

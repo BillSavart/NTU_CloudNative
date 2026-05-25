@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell'
-import { type AccessEvent, fetchRecentAccessEvents } from '../services/accessEvents'
+import { type AccessEvent, type DashboardSummary, fetchDashboardSummary, fetchRecentAccessEvents } from '../services/accessEvents'
+
+function formatAverageLatency(summary: DashboardSummary | null) {
+  if (!summary) {
+    return '-'
+  }
+
+  if (summary.totalEvents > 0 && summary.avgLatencyMs === 0) {
+    return '<1.0'
+  }
+
+  return summary.avgLatencyMs.toFixed(1)
+}
 
 function Dashboard() {
   const [events, setEvents] = useState<AccessEvent[]>([])
+  const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsRefreshing, setEventsRefreshing] = useState(false)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -30,7 +43,7 @@ function Dashboard() {
         setEventsError(null)
         if (!eventsLoading) setEventsRefreshing(true)
 
-        const next = await fetchRecentAccessEvents(10)
+        const [next, nextSummary] = await Promise.all([fetchRecentAccessEvents(10), fetchDashboardSummary()])
 
         if (!cancelled) {
           const nextIds = next.map((event) => event.requestId).filter(Boolean)
@@ -39,6 +52,7 @@ function Dashboard() {
           nextIds.forEach((id) => seenEventIdsRef.current.add(id))
 
           setEvents(next)
+          setSummary(nextSummary)
           setLastUpdatedAt(new Date())
 
           if (newIds.length > 0) {
@@ -80,20 +94,20 @@ function Dashboard() {
     <AppShell title="首頁總覽" subtitle="今日出勤狀態與異常摘要">
       <section className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">今日出勤</div>
-          <div className="kpi-value">428</div>
+          <div className="kpi-label">總刷卡事件</div>
+          <div className="kpi-value">{summary?.totalEvents ?? '-'}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">遲到人數</div>
-          <div className="kpi-value">17</div>
+          <div className="kpi-label">允許通行</div>
+          <div className="kpi-value">{summary?.grantedEvents ?? '-'}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">缺勤人數</div>
-          <div className="kpi-value">5</div>
+          <div className="kpi-label">拒絕通行</div>
+          <div className="kpi-value danger-text">{summary?.deniedEvents ?? '-'}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">超時警示</div>
-          <div className="kpi-value danger-text">9</div>
+          <div className="kpi-label">目前在廠</div>
+          <div className="kpi-value">{summary?.employeesInside ?? '-'}</div>
         </div>
       </section>
 
@@ -155,16 +169,16 @@ function Dashboard() {
         <div className="panel-card">
           <h2 className="h6 mb-3">待處理異常</h2>
           <Link className="alert-link-row" to="/alerts?type=overtime_daily">
-            <span>單日超過 12 小時</span>
-            <span className="danger-text">6</span>
+            <span>拒絕通行事件</span>
+            <span className="danger-text">{summary?.deniedEvents ?? '-'}</span>
           </Link>
           <Link className="alert-link-row" to="/alerts?type=overtime_crossday">
-            <span>跨日連續超時</span>
-            <span className="danger-text">2</span>
+            <span>未在廠員工</span>
+            <span className="danger-text">{summary?.employeesOutside ?? '-'}</span>
           </Link>
           <Link className="alert-link-row" to="/alerts?type=unpaired_access">
-            <span>未配對進出紀錄</span>
-            <span className="danger-text">1</span>
+            <span>平均延遲 ms</span>
+            <span className="danger-text">{formatAverageLatency(summary)}</span>
           </Link>
         </div>
       </section>

@@ -129,11 +129,8 @@ def get_access_summary(
         db.scalar(select(func.count()).select_from(employee_query.where(Employee.last_known_state == "IN").subquery()))
         or 0
     )
-    employees_outside = (
-        db.scalar(select(func.count()).select_from(employee_query.where(Employee.last_known_state == "OUT").subquery()))
-        or 0
-    )
     known_employees = db.scalar(select(func.count()).select_from(employee_query.subquery())) or 0
+    employees_outside = max(known_employees - employees_inside, 0)
     last_event_at = db.scalar(select(func.max(event_query.subquery().c.occurred_at)))
 
     return {

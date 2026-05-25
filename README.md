@@ -127,6 +127,14 @@ go run ./cmd/swipe-simulator
 
 壓測模擬器和腳本每次會自動使用新的員工 ID 前綴，避免 Redis 裡前一次壓測留下的 IN 狀態導致大量 Anti-Passback 拒絕。正式尖峰預設為 99.5% 進門刷卡與 0.5% 重複刷卡，因此結果應以 `GRANTED` 為主。
 
+如果 demo 要呈現正常公司門禁出入，而不是上班尖峰，可以跑新的 5 分鐘 normal flow 腳本：
+
+```bash
+./scripts/run-access-normal-demo.sh
+```
+
+此腳本保留 90,000 員工總量，會先建立一批「一開始已在廠內」的員工，接著在 5 分鐘內均勻送出 IN/OUT 門禁事件；原本的 `./scripts/run-access-load-test.sh` 仍保留尖峰壓力測試用途。
+
 壓測過程會定期印出完成數、百分比、QPS、錯誤數、平均延遲毫秒數與最大延遲毫秒數。最後 summary 會顯示 `Under 50ms target`，可用 `PROGRESS_EVERY=5s` 調整輸出頻率。
 
 Access API 也已提供 Dockerfile 與 Kubernetes 部署檔：
