@@ -5,8 +5,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ARG INSTALL_OBSERVABILITY=false
+
+COPY requirements*.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ "$INSTALL_OBSERVABILITY" = "true" ] && [ -f requirements-observability.txt ]; then pip install --no-cache-dir -r requirements-observability.txt; fi
 
 COPY alembic.ini .
 COPY app ./app

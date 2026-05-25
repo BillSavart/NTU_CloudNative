@@ -1,0 +1,57 @@
+services:
+  reporting-api:
+    build:
+      context: ./reporting-api
+      args:
+        INSTALL_OBSERVABILITY: "true"
+
+  prometheus:
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    depends_on:
+      - access-lb
+      - reporting-api
+      - redis-exporter
+      - postgres-exporter
+      - kafka-exporter
+
+  grafana:
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: on-failure
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    ports:
+      - "${REDIS_EXPORTER_HOST_PORT:-9121}:9121"
+    depends_on:
+      - redis
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    restart: on-failure
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+    ports:
+      - "${POSTGRES_EXPORTER_HOST_PORT:-9187}:9187"
+    depends_on:
+      - db
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    restart: on-failure
+    command:
+      - "--kafka.server=kafka-1:9092"
+      - "--kafka.server=kafka-2:9092"
+      - "--kafka.server=kafka-3:9092"
+    ports:
+      - "${KAFKA_EXPORTER_HOST_PORT:-9308}:9308"
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
