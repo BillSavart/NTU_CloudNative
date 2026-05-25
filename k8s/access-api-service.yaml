@@ -2,10 +2,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: access-api
+  namespace: access-control
   labels:
     app: access-api
 spec:
-  type: LoadBalancer
   selector:
     app: access-api
   ports:

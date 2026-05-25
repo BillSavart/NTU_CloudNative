@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: access-api
+  namespace: access-control
   labels:
     app: access-api
 spec:
@@ -28,17 +29,34 @@ spec:
             - name: REDIS_ADDR
               value: "redis:6379"
             - name: REDIS_SENTINEL_ADDRS
-              value: "redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379"
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: REDIS_SENTINEL_ADDRS
             - name: REDIS_MASTER_NAME
-              value: "mymaster"
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: REDIS_MASTER_NAME
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: REDIS_PASSWORD
             - name: KAFKA_BROKERS
-              value: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: KAFKA_BROKERS
             - name: KAFKA_TOPIC
-              value: "access-events"
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: KAFKA_TOPIC
             - name: PUBLISHER_ASYNC
               value: "true"
             - name: PUBLISHER_QUEUE_SIZE
-              value: "100000"
+              value: "50000"
             - name: PUBLISHER_WORKERS
               value: "8"
             - name: PUBLISHER_BATCH_SIZE

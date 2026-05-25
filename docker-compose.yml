@@ -88,6 +88,14 @@ services:
       - kafka-2
       - kafka-3
 
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "${FRONTEND_HOST_PORT:-5173}:80"
+    depends_on:
+      - reporting-api
+
   prometheus:
     image: prom/prometheus:v3.0.1
     ports:

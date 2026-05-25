@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting-api
+  namespace: access-control
+  labels:
+    app: reporting-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reporting-api
+  template:
+    metadata:
+      labels:
+        app: reporting-api
+    spec:
+      containers:
+        - name: reporting-api
+          image: reporting-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_NAME
+              value: reporting-api
+            - name: APP_ENV
+              value: kubernetes
+            - name: APP_DEBUG
+              value: "false"
+            - name: APP_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: APP_SECRET_KEY
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: CORS_ORIGINS
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_HOST
+              value: db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: KAFKA_BROKERS
+            - name: KAFKA_ACCESS_EVENTS_TOPIC
+              value: access-events
+            - name: KAFKA_CONSUMER_ENABLED
+              value: "true"
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: reporting-api
+            - name: KAFKA_AUTO_OFFSET_RESET
+              value: earliest
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: REDIS_ADDR
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: REDIS_PASSWORD
+            - name: REDIS_DB
+              value: "0"
+            - name: REDIS_EVENT_STREAM_KEY
+              value: access:events
+            - name: REDIS_RECOVERY_ENABLED
+              value: "true"
+            - name: REDIS_RECOVERY_GROUP
+              value: reporting-api
+            - name: REDIS_RECOVERY_CONSUMER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          readinessProbe:
+            httpGet:
+              path: /api/health/
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health/
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting-api
+  namespace: access-control
+  labels:
+    app: reporting-api
+spec:
+  selector:
+    app: reporting-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

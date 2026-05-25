@@ -1,0 +1,397 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: access-control
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets:
+              - prometheus:9090
+
+      - job_name: access-api
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - access-api:80
+
+      - job_name: reporting-api
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - reporting-api:8000
+
+      - job_name: redis
+        static_configs:
+          - targets:
+              - redis-exporter:9121
+
+      - job_name: postgres
+        static_configs:
+          - targets:
+              - postgres-exporter:9187
+
+      - job_name: kafka
+        static_configs:
+          - targets:
+              - kafka-exporter:9308
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: access-control
+data:
+  datasource.yml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        uid: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: true
+  dashboards.yml: |
+    apiVersion: 1
+
+    providers:
+      - name: NTU Cloud Native
+        orgId: 1
+        folder: NTU Cloud Native
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /etc/grafana/provisioning/dashboards/json
+  dashboard.json: |
+    {
+      "uid": "access-control-observability",
+      "title": "Access Control Observability",
+      "tags": ["cloud-native", "observability"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "5s",
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Access Swipes",
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "targets": [{"expr": "sum(access_api_swipes_total)", "refId": "A"}]
+        },
+        {
+          "type": "stat",
+          "title": "Reporting API Up",
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "targets": [{"expr": "up{job=\"reporting-api\"}", "refId": "A"}]
+        },
+        {
+          "type": "timeseries",
+          "title": "Target Health",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "targets": [{"expr": "up", "refId": "A"}]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: access-control
+  labels:
+    app: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.67.0
+          ports:
+            - name: metrics
+              containerPort: 9121
+          env:
+            - name: REDIS_ADDR
+              value: redis://redis:6379
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: REDIS_PASSWORD
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: access-control
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+    - name: metrics
+      port: 9121
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+  namespace: access-control
+  labels:
+    app: postgres-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app: postgres-exporter
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: prometheuscommunity/postgres-exporter:v0.16.0
+          command:
+            - sh
+            - -c
+            - export DATA_SOURCE_NAME="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable" && /bin/postgres_exporter
+          ports:
+            - name: metrics
+              containerPort: 9187
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+  namespace: access-control
+spec:
+  selector:
+    app: postgres-exporter
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+  namespace: access-control
+  labels:
+    app: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app: kafka-exporter
+    spec:
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.8.0
+          args:
+            - --kafka.server=kafka-1:9092
+            - --kafka.server=kafka-2:9092
+            - --kafka.server=kafka-3:9092
+          ports:
+            - name: metrics
+              containerPort: 9308
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-exporter
+  namespace: access-control
+spec:
+  selector:
+    app: kafka-exporter
+  ports:
+    - name: metrics
+      port: 9308
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: access-control
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.0.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --web.enable-lifecycle
+            - --storage.tsdb.retention.time=6h
+          ports:
+            - name: http
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: access-control
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: access-control
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: GRAFANA_ADMIN_USER
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: grafana-provisioning
+              mountPath: /etc/grafana/provisioning/datasources/datasource.yml
+              subPath: datasource.yml
+            - name: grafana-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml
+              subPath: dashboards.yml
+            - name: grafana-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/json/dashboard.json
+              subPath: dashboard.json
+      volumes:
+        - name: grafana-provisioning
+          configMap:
+            name: grafana-provisioning
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: access-control
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
