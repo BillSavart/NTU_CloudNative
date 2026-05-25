@@ -1,9 +1,10 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import LoginForm from './LoginForm'
 import { login } from '../../services/auth'
+import LoginForm from './LoginForm'
 
 vi.mock('../../services/auth', () => ({
   login: vi.fn(),
@@ -11,13 +12,21 @@ vi.mock('../../services/auth', () => ({
 
 const loginMock = vi.mocked(login)
 
+function renderWithRouter() {
+  return render(
+    <MemoryRouter>
+      <LoginForm />
+    </MemoryRouter>,
+  )
+}
+
 describe('LoginForm', () => {
   beforeEach(() => {
     loginMock.mockReset()
   })
 
   it('renders the login fields and submit button', () => {
-    render(<LoginForm />)
+    renderWithRouter()
 
     expect(screen.getByLabelText('員工編號')).toBeInTheDocument()
     expect(screen.getByLabelText('密碼')).toBeInTheDocument()
@@ -25,16 +34,16 @@ describe('LoginForm', () => {
   })
 
   it('submits employee id and password through the auth service', async () => {
-    loginMock.mockResolvedValue({ message: '登入成功' })
+    loginMock.mockResolvedValue({ message: '?餃??' })
     const user = userEvent.setup()
-    render(<LoginForm />)
+    renderWithRouter()
 
     await user.type(screen.getByLabelText('員工編號'), 'manager')
     await user.type(screen.getByLabelText('密碼'), 'demo123')
     await user.click(screen.getByRole('button', { name: '登入系統' }))
 
     expect(loginMock).toHaveBeenCalledWith({ employeeId: 'manager', password: 'demo123' })
-    expect(await screen.findByText('登入成功')).toBeInTheDocument()
+    expect(await screen.findByText('?餃??')).toBeInTheDocument()
   })
 
   it('shows the loading state while login is pending', async () => {
@@ -45,7 +54,7 @@ describe('LoginForm', () => {
       }),
     )
     const user = userEvent.setup()
-    render(<LoginForm />)
+    renderWithRouter()
 
     await user.type(screen.getByLabelText('員工編號'), 'manager')
     await user.type(screen.getByLabelText('密碼'), 'demo123')
@@ -53,20 +62,20 @@ describe('LoginForm', () => {
 
     expect(screen.getByRole('button', { name: '登入中...' })).toBeDisabled()
 
-    resolveLogin({ message: '登入成功' })
-    expect(await screen.findByText('登入成功')).toBeInTheDocument()
+    resolveLogin({ message: '?餃??' })
+    expect(await screen.findByText('?餃??')).toBeInTheDocument()
   })
 
   it('shows an error alert when login fails', async () => {
-    loginMock.mockRejectedValue(new Error('帳密錯誤'))
+    loginMock.mockRejectedValue(new Error('撣喳??航炊'))
     const user = userEvent.setup()
-    render(<LoginForm />)
+    renderWithRouter()
 
     await user.type(screen.getByLabelText('員工編號'), 'manager')
     await user.type(screen.getByLabelText('密碼'), 'wrong')
     await user.click(screen.getByRole('button', { name: '登入系統' }))
 
-    expect(await screen.findByText('帳密錯誤')).toBeInTheDocument()
+    expect(await screen.findByText('撣喳??航炊')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: '登入系統' })).toBeEnabled())
   })
 })
