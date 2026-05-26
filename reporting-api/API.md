@@ -15,26 +15,56 @@ Authorization: Bearer <token>
 
 ## Demo Accounts
 
-Run the seed script before using these accounts:
+Run the fake data script before using these accounts:
 
 ```bash
-./scripts/seed-reporting-demo-data.sh
+./scripts/fake_data.sh
 ```
 
+Windows PowerShell:
+
+```powershell
+.\scripts\fake_data.ps1
+```
+
+All seeded accounts use password `demo123`.
+
 ```text
-admin / demo123
 executive / demo123
-manager / demo123
-manager_fab_b / demo123
-manager_security / demo123
+fab_1_manager / demo123
+fab_2_manager / demo123
+fab_3_manager / demo123
+fab_4_manager / demo123
+fab_5_manager / demo123
+rd_1_manager / demo123
+it_1_manager / demo123
+pe_1_manager / demo123
+ee_1_manager / demo123
 employee / demo123
 ```
 
 Roles:
 
-- `ADMIN`, `EXECUTIVE`: can view all departments.
+- `EXECUTIVE`: can view all departments. The default executive account is CC Wei.
 - `MANAGER`: can view assigned departments and descendants.
 - `EMPLOYEE`: can view only the employee's own records.
+- No `admin` account is seeded by the current fake data flow.
+
+Default account details:
+
+| Username | Display name | Role | Employee ID | Scope |
+| --- | --- | --- | --- | --- |
+| `executive` | CC Wei | `EXECUTIVE` | `100000` | All departments |
+| `fab_1_manager` | Bill Wang | `MANAGER` | `100001` | `fab_1` and descendants |
+| `fab_2_manager` | Ichigo | `MANAGER` | `100002` | `fab_2` and descendants |
+| `fab_3_manager` | Steven Lai | `MANAGER` | `100003` | `fab_3` and descendants |
+| `fab_4_manager` | Amy Huang | `MANAGER` | `100004` | `fab_4` and descendants |
+| `fab_5_manager` | High Ray | `MANAGER` | `100005` | `fab_5` and descendants |
+| `rd_1_manager` | Ethan Chen | `MANAGER` | `110001` | `RD_1` |
+| `it_1_manager` | Lily Wang | `MANAGER` | `120001` | `IT_1` |
+| `pe_1_manager` | Marcus Lin | `MANAGER` | `130001` | `PE_1` |
+| `ee_1_manager` | Nina Huang | `MANAGER` | `140001` | `EE_1` |
+| `employee` | YP Hung | `EMPLOYEE` | `199001` | Own records only |
 
 ## Auth
 
@@ -60,7 +90,7 @@ Request:
 
 ```json
 {
-  "employeeId": "manager",
+  "employeeId": "fab_1_manager",
   "password": "demo123"
 }
 ```
@@ -73,13 +103,13 @@ Response:
   "token": "string",
   "user": {
     "userId": 3,
-    "username": "manager",
+    "username": "fab_1_manager",
     "role": "MANAGER",
     "isStaff": true,
-    "employeeId": "MGR001",
-    "displayName": "Fab A Manager",
-    "departmentId": "FAB_A",
-    "visibleDepartmentIds": ["FAB_A", "OPS_A"],
+    "employeeId": "100001",
+    "displayName": "Bill Wang",
+    "departmentId": "fab_1",
+    "visibleDepartmentIds": ["EE_1", "IT_1", "PE_1", "RD_1", "fab_1"],
     "canViewAllDepartments": false
   }
 }
@@ -101,13 +131,13 @@ Response:
 {
   "user": {
     "userId": 3,
-    "username": "manager",
+    "username": "fab_1_manager",
     "role": "MANAGER",
     "isStaff": true,
-    "employeeId": "MGR001",
-    "displayName": "Fab A Manager",
-    "departmentId": "FAB_A",
-    "visibleDepartmentIds": ["FAB_A", "OPS_A"],
+    "employeeId": "100001",
+    "displayName": "Bill Wang",
+    "departmentId": "fab_1",
+    "visibleDepartmentIds": ["EE_1", "IT_1", "PE_1", "RD_1", "fab_1"],
     "canViewAllDepartments": false
   }
 }
@@ -138,7 +168,7 @@ Common query params:
 ```text
 from=2026-05-10T00:00:00Z
 to=2026-05-11T00:00:00Z
-departmentId=FAB_A
+departmentId=fab_1
 limit=50
 offset=0
 ```
@@ -177,8 +207,8 @@ series details.
 Query params:
 
 ```text
-employeeId=EMP001
-departmentId=FAB_A
+employeeId=199001
+departmentId=fab_1
 decision=GRANTED|DENIED
 direction=IN|OUT
 reason=OK|ANTI_PASSBACK_VIOLATION|NO_ENTRY_RECORD
@@ -194,15 +224,16 @@ Response:
 {
   "events": [
     {
-      "requestId": "req-001",
-      "employeeId": "EMP001",
-      "gateId": "GATE_01",
+      "requestId": "fake:2026-05-26:199001:in",
+      "employeeId": "199001",
+      "gateId": "gate_1_A",
       "direction": "IN",
       "decision": "GRANTED",
-      "reason": "OK",
+      "reason": "ACCESS_ALLOWED",
       "previousState": "OUT",
       "currentState": "IN",
       "latencyMs": 8,
+      "remark": null,
       "timestamp": "2026-05-10T14:25:00+00:00",
       "consumedAt": "2026-05-10T14:25:01+00:00"
     }
@@ -227,14 +258,14 @@ Response:
 {
   "departments": [
     {
-      "departmentId": "FAB_A",
-      "name": "Fab A",
+      "departmentId": "fab_1",
+      "name": "Fab 1",
       "parentDepartmentId": "TSMC",
       "children": [
         {
-          "departmentId": "OPS_A",
-          "name": "Operations A",
-          "parentDepartmentId": "FAB_A",
+          "departmentId": "EE_1",
+          "name": "EE Fab 1",
+          "parentDepartmentId": "fab_1",
           "children": []
         }
       ]
@@ -252,7 +283,7 @@ Returns summary counters for one department and its descendants.
 Query params:
 
 ```text
-departmentId=FAB_A
+departmentId=fab_1
 state=UNKNOWN|IN|OUT
 limit=100
 offset=0
@@ -264,10 +295,10 @@ Response:
 {
   "items": [
     {
-      "employeeId": "EMP001",
-      "displayName": "Fab A Operator",
-      "departmentId": "OPS_A",
-      "managerEmployeeId": "MGR001",
+      "employeeId": "199001",
+      "displayName": "YP Hung",
+      "departmentId": "EE_1",
+      "managerEmployeeId": "140001",
       "lastKnownState": "IN",
       "lastSeenAt": "2026-05-10T14:25:00+00:00"
     }

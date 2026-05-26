@@ -57,6 +57,7 @@ def serialize_access_event(event: AccessEvent) -> dict[str, Any]:
         "previousState": event.previous_state,
         "currentState": event.current_state,
         "latencyMs": event.latency_ms,
+        "remark": event.remark,
         "timestamp": event.occurred_at.isoformat(),
         "consumedAt": event.consumed_at.isoformat() if event.consumed_at else None,
     }

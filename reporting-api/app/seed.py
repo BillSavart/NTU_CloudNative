@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 
 from app.database import SessionLocal
 from app.models import Department, Employee, UserAccount, UserDepartmentScope
@@ -8,162 +8,178 @@ from app.security import hash_password
 
 
 DEMO_PASSWORD = "demo123"
-DEMO_DEPARTMENTS = ("OPS_A", "FAB_A", "FAB_B", "SECURITY")
 BATCH_SIZE = 1000
+FAB_COUNT = 22
+FAB_UNITS = ("RD", "IT", "PE", "EE")
+LEGACY_DEPARTMENT_IDS = ("OPS_A", "FAB_A", "FAB_B", "SECURITY")
+LEGACY_EMPLOYEE_IDS = ("EXEC001", "MGR001", "MGR002", "MGR003", "ADMIN001", "EMP001", "EMP002")
+LEGACY_USERNAMES = ("admin", "manager", "manager_fab_b", "manager_security")
+
+FAB_MANAGER_NAMES = {
+    1: "Bill Wang",
+    2: "Ichigo",
+    3: "Steven Lai",
+    4: "Amy Huang",
+    5: "High Ray",
+    6: "Emily Chen",
+    7: "David Lin",
+    8: "Sophia Chang",
+    9: "Daniel Wu",
+    10: "Grace Liu",
+    11: "Jason Lee",
+    12: "Michelle Tsai",
+    13: "Ryan Hsu",
+    14: "Olivia Yang",
+    15: "Andrew Kuo",
+    16: "Teresa Wang",
+    17: "Eric Huang",
+    18: "Natalie Chou",
+    19: "Victor Chen",
+    20: "Karen Lin",
+    21: "George Wang",
+    22: "Iris Hsieh",
+}
+UNIT_MANAGER_NAMES = {
+    (1, "RD"): "Ethan Chen",
+    (1, "IT"): "Lily Wang",
+    (1, "PE"): "Marcus Lin",
+    (1, "EE"): "Nina Huang",
+}
+
 DEPARTMENT_PARENT_IDS = {
     "TSMC": None,
-    "FAB_A": "TSMC",
-    "FAB_B": "TSMC",
-    "SECURITY": "TSMC",
-    "OPS_A": "FAB_A",
+    **{f"fab_{fab_no}": "TSMC" for fab_no in range(1, FAB_COUNT + 1)},
+    **{
+        f"{unit}_{fab_no}": f"fab_{fab_no}"
+        for fab_no in range(1, FAB_COUNT + 1)
+        for unit in FAB_UNITS
+    },
 }
-DEMO_EMPLOYEES = [
-    {
-        "employee_id": "EXEC001",
-        "display_name": "Executive User",
+DEMO_DEPARTMENTS = tuple(
+    f"{unit}_{fab_no}"
+    for fab_no in range(1, FAB_COUNT + 1)
+    for unit in FAB_UNITS
+)
+
+
+def executive_employee() -> dict[str, str | None]:
+    return {
+        "employee_id": "100000",
+        "display_name": "CC Wei",
         "department_id": "TSMC",
         "manager_employee_id": None,
-    },
-    {
-        "employee_id": "MGR001",
-        "display_name": "Fab A Manager",
-        "department_id": "FAB_A",
-        "manager_employee_id": "EXEC001",
-    },
-    {
-        "employee_id": "MGR002",
-        "display_name": "Fab B Manager",
-        "department_id": "FAB_B",
-        "manager_employee_id": "EXEC001",
-    },
-    {
-        "employee_id": "MGR003",
-        "display_name": "Security Manager",
-        "department_id": "SECURITY",
-        "manager_employee_id": "EXEC001",
-    },
-    {
-        "employee_id": "ADMIN001",
-        "display_name": "Admin User",
-        "department_id": "SECURITY",
-        "manager_employee_id": "MGR003",
-    },
-    {
-        "employee_id": "EMP001",
-        "display_name": "Fab A Operator",
-        "department_id": "OPS_A",
-        "manager_employee_id": "MGR001",
-    },
-    {
-        "employee_id": "EMP002",
-        "display_name": "Fab B Operator",
-        "department_id": "FAB_B",
-        "manager_employee_id": "MGR002",
-    },
+    }
+
+
+def fab_manager_employee(fab_no: int) -> dict[str, str | None]:
+    return {
+        "employee_id": f"100{fab_no:03d}",
+        "display_name": FAB_MANAGER_NAMES[fab_no],
+        "department_id": f"fab_{fab_no}",
+        "manager_employee_id": "100000",
+    }
+
+
+def unit_manager_employee(fab_no: int, unit: str) -> dict[str, str | None]:
+    unit_offsets = {"RD": 1, "IT": 2, "PE": 3, "EE": 4}
+    display_name = UNIT_MANAGER_NAMES.get((fab_no, unit), generated_unit_manager_name(fab_no, unit))
+    return {
+        "employee_id": f"{10 + unit_offsets[unit]}{fab_no:04d}",
+        "display_name": display_name,
+        "department_id": f"{unit}_{fab_no}",
+        "manager_employee_id": f"100{fab_no:03d}",
+    }
+
+
+def generated_unit_manager_name(fab_no: int, unit: str) -> str:
+    first_names = (
+        "Aaron", "Bella", "Calvin", "Diana", "Edward", "Fiona", "Gavin", "Helen",
+        "Isaac", "Julia", "Keith", "Laura", "Martin", "Nora", "Oscar", "Paula",
+        "Quentin", "Rita", "Samuel", "Tina", "Ulrich", "Vicky", "Walter", "Yvonne",
+    )
+    last_names = (
+        "Chen", "Lin", "Wang", "Huang", "Lee", "Chang", "Liu", "Wu", "Tsai",
+        "Hsu", "Yang", "Kuo", "Chou", "Hsieh", "Ho", "Tang", "Yu", "Shen",
+        "Kang", "Fang", "Hsiao", "Cheng", "Pan", "Su",
+    )
+    unit_index = FAB_UNITS.index(unit)
+    idx = (fab_no - 1) * len(FAB_UNITS) + unit_index + 4
+    return f"{first_names[idx % len(first_names)]} {last_names[(idx // len(first_names)) % len(last_names)]}"
+
+
+def yp_hung_employee() -> dict[str, str | None]:
+    return {
+        "employee_id": "199001",
+        "display_name": "YP Hung",
+        "department_id": "EE_1",
+        "manager_employee_id": unit_manager_employee(1, "EE")["employee_id"],
+    }
+
+
+DEMO_EMPLOYEES = [
+    executive_employee(),
+    *[fab_manager_employee(fab_no) for fab_no in range(1, FAB_COUNT + 1)],
+    *[
+        unit_manager_employee(fab_no, unit)
+        for fab_no in range(1, FAB_COUNT + 1)
+        for unit in FAB_UNITS
+    ],
+    yp_hung_employee(),
 ]
+
 DEMO_MANAGER_BY_DEPARTMENT = {
-    "OPS_A": "MGR001",
-    "FAB_A": "MGR001",
-    "FAB_B": "MGR002",
-    "SECURITY": "MGR003",
+    **{f"fab_{fab_no}": "100000" for fab_no in range(1, FAB_COUNT + 1)},
+    **{
+        f"{unit}_{fab_no}": unit_manager_employee(fab_no, unit)["employee_id"]
+        for fab_no in range(1, FAB_COUNT + 1)
+        for unit in FAB_UNITS
+    },
 }
 
 
 def seed_demo_data() -> None:
     with SessionLocal() as db:
-        departments = [
-            Department(
-                department_id=department_id,
-                name=department_name(department_id),
-                parent_department_id=parent_department_id,
-            )
-            for department_id, parent_department_id in DEPARTMENT_PARENT_IDS.items()
-        ]
-        for department in departments:
-            existing = db.get(Department, department.department_id)
-            if existing is None:
-                db.add(department)
-            else:
-                existing.name = department.name
-                existing.parent_department_id = department.parent_department_id
+        cleanup_legacy_demo_data(db)
 
-        employees = [Employee(**employee) for employee in DEMO_EMPLOYEES]
-        for employee in employees:
-            existing = db.get(Employee, employee.employee_id)
+        for department_id, parent_department_id in DEPARTMENT_PARENT_IDS.items():
+            existing = db.get(Department, department_id)
             if existing is None:
-                db.add(employee)
+                db.add(
+                    Department(
+                        department_id=department_id,
+                        name=department_name(department_id),
+                        parent_department_id=parent_department_id,
+                    )
+                )
             else:
-                existing.display_name = employee.display_name
-                existing.department_id = employee.department_id
-                existing.manager_employee_id = employee.manager_employee_id
+                existing.name = department_name(department_id)
+                existing.parent_department_id = parent_department_id
+
+        for employee in DEMO_EMPLOYEES:
+            existing = db.get(Employee, employee["employee_id"])
+            if existing is None:
+                db.add(Employee(**employee))
+            else:
+                existing.display_name = employee["display_name"]
+                existing.department_id = employee["department_id"]
+                existing.manager_employee_id = employee["manager_employee_id"]
 
         db.flush()
+        db.execute(delete(UserAccount).where(UserAccount.username == "admin"))
 
-        # Ensure exactly one top-level manager (unique) with no manager
-        # and ensure all other employees have a valid manager and their
-        # department is the same as or a descendant of their manager's department.
-        all_departments = {d.department_id: d for d in db.scalars(select(Department)).all()}
+        users = [("executive", "EXECUTIVE", "100000")]
+        users.extend((f"fab_{fab_no}_manager", "MANAGER", f"100{fab_no:03d}") for fab_no in range(1, FAB_COUNT + 1))
+        users.extend(
+            (
+                f"{unit.lower()}_{fab_no}_manager",
+                "MANAGER",
+                unit_manager_employee(fab_no, unit)["employee_id"],
+            )
+            for fab_no in range(1, FAB_COUNT + 1)
+            for unit in FAB_UNITS
+        )
+        users.append(("employee", "EMPLOYEE", "199001"))
 
-        def get_ancestors(dept_id: str | None) -> list[str]:
-            if not dept_id:
-                return []
-            res = []
-            cur = dept_id
-            while cur:
-                res.append(cur)
-                cur = all_departments.get(cur).parent_department_id if all_departments.get(cur) else None
-            return res
-
-        all_emps = {e.employee_id: e for e in db.scalars(select(Employee)).all()}
-        top_manager_id = "EXEC001" if "EXEC001" in all_emps else (next(iter(all_emps)) if all_emps else None)
-        if top_manager_id is not None:
-            # clear manager for top
-            top = all_emps[top_manager_id]
-            top.manager_employee_id = None
-
-        for emp_id, emp in all_emps.items():
-            if top_manager_id is not None and emp_id == top_manager_id:
-                continue
-
-            # If manager is set but doesn't exist, reset it
-            if emp.manager_employee_id and emp.manager_employee_id not in all_emps:
-                emp.manager_employee_id = None
-
-            # If no manager, try to find one in ancestor departments
-            if not emp.manager_employee_id:
-                emp_dept = emp.department_id
-                chosen = None
-                if emp_dept:
-                    ancestors = get_ancestors(emp_dept)
-                    # prefer manager in nearest ancestor dept
-                    for cand in all_emps.values():
-                        if cand.employee_id == emp.employee_id:
-                            continue
-                        if cand.department_id and cand.department_id in ancestors:
-                            chosen = cand
-                            break
-
-                if chosen is None:
-                    # fallback to top manager
-                    emp.manager_employee_id = top_manager_id
-                else:
-                    emp.manager_employee_id = chosen.employee_id
-
-            # Ensure employee department is same as or descendant of manager's department
-            mgr = db.get(Employee, emp.manager_employee_id) if emp.manager_employee_id else None
-            if mgr is not None and mgr.department_id:
-                if not emp.department_id or mgr.department_id not in get_ancestors(emp.department_id):
-                    emp.department_id = mgr.department_id
-
-
-        users = [
-            ("admin", "ADMIN", "ADMIN001"),
-            ("executive", "EXECUTIVE", "EXEC001"),
-            ("manager", "MANAGER", "MGR001"),
-            ("manager_fab_b", "MANAGER", "MGR002"),
-            ("manager_security", "MANAGER", "MGR003"),
-            ("employee", "EMPLOYEE", "EMP001"),
-        ]
         for username, role, employee_id in users:
             user = db.scalar(select(UserAccount).where(UserAccount.username == username))
             if user is None:
@@ -177,9 +193,12 @@ def seed_demo_data() -> None:
         db.flush()
 
         manager_scopes = {
-            "manager": "FAB_A",
-            "manager_fab_b": "FAB_B",
-            "manager_security": "SECURITY",
+            **{f"fab_{fab_no}_manager": f"fab_{fab_no}" for fab_no in range(1, FAB_COUNT + 1)},
+            **{
+                f"{unit.lower()}_{fab_no}_manager": f"{unit}_{fab_no}"
+                for fab_no in range(1, FAB_COUNT + 1)
+                for unit in FAB_UNITS
+            },
         }
         for username, department_id in manager_scopes.items():
             manager = db.scalar(select(UserAccount).where(UserAccount.username == username))
@@ -192,14 +211,97 @@ def seed_demo_data() -> None:
             print(f"Seeded {generated_count} generated demo employees.")
 
 
+def cleanup_legacy_demo_data(db) -> None:
+    db.execute(
+        text(
+            """
+            DELETE FROM access_events
+            WHERE employee_id IN (
+                SELECT employee_id
+                FROM employees
+                WHERE employee_id = ANY(:legacy_employee_ids)
+                   OR department_id = ANY(:legacy_department_ids)
+            )
+            """
+        ),
+        {
+            "legacy_employee_ids": list(LEGACY_EMPLOYEE_IDS),
+            "legacy_department_ids": list(LEGACY_DEPARTMENT_IDS),
+        },
+    )
+    db.execute(
+        text(
+            """
+            DELETE FROM user_department_scopes
+            WHERE department_id = ANY(:legacy_department_ids)
+               OR user_id IN (
+                   SELECT user_id
+                   FROM user_accounts
+                   WHERE username = ANY(:legacy_usernames)
+                      OR employee_id = ANY(:legacy_employee_ids)
+               )
+            """
+        ),
+        {
+            "legacy_department_ids": list(LEGACY_DEPARTMENT_IDS),
+            "legacy_usernames": list(LEGACY_USERNAMES),
+            "legacy_employee_ids": list(LEGACY_EMPLOYEE_IDS),
+        },
+    )
+    db.execute(
+        text(
+            """
+            DELETE FROM user_accounts
+            WHERE username = ANY(:legacy_usernames)
+               OR employee_id = ANY(:legacy_employee_ids)
+            """
+        ),
+        {
+            "legacy_usernames": list(LEGACY_USERNAMES),
+            "legacy_employee_ids": list(LEGACY_EMPLOYEE_IDS),
+        },
+    )
+    db.execute(
+        text(
+            """
+            UPDATE employees
+            SET manager_employee_id = NULL
+            WHERE manager_employee_id = ANY(:legacy_employee_ids)
+            """
+        ),
+        {"legacy_employee_ids": list(LEGACY_EMPLOYEE_IDS)},
+    )
+    db.execute(
+        text(
+            """
+            DELETE FROM employees
+            WHERE employee_id = ANY(:legacy_employee_ids)
+               OR department_id = ANY(:legacy_department_ids)
+            """
+        ),
+        {
+            "legacy_employee_ids": list(LEGACY_EMPLOYEE_IDS),
+            "legacy_department_ids": list(LEGACY_DEPARTMENT_IDS),
+        },
+    )
+    db.execute(
+        text(
+            """
+            DELETE FROM departments
+            WHERE department_id = ANY(:legacy_department_ids)
+            """
+        ),
+        {"legacy_department_ids": list(LEGACY_DEPARTMENT_IDS)},
+    )
+
+
 def department_name(department_id: str) -> str:
-    return {
-        "TSMC": "TSMC Demo HQ",
-        "FAB_A": "Fab A",
-        "FAB_B": "Fab B",
-        "SECURITY": "Security",
-        "OPS_A": "Operations A",
-    }[department_id]
+    if department_id == "TSMC":
+        return "TSMC"
+    if department_id.startswith("fab_"):
+        return f"Fab {department_id.split('_')[1]}"
+    unit, fab_no = department_id.split("_")
+    return f"{unit} Fab {fab_no}"
 
 
 def upsert_department_scope(db, user_id: int, department_id: str) -> None:
@@ -227,15 +329,15 @@ def seed_generated_demo_employees(db) -> int:
         db,
         os.getenv("DEMO_BASIC_EMPLOYEE_ID"),
         "Basic Anti-Passback Demo Operator",
-        "OPS_A",
-        "MGR001",
+        "EE_1",
+        manager_for_department("EE_1"),
     )
     seeded += upsert_extra_demo_employee(
         db,
         os.getenv("DEMO_RECOVERY_EMPLOYEE_ID"),
         "Redis Recovery Demo Operator",
-        "OPS_A",
-        "MGR001",
+        "EE_1",
+        manager_for_department("EE_1"),
     )
 
     load_prefix = os.getenv("DEMO_LOAD_EMPLOYEE_PREFIX", "").strip()
@@ -261,7 +363,7 @@ def upsert_extra_demo_employee(
     employee_id: str | None,
     display_name: str,
     department_id: str,
-    manager_employee_id: str,
+    manager_employee_id: str | None,
 ) -> int:
     if not employee_id:
         return 0

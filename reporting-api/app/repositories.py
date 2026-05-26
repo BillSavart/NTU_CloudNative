@@ -1,8 +1,9 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
@@ -23,6 +24,7 @@ REQUIRED_EVENT_FIELDS = {
     "latencyMs",
     "timestamp",
 }
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def parse_access_event(raw: bytes) -> dict[str, Any]:
@@ -37,8 +39,8 @@ def parse_event_timestamp(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00")
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        return parsed.replace(tzinfo=TAIPEI)
+    return parsed.astimezone(TAIPEI)
 
 
 def parse_optional_datetime(value: str | None) -> datetime | None:
@@ -88,6 +90,7 @@ def save_access_event_with_session(db: Session, payload: dict[str, Any]) -> bool
         previous_state=str(payload["previousState"]),
         current_state=current_state,
         latency_ms=int(payload["latencyMs"]),
+        remark=payload.get("remark"),
         occurred_at=occurred_at,
     )
     db.add(event)
@@ -277,6 +280,160 @@ def list_anomalies(
     )
 
 
+def get_attendance_daily(
+    db: Session,
+    current_user: UserAccount | None = None,
+    employee_id: str | None = None,
+    department_id: str | None = None,
+    limit: int = 31,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 120))
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    target_employee_id = employee_id
+    if current_user is not None and current_user.role == "EMPLOYEE":
+        target_employee_id = current_user.employee_id
+
+    params: dict[str, Any] = {"limit": limit}
+    filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
+    if visible_ids is not None:
+        filters.append("emp.department_id IN :visible_ids")
+        params["visible_ids"] = visible_ids or ["__none__"]
+    if target_employee_id:
+        filters.append("e.employee_id = :employee_id")
+        params["employee_id"] = target_employee_id
+
+    sql = text(
+        f"""
+        WITH daily AS (
+            SELECT
+                e.employee_id,
+                emp.display_name,
+                emp.department_id,
+                e.occurred_at::date AS work_date,
+                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+            FROM access_events e
+            JOIN employees emp ON emp.employee_id = e.employee_id
+            WHERE {' AND '.join(filters)}
+            GROUP BY e.employee_id, emp.display_name, emp.department_id, e.occurred_at::date
+        )
+        SELECT
+            employee_id,
+            display_name,
+            department_id,
+            work_date,
+            first_in,
+            last_out,
+            CASE
+                WHEN first_in IS NOT NULL AND last_out IS NOT NULL
+                THEN round((extract(epoch FROM (last_out - first_in)) / 3600.0)::numeric, 2)
+                ELSE NULL
+            END AS work_hours,
+            CASE
+                WHEN first_in IS NULL THEN '缺少上班刷卡'
+                WHEN last_out IS NULL THEN '缺少下班刷卡'
+                WHEN first_in::time > time '08:30:00' THEN '遲到'
+                WHEN extract(epoch FROM (last_out - first_in)) / 3600.0 > 12 THEN '超過 12 小時'
+                ELSE '正常'
+            END AS status
+        FROM daily
+        ORDER BY work_date DESC, employee_id
+        LIMIT :limit
+        """
+    )
+    if visible_ids is not None:
+        sql = sql.bindparams(bindparam("visible_ids", expanding=True))
+    rows = db.execute(sql, params).mappings().all()
+    return {
+        "items": [
+            {
+                "employeeId": row["employee_id"],
+                "displayName": row["display_name"],
+                "departmentId": row["department_id"],
+                "date": row["work_date"].isoformat(),
+                "firstIn": row["first_in"].isoformat() if row["first_in"] else None,
+                "lastOut": row["last_out"].isoformat() if row["last_out"] else None,
+                "workHours": float(row["work_hours"]) if row["work_hours"] is not None else None,
+                "status": row["status"],
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+        "limit": limit,
+    }
+
+
+def get_compliance_anomalies(
+    db: Session,
+    current_user: UserAccount | None = None,
+    department_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 200))
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    params: dict[str, Any] = {"limit": limit}
+    filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
+    if visible_ids is not None:
+        filters.append("emp.department_id IN :visible_ids")
+        params["visible_ids"] = visible_ids or ["__none__"]
+    if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+        filters.append("e.employee_id = :employee_id")
+        params["employee_id"] = current_user.employee_id
+
+    sql = text(
+        f"""
+        WITH daily AS (
+            SELECT
+                e.employee_id,
+                emp.display_name,
+                emp.department_id,
+                e.occurred_at::date AS work_date,
+                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+            FROM access_events e
+            JOIN employees emp ON emp.employee_id = e.employee_id
+            WHERE {' AND '.join(filters)}
+            GROUP BY e.employee_id, emp.display_name, emp.department_id, e.occurred_at::date
+        )
+        SELECT
+            employee_id,
+            display_name,
+            department_id,
+            work_date,
+            first_in,
+            last_out,
+            round((extract(epoch FROM (last_out - first_in)) / 3600.0)::numeric, 2) AS work_hours
+        FROM daily
+        WHERE first_in IS NOT NULL
+          AND last_out IS NOT NULL
+          AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+        ORDER BY work_date DESC, work_hours DESC
+        LIMIT :limit
+        """
+    )
+    if visible_ids is not None:
+        sql = sql.bindparams(bindparam("visible_ids", expanding=True))
+    rows = db.execute(sql, params).mappings().all()
+    return {
+        "items": [
+            {
+                "id": f"overtime:{row['work_date']}:{row['employee_id']}",
+                "employeeId": row["employee_id"],
+                "displayName": row["display_name"],
+                "departmentId": row["department_id"],
+                "type": "overtime_daily",
+                "typeLabel": "超過 12 小時",
+                "hours": f"{float(row['work_hours']):.1f}h",
+                "occurredAt": row["last_out"].isoformat() if row["last_out"] else row["work_date"].isoformat(),
+                "note": "待主管確認",
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+        "limit": limit,
+    }
+
+
 def get_timeseries(
     db: Session,
     current_user: UserAccount | None = None,
@@ -285,9 +442,9 @@ def get_timeseries(
     department_id: str | None = None,
 ) -> list[dict[str, Any]]:
     if from_time is None:
-        from_time = datetime.now(UTC) - timedelta(hours=24)
+        from_time = datetime.now(TAIPEI) - timedelta(hours=24)
     if to_time is None:
-        to_time = datetime.now(UTC)
+        to_time = datetime.now(TAIPEI)
 
     scoped = _scoped_event_select(db, current_user, department_id, from_time, to_time).subquery()
     bucket = func.date_trunc("hour", scoped.c.occurred_at).label("bucket")

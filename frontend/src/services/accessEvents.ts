@@ -14,6 +14,42 @@ export type AccessEvent = {
   consumedAt?: string | null
 }
 
+export type DepartmentNode = {
+  departmentId: string
+  name: string
+  parentDepartmentId?: string | null
+  children: DepartmentNode[]
+}
+
+export type AttendanceDailyItem = {
+  employeeId: string
+  displayName?: string | null
+  departmentId?: string | null
+  date: string
+  firstIn?: string | null
+  lastOut?: string | null
+  workHours?: number | null
+  status: string
+}
+
+export type AttendanceDailyResponse = {
+  items: AttendanceDailyItem[]
+  total: number
+  limit: number
+}
+
+export type ComplianceAnomaly = {
+  id: string
+  employeeId: string
+  displayName?: string | null
+  departmentId: string
+  type: string
+  typeLabel: string
+  hours: string
+  occurredAt: string
+  note: string
+}
+
 export type AccessEventsResponse = {
   events: AccessEvent[]
   items: AccessEvent[]
@@ -101,4 +137,69 @@ export async function fetchDashboardSummary(): Promise<DashboardSummary> {
   }
 
   return (await response.json()) as DashboardSummary
+}
+
+export async function fetchDepartmentTree(): Promise<DepartmentNode[]> {
+  const response = await fetch('/api/reports/departments/tree', {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load departments (${response.status})`)
+  }
+  const result = (await response.json()) as { departments?: DepartmentNode[] }
+  return Array.isArray(result.departments) ? result.departments : []
+}
+
+export async function fetchDepartmentSummary(departmentId: string): Promise<DashboardSummary & { departmentId: string; name: string }> {
+  const response = await fetch(`/api/reports/departments/${encodeURIComponent(departmentId)}/summary`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load department summary (${response.status})`)
+  }
+  return (await response.json()) as DashboardSummary & { departmentId: string; name: string }
+}
+
+export async function fetchAttendanceDaily(limit = 31, departmentId?: string): Promise<AttendanceDailyResponse> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (departmentId) params.set('departmentId', departmentId)
+
+  const response = await fetch(`/api/reports/attendance/daily?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load attendance daily (${response.status})`)
+  }
+  const result = (await response.json()) as AttendanceDailyResponse
+  return {
+    items: Array.isArray(result.items) ? result.items : [],
+    total: Number(result.total ?? 0),
+    limit: Number(result.limit ?? limit),
+  }
+}
+
+export async function fetchComplianceAnomalies(
+  limit = 100,
+  departmentId?: string,
+): Promise<{ items: ComplianceAnomaly[]; total: number }> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (departmentId) params.set('departmentId', departmentId)
+
+  const response = await fetch(`/api/reports/compliance/anomalies?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load compliance anomalies (${response.status})`)
+  }
+  const result = (await response.json()) as { items?: ComplianceAnomaly[]; total?: number }
+  return {
+    items: Array.isArray(result.items) ? result.items : [],
+    total: Number(result.total ?? 0),
+  }
 }

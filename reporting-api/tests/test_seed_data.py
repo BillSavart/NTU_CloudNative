@@ -4,6 +4,8 @@ from app.seed import (
     DEMO_DEPARTMENTS,
     DEMO_EMPLOYEES,
     DEPARTMENT_PARENT_IDS,
+    FAB_COUNT,
+    FAB_UNITS,
     manager_for_department,
 )
 
@@ -17,10 +19,10 @@ class SeedDataTestCase(unittest.TestCase):
             if employee["manager_employee_id"] is None
         ]
 
-        self.assertEqual([employee["employee_id"] for employee in top_level], ["EXEC001"])
+        self.assertEqual([employee["employee_id"] for employee in top_level], ["100000"])
 
         for employee in DEMO_EMPLOYEES:
-            if employee["employee_id"] == "EXEC001":
+            if employee["employee_id"] == "100000":
                 continue
 
             manager_id = employee["manager_employee_id"]
@@ -48,6 +50,28 @@ class SeedDataTestCase(unittest.TestCase):
                 ),
                 f"{department_id} generated employees must report to a valid manager",
             )
+
+    def test_company_structure_matches_requested_fabs_and_units(self) -> None:
+        self.assertEqual(DEPARTMENT_PARENT_IDS["TSMC"], None)
+        for fab_no in range(1, FAB_COUNT + 1):
+            self.assertEqual(DEPARTMENT_PARENT_IDS[f"fab_{fab_no}"], "TSMC")
+            for unit in FAB_UNITS:
+                self.assertEqual(DEPARTMENT_PARENT_IDS[f"{unit}_{fab_no}"], f"fab_{fab_no}")
+
+        employees = {employee["employee_id"]: employee for employee in DEMO_EMPLOYEES}
+        self.assertEqual(employees["100000"]["display_name"], "CC Wei")
+        self.assertEqual(employees["100001"]["display_name"], "Bill Wang")
+        self.assertEqual(employees["100002"]["display_name"], "Ichigo")
+        self.assertEqual(employees["100003"]["display_name"], "Steven Lai")
+        self.assertEqual(employees["100004"]["display_name"], "Amy Huang")
+        self.assertEqual(employees["100005"]["display_name"], "High Ray")
+        self.assertEqual(employees["110001"]["display_name"], "Ethan Chen")
+        self.assertEqual(employees["120001"]["display_name"], "Lily Wang")
+        self.assertEqual(employees["130001"]["display_name"], "Marcus Lin")
+        self.assertEqual(employees["140001"]["display_name"], "Nina Huang")
+        self.assertEqual(employees["199001"]["display_name"], "YP Hung")
+        self.assertEqual(employees["199001"]["department_id"], "EE_1")
+        self.assertEqual(employees["199001"]["manager_employee_id"], "140001")
 
 
 def department_is_same_or_descendant(department_id: str, manager_department_id: str) -> bool:

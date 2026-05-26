@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -183,6 +184,7 @@ class AccessEvent(Base):
     previous_state: Mapped[str] = mapped_column(String(16), nullable=False)
     current_state: Mapped[str] = mapped_column(String(16), nullable=False)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

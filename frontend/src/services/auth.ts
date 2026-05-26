@@ -5,10 +5,19 @@
 
 export type LoginResponse = {
   message: string
-  user?: {
-    username: string
-    isStaff: boolean
-  }
+  user?: CurrentUser
+}
+
+export type CurrentUser = {
+  userId?: number
+  username: string
+  role?: string
+  isStaff: boolean
+  employeeId?: string | null
+  displayName?: string | null
+  departmentId?: string | null
+  visibleDepartmentIds?: string[] | null
+  canViewAllDepartments?: boolean
 }
 
 function getCookie(name: string): string {
@@ -61,4 +70,21 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
   }
 
   return result
+}
+
+export async function fetchCurrentUser(): Promise<CurrentUser | null> {
+  const response = await fetch('/api/auth/me', {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+
+  if (response.status === 401) {
+    return null
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to load current user (${response.status})`)
+  }
+
+  const result = (await response.json()) as { user?: CurrentUser }
+  return result.user ?? null
 }

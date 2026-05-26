@@ -81,8 +81,8 @@ npm run dev
 
 Reporting API demo 帳號（見 `reporting-api/API.md`）例如：
 
-- `admin / demo123`
-- `manager / demo123`
+- `executive / demo123`
+- `fab_1_manager / demo123`
 - `employee / demo123`
 
 > 注意：Vite dev server 會把 `/api/*` proxy 到 `http://127.0.0.1:8000`（見 `frontend/vite.config.ts`）。
@@ -107,14 +107,10 @@ Reporting API demo 帳號（見 `reporting-api/API.md`）例如：
   - `GET /api/reports/access/events?limit=...&offset=0`
   - `frontend/src/pages/Dashboard.tsx` 每 5 秒輪詢更新
 
-### 目前仍是假資料（待補 API）
+### 資料來源狀態
 
-- Dashboard KPI（今日出勤/遲到/缺勤/超時）：`frontend/src/pages/Dashboard.tsx`
-- 待處理異常捷徑數字：`frontend/src/pages/Dashboard.tsx`
-- 我的出勤 KPI 與明細：`frontend/src/pages/employee/MyAttendance.tsx`
-- 部門分析 KPI 與部門比較表：`frontend/src/pages/DepartmentAnalytics.tsx`
-- 異常合規清單：`frontend/src/pages/ComplianceAlerts.tsx`（`seedAlerts`）
-- 報表中心下載：`frontend/src/pages/employee/Reports.tsx`（目前只有 UI）
+- Dashboard KPI、即時刷卡事件、我的出勤、部門分析與異常合規都會透過 Reporting API 讀取實際資料，並依登入帳號的可視部門範圍過濾。
+- 報表中心下載流程尚未重新設計，目前先保留 UI，後續會再接實際報表 API。
 
 ## 如何模擬刷卡（產生即時事件）
 
@@ -130,8 +126,8 @@ Reporting API 會從 Kafka/Redis recovery 消費事件後寫入 PostgreSQL，前
 ```powershell
 # IN
 $body = @{
-  employeeId = "EMP001"
-  gateId = "GATE_01"
+  employeeId = "199001"
+  gateId = "gate_1_A"
   direction = "IN"
 } | ConvertTo-Json
 
@@ -143,8 +139,8 @@ Invoke-RestMethod `
 
 # OUT（同一個 employeeId）
 $body = @{
-  employeeId = "EMP001"
-  gateId = "GATE_01"
+  employeeId = "199001"
+  gateId = "gate_1_A"
   direction = "OUT"
 } | ConvertTo-Json
 

@@ -1,69 +1,61 @@
-﻿import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell'
+import { fetchComplianceAnomalies, type ComplianceAnomaly } from '../services/accessEvents'
 
-type AlertType = 'overtime_daily' | 'overtime_crossday' | 'unpaired_access'
-
-type AlertItem = {
-  id: string
-  employeeId: string
-  departmentId: string
-  type: AlertType
-  typeLabel: string
-  hours: string
-  occurredAt: string
-  note: string
+function formatDateTime(value: string) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return value || '-'
+  }
+  return parsed.toLocaleString('zh-TW', { hour12: false })
 }
-
-const seedAlerts: AlertItem[] = [
-  {
-    id: 'A-1',
-    employeeId: 'E14502',
-    departmentId: 'FAB_A',
-    type: 'overtime_daily',
-    typeLabel: '超過 12 小時',
-    hours: '13.5h',
-    occurredAt: '2026-05-25 07:40',
-    note: '待主管確認',
-  },
-  {
-    id: 'A-2',
-    employeeId: 'E10210',
-    departmentId: 'FAB_B',
-    type: 'overtime_crossday',
-    typeLabel: '跨日連續超時',
-    hours: '12.8h',
-    occurredAt: '2026-05-24 23:10',
-    note: '已通知營運經理',
-  },
-  {
-    id: 'A-3',
-    employeeId: 'E22031',
-    departmentId: 'SECURITY',
-    type: 'unpaired_access',
-    typeLabel: '未配對進出紀錄',
-    hours: '-',
-    occurredAt: '2026-05-24 20:16',
-    note: '待人資回覆',
-  },
-]
 
 function ComplianceAlerts() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [alerts, setAlerts] = useState<AlertItem[]>(seedAlerts)
+  const [alerts, setAlerts] = useState<ComplianceAnomaly[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftNote, setDraftNote] = useState('')
 
   const selectedType = searchParams.get('type') ?? 'all'
   const keyword = searchParams.get('q') ?? ''
 
+  useEffect(() => {
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        const result = await fetchComplianceAnomalies(200)
+        if (!cancelled) setAlerts(result.items)
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : 'Failed to load compliance anomalies')
+          setAlerts([])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const filteredAlerts = useMemo(() => {
     return alerts.filter((item) => {
       const typeMatch = selectedType === 'all' || item.type === selectedType
+      const normalizedKeyword = keyword.trim().toLowerCase()
       const keywordMatch =
-        keyword.trim() === '' ||
-        item.employeeId.toLowerCase().includes(keyword.toLowerCase()) ||
-        item.departmentId.toLowerCase().includes(keyword.toLowerCase())
+        normalizedKeyword === '' ||
+        item.employeeId.toLowerCase().includes(normalizedKeyword) ||
+        item.displayName?.toLowerCase().includes(normalizedKeyword) ||
+        item.departmentId.toLowerCase().includes(normalizedKeyword)
 
       return typeMatch && keywordMatch
     })
@@ -89,7 +81,7 @@ function ComplianceAlerts() {
     setSearchParams(next)
   }
 
-  const startEdit = (item: AlertItem) => {
+  const startEdit = (item: ComplianceAnomaly) => {
     setEditingId(item.id)
     setDraftNote(item.note)
   }
@@ -124,7 +116,7 @@ function ComplianceAlerts() {
               className="form-control"
               value={keyword}
               onChange={(event) => handleKeywordChange(event.target.value)}
-              placeholder="輸入員工編號或姓名"
+              placeholder="輸入員工編號、姓名或部門"
             />
           </div>
           <div className="col-md-4">
@@ -138,7 +130,7 @@ function ComplianceAlerts() {
         <table className="table-clean">
           <thead>
             <tr>
-              <th>員工編號</th>
+              <th>員工</th>
               <th>部門</th>
               <th>異常類型</th>
               <th>連續工時</th>
@@ -148,43 +140,64 @@ function ComplianceAlerts() {
             </tr>
           </thead>
           <tbody>
-            {filteredAlerts.map((item) => {
-              const isEditing = editingId === item.id
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="text-secondary">
+                  載入中…
+                </td>
+              </tr>
+            ) : error ? (
+              <tr>
+                <td colSpan={7} className="text-danger">
+                  {error}
+                </td>
+              </tr>
+            ) : filteredAlerts.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="text-secondary">
+                  目前沒有符合條件的異常資料
+                </td>
+              </tr>
+            ) : (
+              filteredAlerts.map((item) => {
+                const isEditing = editingId === item.id
+                const employeeText = item.displayName?.trim() ? `${item.displayName} (${item.employeeId})` : item.employeeId
 
-              return (
-                <tr key={item.id}>
-                  <td>{item.employeeId}</td>
-                  <td>{item.departmentId}</td>
-                  <td className="danger-text">{item.typeLabel}</td>
-                  <td className="danger-text">{item.hours}</td>
-                  <td>{item.occurredAt}</td>
-                  <td>
-                    <input
-                      className="form-control form-control-sm"
-                      value={isEditing ? draftNote : item.note}
-                      readOnly={!isEditing}
-                      onChange={(event) => setDraftNote(event.target.value)}
-                    />
-                  </td>
-                  <td className="alert-actions-cell">
-                    {isEditing ? (
-                      <>
-                        <button className="btn btn-sm btn-primary" type="button" onClick={() => saveNote(item.id)}>
-                          送出
+                return (
+                  <tr key={item.id}>
+                    <td>{employeeText}</td>
+                    <td>{item.departmentId}</td>
+                    <td className="danger-text">{item.typeLabel}</td>
+                    <td className="danger-text">{item.hours}</td>
+                    <td>{formatDateTime(item.occurredAt)}</td>
+                    <td>
+                      <input
+                        className="form-control form-control-sm"
+                        value={isEditing ? draftNote : item.note}
+                        readOnly={!isEditing}
+                        onChange={(event) => setDraftNote(event.target.value)}
+                      />
+                    </td>
+                    <td className="alert-actions-cell">
+                      {isEditing ? (
+                        <>
+                          <button className="btn btn-sm btn-primary" type="button" onClick={() => saveNote(item.id)}>
+                            送出
+                          </button>
+                          <button className="btn btn-sm btn-outline-secondary" type="button" onClick={cancelEdit}>
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn btn-sm btn-outline-primary" type="button" onClick={() => startEdit(item)}>
+                          修改
                         </button>
-                        <button className="btn btn-sm btn-outline-secondary" type="button" onClick={cancelEdit}>
-                          取消
-                        </button>
-                      </>
-                    ) : (
-                      <button className="btn btn-sm btn-outline-primary" type="button" onClick={() => startEdit(item)}>
-                        修改
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
+                      )}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
           </tbody>
         </table>
       </section>

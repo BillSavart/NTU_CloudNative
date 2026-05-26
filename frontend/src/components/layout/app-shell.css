@@ -16,8 +16,22 @@
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.4px;
-  margin-bottom: 8px;
   color: #0f2742;
+}
+
+.attendance-brand-block {
+  margin-bottom: 14px;
+}
+
+.attendance-sidebar-user {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f2742;
+  background: #e9f0f8;
+  border: 1px solid #d9e0e7;
+  border-radius: 8px;
+  padding: 8px 10px;
 }
 
 .attendance-nav {
@@ -71,15 +85,6 @@
   margin: 4px 0 0;
   font-size: 14px;
   color: #64748b;
-}
-
-.attendance-user-badge {
-  font-size: 13px;
-  font-weight: 600;
-  color: #0f2742;
-  background: #e9f0f8;
-  padding: 6px 10px;
-  border-radius: 999px;
 }
 
 .attendance-header-meta {

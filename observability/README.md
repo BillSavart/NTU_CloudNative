@@ -267,124 +267,28 @@ Dashboard 影響：
 - Access denied counter 增加。
 - Access Decision Ratio 會上升。
 
-### 4. 多人小流量測試
+### 4. 歷史資料 Fake Data
+
+如果觀察重點是 Reporting API / frontend 的查詢與 dashboard，而不是即時 Access API 流量，可以直接寫入一年營運感資料：
 
 ```powershell
-foreach ($i in 1..1000) {
-  $body = @{
-    employeeId = "LOAD$i"
-    gateId = "GATE_$((($i - 1) % 10) + 1)"
-    direction = "IN"
-  } | ConvertTo-Json -Compress
-
-  Invoke-RestMethod `
-    -Uri "http://localhost:8080/api/access/swipe" `
-    -Method POST `
-    -ContentType "application/json" `
-    -Body $body | Out-Null
-}
+.\scripts\fake_data.ps1
 ```
 
-用途：
-
-- 不安裝 Go 的情況下，快速產生一批刷卡 request。
-- 適合觀察 Grafana Traffic 是否會上升。
-
-Dashboard 影響：
-
-- Access swipes/sec 上升。
-- Event Pipeline 可能短暫出現 queue depth。
-- Reporting pipeline 應逐步處理事件。
-
-### 5. 本機 Go 版 Swipe Simulator
-
-如果 Windows 本機已經安裝 Go，可以直接使用專案原本的壓測腳本：
+小規模驗證：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test.ps1
-```
-
-這個版本會：
-
-- 使用本機的 `go run` 執行 `access-api/cmd/swipe-simulator`。
-- 預設自動啟動 base stack 加上 Observability override。
-- 從 Windows host 打 `http://127.0.0.1:8080`。
-- 跑完後印出 Access API `/metrics`。
-- 跑完後可到 Grafana dashboard 觀察 Traffic、Event Pipeline、Failures 等圖表。
-
-小型自訂測試可先用較小參數，避免一開始就跑太大流量：
-
-```powershell
-$env:EMPLOYEES = "5"
-$env:GATES = "2"
-$env:DURATION = "10s"
-$env:TIME_SCALE = "10"
-$env:WORKERS = "2"
-$env:EMPLOYEE_PREFIX = "TESTGO"
-
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test.ps1
-```
-
-接近 90,000 人尖峰刷卡的 full 版本：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test.ps1 -Full
-```
-
-如果只想測 Access API，不想啟動完整 Observability stack，可以加 `-BaseOnly`：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test.ps1 -BaseOnly
-```
-
-若執行時出現 `go` 無法辨識，代表本機尚未安裝 Go，或安裝後尚未重新開啟 PowerShell。可先確認：
-
-```powershell
-go version
-```
-
-正常測試結果應看到：
-
-- `Completed swipes` 等於排程刷卡數。
-- `Errors` 為 `0`。
-- `Under 50ms target` 為 `true`。
-- Grafana Traffic、Event Pipeline、Failures 等圖表會在下一次 Prometheus scrape 後更新。
-
-### 6. Docker 版 Swipe Simulator
-
-若不想在 Windows 本機安裝 Go，可以使用 Docker 版 script：
-
-小型版本：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test-docker.ps1
-```
-
-接近 90,000 人尖峰刷卡的 full 版本：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test-docker.ps1 -Full
-```
-
-用途：
-
-- 不需要在 Windows 安裝 Go。
-- 使用 Docker network 內部網址 `http://access-lb:8080` 直接打到 Access API load balancer。
-- 小型版本適合 demo 前快速確認；full 版本較接近題目 90,000 人尖峰刷卡情境。
-- 預設會啟動 base stack 加上 Observability override，因此跑完可直接看 Prometheus / Grafana。
-
-如果只想測 Access API，不想啟動完整 Observability stack，可以加 `-BaseOnly`：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-access-load-test-docker.ps1 -BaseOnly
+.\scripts\fake_data.ps1 -EmployeeCount 140 -OperatingDays 7 -AttendanceEmployees 50 -MovementPct 65 -MaxMovesPerDay 3
 ```
 
 Dashboard 影響：
 
-- Traffic 會明顯上升。
-- Event Pipeline 可用來觀察 queue depth 是否能回落。
-- Failures 正常應接近 0。
-- Access Decision Ratio 會受到 duplicate swipes 比例影響。
+- Reporting API 與 frontend 可查到跨一年的歷史出勤資料。
+- 員工、部門、權限資料會符合 `TSMC -> fab_1..fab_22 -> RD/IT/PE/EE` 結構。
+
+### 5. 壓力測試狀態
+
+新版壓力測試尚未重新設計。這份文件目前只描述 setup、單筆刷卡驗證、anti-passback 驗證與 fake data 匯入；不要把 fake data 匯入視為壓力測試。
 
 ## 常用頁面
 
@@ -414,7 +318,7 @@ Grafana dashboard 的目標是協助判斷系統是否健康，以及問題可�
 用途：
 
 - 判斷系統是否有流量進來。
-- 壓測時觀察流量是否符合預期。
+- 單筆刷卡驗證或前端查詢時觀察流量是否符合預期。
 - 若使用者說系統沒反應，但 Traffic 完全沒有變化，可能 request 根本沒有打到服務。
 
 ### Event Pipeline
@@ -459,7 +363,7 @@ p95 的意思是：在一段時間內，約 95% request 的延遲低於這個值
 
 - 對照架構目標中的 Reporting API read path `<200ms`。
 - 觀察報表查詢是否變慢。
-- 壓測或資料量變大時，檢查查詢是否需要優化。
+- 資料量變大時，檢查查詢是否需要優化。
 
 ### Access Decision Ratio
 

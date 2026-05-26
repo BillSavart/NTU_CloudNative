@@ -85,6 +85,7 @@ def upgrade() -> None:
             previous_state VARCHAR(16) NOT NULL,
             current_state VARCHAR(16) NOT NULL,
             latency_ms INTEGER NOT NULL,
+            remark TEXT,
             occurred_at TIMESTAMPTZ NOT NULL,
             consumed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT uq_access_events_request_id UNIQUE (request_id),
@@ -118,6 +119,7 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_access_events_decision_occurred "
         "ON access_events (decision, occurred_at)"
     )
+    op.execute("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS remark TEXT")
 
 
 def downgrade() -> None:

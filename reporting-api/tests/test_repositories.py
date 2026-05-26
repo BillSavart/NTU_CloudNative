@@ -2,6 +2,7 @@ import json
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +17,9 @@ from app.repositories import (
     query_access_events,
     save_access_event_with_session,
 )
+
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 class RepositoryTestCase(unittest.TestCase):
@@ -39,11 +43,11 @@ class RepositoryTestCase(unittest.TestCase):
     def test_parse_event_timestamp_supports_z_and_offsets(self) -> None:
         self.assertEqual(
             parse_event_timestamp("2026-05-20T09:04:50Z"),
-            datetime(2026, 5, 20, 9, 4, 50, tzinfo=UTC),
+            datetime(2026, 5, 20, 17, 4, 50, tzinfo=TAIPEI),
         )
         self.assertEqual(
             parse_event_timestamp("2026-05-20T17:04:50+08:00"),
-            datetime(2026, 5, 20, 9, 4, 50, tzinfo=UTC),
+            datetime(2026, 5, 20, 17, 4, 50, tzinfo=TAIPEI),
         )
 
     def test_save_access_event_inserts_employee_and_deduplicates_by_request_id(self) -> None:
@@ -57,7 +61,10 @@ class RepositoryTestCase(unittest.TestCase):
             self.assertIsNotNone(employee)
             assert employee is not None
             self.assertEqual(employee.last_known_state, "IN")
-            self.assertEqual(employee.last_seen_at.replace(tzinfo=UTC), datetime(2026, 5, 20, 9, 4, 50, tzinfo=UTC))
+            self.assertEqual(
+                employee.last_seen_at.replace(tzinfo=TAIPEI),
+                datetime(2026, 5, 20, 17, 4, 50, tzinfo=TAIPEI),
+            )
             self.assertEqual(
                 db.scalar(select(AccessEvent).where(AccessEvent.request_id == "req-new")).employee_id,
                 "NEW001",
@@ -73,8 +80,8 @@ class RepositoryTestCase(unittest.TestCase):
                 department_id="FAB_A",
                 decision="DENIED",
                 direction="IN",
-                from_time=datetime(2026, 5, 20, 8, 0, tzinfo=UTC),
-                to_time=datetime(2026, 5, 20, 10, 0, tzinfo=UTC),
+                from_time=datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
                 limit=1,
                 offset=0,
             )
@@ -166,7 +173,7 @@ class RepositoryTestCase(unittest.TestCase):
             ]
         )
         db.add(UserDepartmentScope(user_id=2, department_id="FAB_A", include_descendants=True))
-        base_time = datetime(2026, 5, 20, 9, 0, tzinfo=UTC)
+        base_time = datetime(2026, 5, 20, 17, 0, tzinfo=TAIPEI)
         db.add_all(
             [
                 AccessEvent(

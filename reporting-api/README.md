@@ -69,9 +69,9 @@ REDIS_RECOVERY_BATCH_SIZE=100
 
 - `departments`：部門階層，保留給後續主管權限與階層報表。
 - `employees`：員工主檔與目前最後狀態，consumer 遇到新 `employeeId` 會自動建立 minimal row。
-- `user_accounts`：登入使用者與角色，角色分為 `EMPLOYEE`、`MANAGER`、`EXECUTIVE`、`ADMIN`。
+- `user_accounts`：登入使用者與角色，角色分為 `EMPLOYEE`、`MANAGER`、`EXECUTIVE`、`ADMIN`；目前 seed/fake data 不再建立 `admin` 帳號。
 - `user_department_scopes`：設定使用者可看的部門範圍，可選擇是否包含子部門。
-- `access_events`：刷卡事件事實表，使用 `request_id` unique constraint 防止 Kafka 重送造成重複寫入。
+- `access_events`：刷卡事件事實表，使用 `request_id` unique constraint 防止 Kafka 重送造成重複寫入，並提供 nullable `remark` 欄位存放出勤異常備註。
 
 核心查詢索引：
 
@@ -126,7 +126,7 @@ curl http://127.0.0.1:8000/api/health/
 curl http://127.0.0.1:8000/api/csrf/
 curl -X POST http://127.0.0.1:8000/api/login/ \
   -H 'Content-Type: application/json' \
-  -d '{"employeeId":"manager","password":"demo123"}'
+  -d '{"employeeId":"fab_1_manager","password":"demo123"}'
 ```
 
 也提供較新的 auth path：
@@ -134,7 +134,7 @@ curl -X POST http://127.0.0.1:8000/api/login/ \
 ```bash
 curl -X POST http://127.0.0.1:8000/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"employeeId":"manager","password":"demo123"}'
+  -d '{"employeeId":"fab_1_manager","password":"demo123"}'
 
 curl http://127.0.0.1:8000/api/auth/me
 curl -X POST http://127.0.0.1:8000/api/auth/logout
@@ -143,31 +143,49 @@ curl -X POST http://127.0.0.1:8000/api/auth/logout
 Demo users 可用：
 
 ```text
-admin / demo123
 executive / demo123
-manager / demo123
-manager_fab_b / demo123
-manager_security / demo123
+fab_1_manager / demo123
+fab_2_manager / demo123
+fab_3_manager / demo123
+fab_4_manager / demo123
+fab_5_manager / demo123
+rd_1_manager / demo123
+it_1_manager / demo123
+pe_1_manager / demo123
+ee_1_manager / demo123
 employee / demo123
 ```
 
-建立 demo users / departments：
+建立 22 個 fab、各 fab 的 `RD/IT/PE/EE` 部門、管理者帳號、90,000 名員工與一年出勤歷史：
 
 ```bash
-./scripts/seed-reporting-demo-data.sh
+./scripts/fake_data.sh
 ```
 
-`seed-reporting-demo-data.sh` 也可以預先建立壓測會用到的完整員工主檔，避免 full demo 期間只靠 event 自動產生只有 `employee_id` 的 minimal row：
+Windows PowerShell:
+
+```powershell
+.\scripts\fake_data.ps1
+```
+
+如果只是要做小規模驗證，可以調低資料量：
 
 ```bash
-DEMO_LOAD_EMPLOYEE_PREFIX=E20260520120000 \
-DEMO_LOAD_EMPLOYEES=90000 \
-DEMO_BASIC_EMPLOYEE_ID=DEMO20260520120000 \
-DEMO_RECOVERY_EMPLOYEE_ID=REC20260520120000 \
-  ./scripts/seed-reporting-demo-data.sh
+FAKE_EMPLOYEE_COUNT=140 FAKE_OPERATING_DAYS=7 FAKE_ATTENDANCE_EMPLOYEES=50 FAKE_MOVEMENT_PCT=65 FAKE_MAX_MOVES_PER_DAY=3 ./scripts/fake_data.sh
 ```
 
-`scripts/demo-full-system.sh` 會自動用同一組 `RUN_ID`、`EMPLOYEE_PREFIX`、`EMPLOYEES` 先 seed 完整主檔，再執行基本刷卡、壓測與 Redis recovery demo。
+```powershell
+.\scripts\fake_data.ps1 -EmployeeCount 140 -OperatingDays 7 -AttendanceEmployees 50 -MovementPct 65 -MaxMovesPerDay 3
+```
+
+Fake data 規則：
+
+- 每位一般員工的 `manager_employee_id` 只會指到自己部門的小主管，例如 `EE_1` 員工會指到 `ee_1_manager` 的員工編號。
+- 小主管會指到所屬 fab 的大主管；fab 大主管會指到 executive。
+- 每天第一筆上班與最後一筆下班使用 `gate_{fab}_A`。
+- 白天會有一批員工在 `gate_{fab}_B` 到 `gate_{fab}_E` 之間進出，讓多門資料有存在感。
+- `FAKE_MOVEMENT_PCT` / `-MovementPct` 可調整每天有日間多門穿梭紀錄的員工比例；`FAKE_MAX_MOVES_PER_DAY` / `-MaxMovesPerDay` 可調整每人每日最多穿梭次數。
+- 不會產生 00:00-08:00 的刷卡紀錄；加班資料會在當天 23:59 前刷出，不會變成過夜留廠。
 
 ### Reports
 
@@ -180,13 +198,13 @@ curl http://127.0.0.1:8000/api/reports/access/summary
 Dashboard 首頁資料：
 
 ```bash
-curl 'http://127.0.0.1:8000/api/reports/dashboard?departmentId=FAB_A'
+curl 'http://127.0.0.1:8000/api/reports/dashboard?departmentId=fab_1'
 ```
 
 最近刷卡事件：
 
 ```bash
-curl 'http://127.0.0.1:8000/api/reports/access/events?departmentId=FAB_A&decision=DENIED&limit=20&offset=0'
+curl 'http://127.0.0.1:8000/api/reports/access/events?departmentId=fab_1&decision=DENIED&limit=20&offset=0'
 ```
 
 部門樹：
@@ -198,13 +216,13 @@ curl http://127.0.0.1:8000/api/reports/departments/tree
 部門 summary：
 
 ```bash
-curl http://127.0.0.1:8000/api/reports/departments/FAB_A/summary
+curl http://127.0.0.1:8000/api/reports/departments/fab_1/summary
 ```
 
 員工目前狀態：
 
 ```bash
-curl 'http://127.0.0.1:8000/api/reports/employees/current-state?departmentId=FAB_A&state=IN'
+curl 'http://127.0.0.1:8000/api/reports/employees/current-state?departmentId=fab_1&state=IN'
 ```
 
 異常事件與趨勢圖：
@@ -224,16 +242,21 @@ docker-compose exec reporting-api alembic upgrade head
 
 新增 schema 變更時，請新增 Alembic revision，不要再用 `Base.metadata.create_all()` 當正式 schema 管理方式。
 
-## Demo 前清空資料
+## Setup 與假資料
 
-如果希望每次 demo 都只看到新資料，可以從專案根目錄執行：
+如果需要啟動完整 Docker Compose stack、套用 migration、清空舊 reporting 資料，並跑不殘留資料的 smoke test：
 
 ```bash
-./scripts/reset-reporting-db.sh --yes
-./scripts/seed-reporting-demo-data.sh
+./scripts/setup.sh
 ```
 
-這會清空 `access_events`、`user_department_scopes`、`user_accounts`、`employees`、`departments`，但不會刪除 PostgreSQL volume，也不會動 Kafka 或 Redis。
+Windows PowerShell:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+`setup` 會清空 `access_events`、`user_department_scopes`、`user_accounts`、`employees`、`departments`，且不會寫入正式 demo/fake data；需要留下營運感資料時，再執行 `fake_data` 腳本。
 
 ## 專案結構
 

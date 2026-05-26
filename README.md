@@ -21,7 +21,7 @@
 * **事件串流**：Kafka，用於解耦開門決策與報表寫入。
 * **讀取路徑（Reporting API）**：Python 3.12 (FastAPI) + PostgreSQL。
 * **前端儀表板**：React + TypeScript (Vite 6.0.1) + Bootstrap 5。
-* **可觀測性**：Prometheus + Grafana，用於視覺化換班尖峰期間的系統流量。
+* **可觀測性**：Prometheus + Grafana，用於視覺化服務健康度、事件管線與 API 流量。
 
 ---
 
@@ -35,6 +35,36 @@
 - **Node.js** 與 **npm** (或 yarn/pnpm)
 
 ## 本地環境架設
+
+### 一鍵 Setup
+若要啟動完整 Docker Compose stack、套用 Reporting API migration、清空舊 reporting 資料，並跑不殘留資料的 smoke test：
+
+```bash
+./scripts/setup.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+這個腳本會在 smoke test 前後都清空 reporting app tables：`access_events`、`user_department_scopes`、`user_accounts`、`employees`、`departments`。完成後資料庫會保持乾淨，不會留下 fake data 或 smoke test 資料。
+
+若要寫入一年營運感的 TSMC 假資料與 9 萬名員工：
+
+```bash
+./scripts/fake_data.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\fake_data.ps1
+```
+
+預設帳號密碼為 `demo123`。可用 `FAKE_EMPLOYEE_COUNT`、`FAKE_OPERATING_DAYS`、`FAKE_ATTENDANCE_EMPLOYEES` 調整資料量。
+Fake data 會保留主門 `gate_{fab}_A` 作為上下班紀錄，同時在 08:00-24:00 之間產生 B-E 門的日間移動；不會有 00:00-08:00 刷卡，也不會讓員工過夜留在廠內。
 
 ### 1. 基礎設施服務 (資料庫與快取)
 本專案需要 PostgreSQL、Redis 與 Kafka 才能運作，這些服務已包裝在 Docker 中。
@@ -95,47 +125,31 @@ docker-compose up -d --scale access-api=3 access-lb
 
 注意：如果是在 Mac 主機端直接 `go run .`，請使用 `REDIS_ADDR=localhost:6379` 與同一組 `REDIS_PASSWORD`。Redis Sentinel 會回傳 Docker network 內的 `redis:6379`，該 hostname 只有容器內能解析。
 
-可使用內建模擬器壓測 90,000 人、50 扇門、30 分鐘上班尖峰：
+若想先把完整 Docker Compose stack 和 Reporting API migration 準備好，並清空舊 reporting 資料，請從專案根目錄執行：
 
 ```bash
-cd access-api
-go run ./cmd/swipe-simulator
+./scripts/setup.sh
 ```
 
-也可以直接使用專案腳本驗證與壓測：
+Windows PowerShell:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+若要建立 90,000 名員工和一年歷史出勤紀錄：
 
 ```bash
-./scripts/demo-access-api.sh
-./scripts/verify-access-stack.sh
-./scripts/run-access-load-test.sh
-./scripts/run-access-load-test.sh --full
+./scripts/fake_data.sh
 ```
 
-若想從 Docker Compose 啟動一路跑到壓力測試結束，最無腦的指令是：
+Windows PowerShell:
 
-```bash
-./scripts/demo-access-api.sh
+```powershell
+.\scripts\fake_data.ps1
 ```
 
-正式 90,000 人尖峰模擬：
-
-```bash
-./scripts/demo-access-api.sh --full
-```
-
-此模式會把 30 分鐘尖峰壓縮成約 3 分鐘執行，較適合本機 Docker Desktop。
-
-壓測模擬器和腳本每次會自動使用新的員工 ID 前綴，避免 Redis 裡前一次壓測留下的 IN 狀態導致大量 Anti-Passback 拒絕。正式尖峰預設為 99.5% 進門刷卡與 0.5% 重複刷卡，因此結果應以 `GRANTED` 為主。
-
-如果 demo 要呈現正常公司門禁出入，而不是上班尖峰，可以跑新的 5 分鐘 normal flow 腳本：
-
-```bash
-./scripts/run-access-normal-demo.sh
-```
-
-此腳本保留 90,000 員工總量，會先建立一批「一開始已在廠內」的員工，接著在 5 分鐘內均勻送出 IN/OUT 門禁事件；原本的 `./scripts/run-access-load-test.sh` 仍保留尖峰壓力測試用途。
-
-壓測過程會定期印出完成數、百分比、QPS、錯誤數、平均延遲毫秒數與最大延遲毫秒數。最後 summary 會顯示 `Under 50ms target`，可用 `PROGRESS_EVERY=5s` 調整輸出頻率。
+正式壓力測試尚未重新設計；目前文件只保留 setup、fake data 與單筆刷卡展示流程。
 
 Access API 也已提供 Dockerfile 與 Kubernetes 部署檔：
 
@@ -201,35 +215,40 @@ Reporting API 啟動時會自動執行 Alembic migrations。若要手動套用�
 docker-compose exec reporting-api alembic upgrade head
 ```
 
-若 demo 前想清空報表資料庫，只保留下一輪新刷卡資料：
+若要重新執行完整 stack setup、清空舊 reporting 資料，並確認 smoke test 不殘留資料：
 
 ```bash
-./scripts/reset-reporting-db.sh --yes
-./scripts/seed-reporting-demo-data.sh
+./scripts/setup.sh
 ```
 
-若要一鍵準備本機 demo，包括 Docker Compose stack、frontend dashboard、Prometheus/Grafana、demo 帳號 seed、刷卡 smoke test 與 demo URL 清單：
+Windows PowerShell:
 
-```bash
-./scripts/demo-local-oneclick.sh
+```powershell
+.\scripts\setup.ps1
 ```
 
-若只是重跑健康檢查與刷卡 smoke test，不想重建 image 或清掉既有資料：
+若要寫入 90,000 人、一年營運感的假資料：
 
 ```bash
-./scripts/demo-local-oneclick.sh --no-build --no-reset
+./scripts/fake_data.sh
 ```
 
-若要一鍵執行完整 demo，包括啟動服務、清資料、基本刷卡、壓力測試與斷線恢復測試：
+Windows PowerShell:
 
-```bash
-./scripts/demo-full-system.sh
+```powershell
+.\scripts\fake_data.ps1
 ```
 
-正式 90,000 人尖峰壓測 demo：
+如需小規模驗證 fake data 產生器，可調低資料量：
 
 ```bash
-./scripts/demo-full-system.sh --full
+FAKE_EMPLOYEE_COUNT=140 FAKE_OPERATING_DAYS=7 FAKE_ATTENDANCE_EMPLOYEES=50 FAKE_MOVEMENT_PCT=65 FAKE_MAX_MOVES_PER_DAY=3 ./scripts/fake_data.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\fake_data.ps1 -EmployeeCount 140 -OperatingDays 7 -AttendanceEmployees 50 -MovementPct 65 -MaxMovesPerDay 3
 ```
 
 ### 4. 前端（React / Vite）

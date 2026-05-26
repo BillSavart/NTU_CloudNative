@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { fetchCurrentUser, type CurrentUser } from '../../services/auth'
 
 type AppShellProps = {
   title: string
@@ -19,18 +20,37 @@ const navItems = [
 function AppShell({ title, subtitle, children }: AppShellProps) {
   const location = useLocation()
   const [now, setNow] = useState(new Date())
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000)
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    fetchCurrentUser()
+      .then((user) => {
+        if (!cancelled) setCurrentUser(user)
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentUser(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const datetimeText = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleDateString('zh-TW', { weekday: 'long' })} ${now.toLocaleTimeString('zh-TW', { hour12: false })}`
+  const displayName = currentUser?.displayName?.trim() || currentUser?.username || '訪客'
 
   return (
     <div className="attendance-shell">
       <aside className="attendance-sidebar">
-        <div className="attendance-brand">出勤管理</div>
+        <div className="attendance-brand-block">
+          <div className="attendance-brand">出勤管理</div>
+          <div className="attendance-sidebar-user">Hi, {displayName}</div>
+        </div>
 
         <nav className="attendance-nav">
           {navItems.map((item) => (
@@ -53,7 +73,6 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
           </div>
           <div className="attendance-header-meta">
             <div className="attendance-header-datetime">{datetimeText}</div>
-            <div className="attendance-user-badge">主管模式</div>
           </div>
         </header>
         <main className="attendance-content">{children}</main>

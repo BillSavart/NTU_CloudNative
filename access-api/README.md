@@ -144,7 +144,7 @@ kafkaQueued=true -> 事件已放進 Kafka 非同步發布佇列
 kafkaQueued=false -> recovery buffer 仍可能有資料，但 Kafka queue 沒接住
 ```
 
-若尖峰測試出現事件遺失，可以提高 `PUBLISHER_QUEUE_SIZE`、提高 `PUBLISHER_WORKERS`，或降低模擬器的 `--time-scale`。
+若大量事件匯入時出現事件遺失，可以提高 `PUBLISHER_QUEUE_SIZE` 或 `PUBLISHER_WORKERS`，並觀察 Kafka 與 Reporting API consumer 狀態。
 
 ## API 端點
 
@@ -204,118 +204,29 @@ docker-compose exec kafka-1 /opt/kafka/bin/kafka-console-consumer.sh \
   --max-messages 3
 ```
 
-## 尖峰流量模擬
+## 即時刷卡驗證
 
-執行 90,000 人公司、50 扇門、30 分鐘上班尖峰的壓縮模擬：
+目前新版流程尚未設計正式壓力測試腳本。若只是要確認 Access API、Redis anti-passback、Kafka 發布與 Reporting API consumer 是否串通，請使用上面的單筆 `curl` 展示流程，或手動送少量刷卡 request。
 
-```bash
-go run ./cmd/swipe-simulator
-```
+## Setup 與 Fake Data
 
-預設會送出約 90,450 筆假刷卡訊號：每位員工一筆主要刷卡，加上 0.5% 重複進門刷卡，用來測 Anti-Passback。模擬器和腳本每次會自動使用新的員工 ID 前綴，避免 Redis 裡前一次壓測留下的 IN 狀態影響結果。30 分鐘尖峰預設用 `TIME_SCALE=10` 壓縮成約 3 分鐘跑完，較適合本機 Docker Desktop。
-
-常用參數：
+專案根目錄目前保留兩個主要入口：
 
 ```bash
-go run ./cmd/swipe-simulator \
-  --base-url http://127.0.0.1:8080 \
-  --employees 90000 \
-  --employee-prefix E \
-  --gates 50 \
-  --duration 30m \
-  --time-scale 10 \
-  --workers 200 \
-  --entry-ratio 0.995 \
-  --duplicate-pct 0.005
+./scripts/setup.sh
+./scripts/fake_data.sh
 ```
 
-快速小型測試：
+Windows PowerShell:
 
-```bash
-go run ./cmd/swipe-simulator --employees 1000 --employee-prefix TEST --duration 2m --time-scale 120
+```powershell
+.\scripts\setup.ps1
+.\scripts\fake_data.ps1
 ```
 
-## 正常門禁出入 Demo
+`setup` 會啟動完整 Docker Compose stack、套用 Reporting API migration、清空舊 reporting 資料，並執行不殘留資料的 smoke test。`fake_data` 會建立 TSMC 的 22 個 fab、每個 fab 的 `RD/IT/PE/EE` 部門、90,000 名員工，以及一年歷史出勤紀錄。
 
-如果 demo 不想呈現上班尖峰，而是要模擬公司在 5 分鐘內有人進、有人出的正常門禁流量，可以用 normal profile：
-
-```bash
-go run ./cmd/swipe-simulator \
-  --base-url http://127.0.0.1:8080 \
-  --profile normal \
-  --employees 90000 \
-  --employee-prefix E \
-  --gates 50 \
-  --duration 5m \
-  --time-scale 1 \
-  --workers 200 \
-  --initial-inside-ratio 0.35 \
-  --duplicate-pct 0.005
-```
-
-normal profile 會先用 setup swipes 建立「一開始已經在廠內」的員工狀態，接著在 5 分鐘 timed demo 期間均勻送出門禁事件：初始在廠員工會刷 OUT，其他員工會刷 IN。`duplicate-pct` 仍會保留少量重複刷卡，用來展示 Anti-Passback。
-
-## 驗證腳本
-
-最簡單的一鍵 demo：
-
-```bash
-./scripts/demo-access-api.sh
-```
-
-這會從 `docker-compose up` 開始，依序啟動 Access API stack、建立 Kafka topic、跑完整 smoke test、跑壓力測試，最後印出常用檢查指令。
-
-正式 90,000 人尖峰模擬：
-
-```bash
-./scripts/demo-access-api.sh --full
-```
-
-從專案根目錄執行完整 Access API stack smoke test：
-
-```bash
-./scripts/verify-access-stack.sh
-```
-
-此腳本會檢查：
-
-- Nginx 負載平衡器是否打到多個 Access API 容器。
-- Redis Sentinel 是否能回報目前 master。
-- Redis 主節點/複本角色是否正常。
-- Kafka topic `access-events` 是否為 3 partitions、replication factor 3。
-- Anti-Passback 是否回傳 `GRANTED -> DENIED -> GRANTED`。
-- Kafka offsets 是否增加，代表事件已寫入 Kafka。
-- Access API 指標是否沒有遺失事件。
-
-執行小型壓測：
-
-```bash
-./scripts/run-access-load-test.sh
-```
-
-執行 90,000 人尖峰模擬：
-
-```bash
-./scripts/run-access-load-test.sh --full
-```
-
-執行 90,000 人、5 分鐘正常門禁出入 demo：
-
-```bash
-./scripts/run-access-normal-demo.sh
-```
-
-可用環境變數覆蓋測試參數：
-
-```bash
-EMPLOYEES=5000 GATES=20 TIME_SCALE=10 WORKERS=100 ENTRY_RATIO=0.995 DUPLICATE_PCT=0.005 ./scripts/run-access-load-test.sh
-```
-
-壓測過程會定期印出完成數、百分比、QPS、錯誤數、平均延遲毫秒數與最大延遲毫秒數。最後 summary 也會顯示 `Under 50ms target`，方便對照作業要求。可調整進度輸出頻率：
-
-```bash
-PROGRESS_EVERY=5s ./scripts/run-access-load-test.sh --full
-```
+正式壓力測試尚未重新設計；不要把 `fake_data` 當成壓測，它只負責建立可查詢的歷史資料。
 
 ## Docker 容器
 

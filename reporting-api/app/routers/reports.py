@@ -5,7 +5,9 @@ from app.database import get_db
 from app.dependencies import get_optional_current_user
 from app.models import UserAccount
 from app.repositories import (
+    get_attendance_daily,
     get_access_summary,
+    get_compliance_anomalies,
     get_dashboard,
     get_department_summary,
     get_department_tree,
@@ -145,6 +147,38 @@ def anomalies(
         department_id=department_id,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/reports/attendance/daily")
+def attendance_daily(
+    employee_id: str | None = Query(default=None, alias="employeeId"),
+    department_id: str | None = Query(default=None, alias="departmentId"),
+    limit: int = Query(default=31, ge=1, le=120),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_attendance_daily(
+        db,
+        current_user=current_user,
+        employee_id=employee_id,
+        department_id=department_id,
+        limit=limit,
+    )
+
+
+@router.get("/reports/compliance/anomalies")
+def compliance_anomalies(
+    department_id: str | None = Query(default=None, alias="departmentId"),
+    limit: int = Query(default=100, ge=1, le=200),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_compliance_anomalies(
+        db,
+        current_user=current_user,
+        department_id=department_id,
+        limit=limit,
     )
 
 
