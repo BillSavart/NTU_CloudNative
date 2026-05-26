@@ -1,33 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '../components/layout/AppShell'
-import {
-  fetchAttendanceDaily,
-  fetchComplianceAnomalies,
-  fetchDepartmentSummary,
-  fetchDepartmentTree,
-  type AttendanceDailyItem,
-  type DashboardSummary,
-  type DepartmentNode,
-} from '../services/accessEvents'
-
-type DepartmentRow = {
-  departmentId: string
-  name: string
-  summary: DashboardSummary & { departmentId: string; name: string }
-  dailyItems: AttendanceDailyItem[]
-  anomalyCount: number
-}
-
-function flattenDepartments(nodes: DepartmentNode[]): DepartmentNode[] {
-  return nodes.flatMap((node) => [node, ...flattenDepartments(node.children ?? [])])
-}
-
-function getDisplayDepartments(nodes: DepartmentNode[]): DepartmentNode[] {
-  if (nodes.length === 1 && nodes[0].children.length > 0) {
-    return nodes[0].children
-  }
-  return nodes
-}
+import { fetchDepartmentAnalytics, type DepartmentAnalyticsRow } from '../services/accessEvents'
 
 function formatPercent(value: number | null) {
   if (value === null || Number.isNaN(value)) {
@@ -36,8 +9,15 @@ function formatPercent(value: number | null) {
   return `${value.toFixed(1)}%`
 }
 
+function normalRate(row: DepartmentAnalyticsRow) {
+  if (row.dailyRecords <= 0) {
+    return null
+  }
+  return (row.normalRecords / row.dailyRecords) * 100
+}
+
 function DepartmentAnalytics() {
-  const [rows, setRows] = useState<DepartmentRow[]>([])
+  const [rows, setRows] = useState<DepartmentAnalyticsRow[]>([])
   const [visibleDepartmentCount, setVisibleDepartmentCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -49,32 +29,10 @@ function DepartmentAnalytics() {
       try {
         setLoading(true)
         setError(null)
-
-        const tree = await fetchDepartmentTree()
-        const departments = getDisplayDepartments(tree)
-        const allVisibleDepartments = flattenDepartments(tree)
-
-        const nextRows = await Promise.all(
-          departments.map(async (department) => {
-            const [summary, daily, anomalies] = await Promise.all([
-              fetchDepartmentSummary(department.departmentId),
-              fetchAttendanceDaily(120, department.departmentId),
-              fetchComplianceAnomalies(200, department.departmentId),
-            ])
-
-            return {
-              departmentId: department.departmentId,
-              name: department.name,
-              summary,
-              dailyItems: daily.items,
-              anomalyCount: anomalies.total,
-            }
-          }),
-        )
-
+        const result = await fetchDepartmentAnalytics(7)
         if (!cancelled) {
-          setRows(nextRows)
-          setVisibleDepartmentCount(allVisibleDepartments.length)
+          setRows(result.departments)
+          setVisibleDepartmentCount(result.visibleDepartmentCount)
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -94,15 +52,14 @@ function DepartmentAnalytics() {
   }, [])
 
   const metrics = useMemo(() => {
-    const allDailyItems = rows.flatMap((row) => row.dailyItems)
-    const normalCount = allDailyItems.filter((item) => item.status === '正常').length
-    const attendanceRate = allDailyItems.length > 0 ? (normalCount / allDailyItems.length) * 100 : null
+    const dailyRecords = rows.reduce((total, row) => total + row.dailyRecords, 0)
+    const normalRecords = rows.reduce((total, row) => total + row.normalRecords, 0)
 
     return {
       departmentCount: visibleDepartmentCount ?? rows.length,
-      attendanceRate,
-      anomalyCount: rows.reduce((total, row) => total + row.anomalyCount, 0),
-      employeesInside: rows.reduce((total, row) => total + (row.summary.employeesInside ?? 0), 0),
+      attendanceRate: dailyRecords > 0 ? (normalRecords / dailyRecords) * 100 : null,
+      anomalyCount: rows.reduce((total, row) => total + row.overtimeRecords, 0),
+      employeesInside: rows.reduce((total, row) => total + row.employeesInside, 0),
     }
   }, [rows, visibleDepartmentCount])
 
@@ -160,23 +117,16 @@ function DepartmentAnalytics() {
                 </td>
               </tr>
             ) : (
-              rows.map((row) => {
-                const lateCount = row.dailyItems.filter((item) => item.status === '遲到').length
-                const overtimeCount = row.dailyItems.filter((item) => item.status === '超過 12 小時').length
-                const normalCount = row.dailyItems.filter((item) => item.status === '正常').length
-                const rate = row.dailyItems.length > 0 ? (normalCount / row.dailyItems.length) * 100 : null
-
-                return (
-                  <tr key={row.departmentId}>
-                    <td>{row.departmentId}</td>
-                    <td>{row.summary.knownEmployees}</td>
-                    <td>{formatPercent(rate)}</td>
-                    <td>{lateCount}</td>
-                    <td className={overtimeCount > 0 ? 'danger-text' : undefined}>{overtimeCount}</td>
-                    <td>{row.summary.employeesInside}</td>
-                  </tr>
-                )
-              })
+              rows.map((row) => (
+                <tr key={row.departmentId}>
+                  <td>{row.departmentId}</td>
+                  <td>{row.knownEmployees}</td>
+                  <td>{formatPercent(normalRate(row))}</td>
+                  <td>{row.lateRecords}</td>
+                  <td className={row.overtimeRecords > 0 ? 'danger-text' : undefined}>{row.overtimeRecords}</td>
+                  <td>{row.employeesInside}</td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>

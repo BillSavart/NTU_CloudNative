@@ -178,6 +178,18 @@ FAKE_EMPLOYEE_COUNT=140 FAKE_OPERATING_DAYS=7 FAKE_ATTENDANCE_EMPLOYEES=50 FAKE_
 .\scripts\fake_data.ps1 -EmployeeCount 140 -OperatingDays 7 -AttendanceEmployees 50 -MovementPct 65 -MaxMovesPerDay 3
 ```
 
+如果既有資料庫已經灌好 fake data，但需要補上 executive 出勤與拒絕通行事件，可以執行：
+
+```bash
+./scripts/patch_fake_data.sh
+```
+
+```powershell
+.\scripts\patch_fake_data.ps1
+```
+
+可用 `PATCH_DENIED_EVENTS` 或 `-DeniedEvents` 調整要補入的拒絕通行筆數。補丁使用 deterministic request id，可重跑；資料會分散到既有歷史日期與 08:00 後的工作時段，不會集中出現在資料庫最新時間。
+
 Fake data 規則：
 
 - 每位一般員工的 `manager_employee_id` 只會指到自己部門的小主管，例如 `EE_1` 員工會指到 `ee_1_manager` 的員工編號。

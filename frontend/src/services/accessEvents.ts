@@ -50,6 +50,23 @@ export type ComplianceAnomaly = {
   note: string
 }
 
+export type DepartmentAnalyticsRow = {
+  departmentId: string
+  name: string
+  knownEmployees: number
+  employeesInside: number
+  dailyRecords: number
+  normalRecords: number
+  lateRecords: number
+  overtimeRecords: number
+}
+
+export type DepartmentAnalyticsResponse = {
+  departments: DepartmentAnalyticsRow[]
+  visibleDepartmentCount: number
+  days: number
+}
+
 export type AccessEventsResponse = {
   events: AccessEvent[]
   items: AccessEvent[]
@@ -162,6 +179,22 @@ export async function fetchDepartmentSummary(departmentId: string): Promise<Dash
   return (await response.json()) as DashboardSummary & { departmentId: string; name: string }
 }
 
+export async function fetchDepartmentAnalytics(days = 31): Promise<DepartmentAnalyticsResponse> {
+  const response = await fetch(`/api/reports/departments/analytics?days=${days}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load department analytics (${response.status})`)
+  }
+  const result = (await response.json()) as Partial<DepartmentAnalyticsResponse>
+  return {
+    departments: Array.isArray(result.departments) ? result.departments : [],
+    visibleDepartmentCount: Number(result.visibleDepartmentCount ?? 0),
+    days: Number(result.days ?? days),
+  }
+}
+
 export async function fetchAttendanceDaily(limit = 31, departmentId?: string): Promise<AttendanceDailyResponse> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
@@ -185,10 +218,12 @@ export async function fetchAttendanceDaily(limit = 31, departmentId?: string): P
 export async function fetchComplianceAnomalies(
   limit = 100,
   departmentId?: string,
+  type?: string,
 ): Promise<{ items: ComplianceAnomaly[]; total: number }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
   if (departmentId) params.set('departmentId', departmentId)
+  if (type && type !== 'all') params.set('type', type)
 
   const response = await fetch(`/api/reports/compliance/anomalies?${params.toString()}`, {
     method: 'GET',
@@ -202,4 +237,19 @@ export async function fetchComplianceAnomalies(
     items: Array.isArray(result.items) ? result.items : [],
     total: Number(result.total ?? 0),
   }
+}
+
+export async function updateComplianceAnomalyRemark(id: string, note: string): Promise<{ id: string; note: string }> {
+  const response = await fetch(`/api/reports/compliance/anomalies/${encodeURIComponent(id)}/remark`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify({ note }),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to update anomaly remark (${response.status})`)
+  }
+  return (await response.json()) as { id: string; note: string }
 }

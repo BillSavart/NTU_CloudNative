@@ -88,3 +88,20 @@ export async function fetchCurrentUser(): Promise<CurrentUser | null> {
   const result = (await response.json()) as { user?: CurrentUser }
   return result.user ?? null
 }
+
+export async function logout(): Promise<void> {
+  await ensureCsrfCookie()
+  const csrfToken = getCookie('csrftoken')
+
+  const response = await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: {
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'same-origin',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Logout failed (${response.status})`)
+  }
+}

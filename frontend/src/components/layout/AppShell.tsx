@@ -1,7 +1,7 @@
 ﻿import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link, useLocation } from 'react-router-dom'
-import { fetchCurrentUser, type CurrentUser } from '../../services/auth'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { fetchCurrentUser, logout, type CurrentUser } from '../../services/auth'
 
 type AppShellProps = {
   title: string
@@ -19,8 +19,10 @@ const navItems = [
 
 function AppShell({ title, subtitle, children }: AppShellProps) {
   const location = useLocation()
+  const navigate = useNavigate()
   const [now, setNow] = useState(new Date())
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000)
@@ -44,6 +46,17 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
   const datetimeText = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleDateString('zh-TW', { weekday: 'long' })} ${now.toLocaleTimeString('zh-TW', { hour12: false })}`
   const displayName = currentUser?.displayName?.trim() || currentUser?.username || '訪客'
 
+  const handleLogout = async () => {
+    setIsLoggingOut(true)
+    try {
+      await logout()
+    } finally {
+      setCurrentUser(null)
+      setIsLoggingOut(false)
+      navigate('/login', { replace: true })
+    }
+  }
+
   return (
     <div className="attendance-shell">
       <aside className="attendance-sidebar">
@@ -63,6 +76,10 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
             </Link>
           ))}
         </nav>
+
+        <button className="attendance-logout-button" type="button" onClick={handleLogout} disabled={isLoggingOut}>
+          {isLoggingOut ? '登出中...' : '登出'}
+        </button>
       </aside>
 
       <div className="attendance-main">

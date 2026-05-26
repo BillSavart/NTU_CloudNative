@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -9,6 +10,7 @@ from app.repositories import (
     get_access_summary,
     get_compliance_anomalies,
     get_dashboard,
+    get_department_analytics,
     get_department_summary,
     get_department_tree,
     get_employee_states,
@@ -16,9 +18,14 @@ from app.repositories import (
     list_anomalies,
     parse_optional_datetime,
     query_access_events,
+    update_compliance_anomaly_remark,
 )
 
 router = APIRouter()
+
+
+class RemarkUpdateRequest(BaseModel):
+    note: str
 
 
 @router.get("/reports/access/summary")
@@ -110,6 +117,15 @@ def department_summary(
     )
 
 
+@router.get("/reports/departments/analytics")
+def department_analytics(
+    days: int = Query(default=31, ge=1, le=120),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_department_analytics(db, current_user=current_user, days=days)
+
+
 @router.get("/reports/employees/current-state")
 def employee_current_state(
     department_id: str | None = Query(default=None, alias="departmentId"),
@@ -170,6 +186,7 @@ def attendance_daily(
 @router.get("/reports/compliance/anomalies")
 def compliance_anomalies(
     department_id: str | None = Query(default=None, alias="departmentId"),
+    anomaly_type: str | None = Query(default=None, alias="type"),
     limit: int = Query(default=100, ge=1, le=200),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
@@ -178,8 +195,29 @@ def compliance_anomalies(
         db,
         current_user=current_user,
         department_id=department_id,
+        anomaly_type=anomaly_type,
         limit=limit,
     )
+
+
+@router.patch("/reports/compliance/anomalies/{anomaly_id}/remark")
+def compliance_anomaly_remark(
+    anomaly_id: str,
+    payload: RemarkUpdateRequest,
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        return update_compliance_anomaly_remark(
+            db,
+            anomaly_id=anomaly_id,
+            remark=payload.note,
+            current_user=current_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/reports/timeseries")

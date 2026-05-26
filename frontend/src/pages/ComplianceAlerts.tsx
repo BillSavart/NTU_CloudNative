@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell'
-import { fetchComplianceAnomalies, type ComplianceAnomaly } from '../services/accessEvents'
+import { fetchComplianceAnomalies, updateComplianceAnomalyRemark, type ComplianceAnomaly } from '../services/accessEvents'
 
 function formatDateTime(value: string) {
   const parsed = new Date(value)
@@ -18,6 +18,7 @@ function ComplianceAlerts() {
   const [error, setError] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftNote, setDraftNote] = useState('')
+  const [savingId, setSavingId] = useState<string | null>(null)
 
   const selectedType = searchParams.get('type') ?? 'all'
   const keyword = searchParams.get('q') ?? ''
@@ -29,7 +30,7 @@ function ComplianceAlerts() {
       try {
         setLoading(true)
         setError(null)
-        const result = await fetchComplianceAnomalies(200)
+        const result = await fetchComplianceAnomalies(200, undefined, selectedType)
         if (!cancelled) setAlerts(result.items)
       } catch (loadError) {
         if (!cancelled) {
@@ -45,7 +46,7 @@ function ComplianceAlerts() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [selectedType])
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((item) => {
@@ -91,9 +92,18 @@ function ComplianceAlerts() {
     setDraftNote('')
   }
 
-  const saveNote = (id: string) => {
-    setAlerts((prev) => prev.map((item) => (item.id === id ? { ...item, note: draftNote } : item)))
-    cancelEdit()
+  const saveNote = async (id: string) => {
+    try {
+      setSavingId(id)
+      setError(null)
+      const result = await updateComplianceAnomalyRemark(id, draftNote)
+      setAlerts((prev) => prev.map((item) => (item.id === id ? { ...item, note: result.note } : item)))
+      cancelEdit()
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '備註更新失敗')
+    } finally {
+      setSavingId(null)
+    }
   }
 
   return (
@@ -106,6 +116,7 @@ function ComplianceAlerts() {
             <select className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
               <option value="all">全部</option>
               <option value="overtime_daily">單日超過 12 小時</option>
+              <option value="denied_access">拒絕通行事件</option>
               <option value="overtime_crossday">跨日連續超時</option>
               <option value="unpaired_access">未配對進出紀錄</option>
             </select>
@@ -182,7 +193,7 @@ function ComplianceAlerts() {
                       {isEditing ? (
                         <>
                           <button className="btn btn-sm btn-primary" type="button" onClick={() => saveNote(item.id)}>
-                            送出
+                            {savingId === item.id ? '儲存中…' : '送出'}
                           </button>
                           <button className="btn btn-sm btn-outline-secondary" type="button" onClick={cancelEdit}>
                             取消

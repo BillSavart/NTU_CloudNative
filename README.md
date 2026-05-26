@@ -63,6 +63,18 @@ Windows PowerShell:
 .\scripts\fake_data.ps1
 ```
 
+若既有 fake data 缺少 executive 出勤或拒絕通行事件，可以執行 DB 補丁。補丁會把資料安插到既有歷史日期中，不會集中寫在最新時間：
+
+```bash
+./scripts/patch_fake_data.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\patch_fake_data.ps1
+```
+
 預設帳號密碼為 `demo123`。可用 `FAKE_EMPLOYEE_COUNT`、`FAKE_OPERATING_DAYS`、`FAKE_ATTENDANCE_EMPLOYEES` 調整資料量。
 Fake data 會保留主門 `gate_{fab}_A` 作為上下班紀錄，同時在 08:00-24:00 之間產生 B-E 門的日間移動；不會有 00:00-08:00 刷卡，也不會讓員工過夜留在廠內。
 

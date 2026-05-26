@@ -27,6 +27,18 @@ Windows PowerShell:
 .\scripts\fake_data.ps1
 ```
 
+If an existing fake-data DB needs the historical executive attendance and denied-access patch:
+
+```bash
+./scripts/patch_fake_data.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\patch_fake_data.ps1
+```
+
 All seeded accounts use password `demo123`.
 
 ```text
