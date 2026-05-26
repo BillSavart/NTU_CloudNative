@@ -57,6 +57,11 @@ else:
 PY
 printf 'progressEvery=%s\n' "$PROGRESS_EVERY"
 
+printf '\nSeeding reporting employees for this demo prefix...\n'
+DEMO_LOAD_EMPLOYEE_PREFIX="$EMPLOYEE_PREFIX" \
+DEMO_LOAD_EMPLOYEES="$EMPLOYEES" \
+  ./scripts/seed-reporting-demo-data.sh >/dev/null
+
 cd "$ROOT_DIR/access-api"
 GOCACHE="${GOCACHE:-/private/tmp/ntu-cloudnative-go-build}" go run ./cmd/swipe-simulator \
   --base-url "$BASE_URL" \

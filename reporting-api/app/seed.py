@@ -115,8 +115,7 @@ def seed_demo_data() -> None:
             return res
 
         all_emps = {e.employee_id: e for e in db.scalars(select(Employee)).all()}
-        # Choose default top manager: prefer ADMIN001 if present, else pick first employee
-        top_manager_id = 'ADMIN001' if 'ADMIN001' in all_emps else (next(iter(all_emps)) if all_emps else None)
+        top_manager_id = "EXEC001" if "EXEC001" in all_emps else (next(iter(all_emps)) if all_emps else None)
         if top_manager_id is not None:
             # clear manager for top
             top = all_emps[top_manager_id]

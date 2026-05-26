@@ -29,7 +29,7 @@ export type DashboardSummary = {
   knownEmployees: number
   employeesInside: number
   employeesOutside: number
-  avgLatencyMs: number
+  avgLatencyMs: number | null
   lastUpdatedAt?: string | null
 }
 

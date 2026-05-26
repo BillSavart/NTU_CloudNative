@@ -119,6 +119,23 @@ try {
     }
     Write-Host "progressEvery=$ProgressEvery"
 
+    Write-Host ""
+    Write-Host "Seeding reporting employees for this demo prefix..."
+    $previousPrefix = [Environment]::GetEnvironmentVariable("DEMO_LOAD_EMPLOYEE_PREFIX")
+    $previousEmployees = [Environment]::GetEnvironmentVariable("DEMO_LOAD_EMPLOYEES")
+    try {
+        [Environment]::SetEnvironmentVariable("DEMO_LOAD_EMPLOYEE_PREFIX", $EmployeePrefix, "Process")
+        [Environment]::SetEnvironmentVariable("DEMO_LOAD_EMPLOYEES", $Employees, "Process")
+        & (Join-Path $PSScriptRoot "seed-reporting-demo-data.ps1") | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "seed-reporting-demo-data.ps1 failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("DEMO_LOAD_EMPLOYEE_PREFIX", $previousPrefix, "Process")
+        [Environment]::SetEnvironmentVariable("DEMO_LOAD_EMPLOYEES", $previousEmployees, "Process")
+    }
+
     Push-Location (Join-Path $RootDir "access-api")
     try {
         $GoCache = if ($env:GOCACHE) { $env:GOCACHE } else { Join-Path ([System.IO.Path]::GetTempPath()) "ntu-cloudnative-go-build" }

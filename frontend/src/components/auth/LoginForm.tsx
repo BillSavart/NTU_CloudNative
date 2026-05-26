@@ -19,8 +19,7 @@ function LoginForm() {
     try {
       const result = await login({ employeeId, password })
       setSuccess(result.message)
-      // 導向儀表板
-      navigate('/dashboard', { replace: true })
+      navigate(result.user?.isStaff === false ? '/employee/my-attendance' : '/dashboard', { replace: true })
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : '登入失敗'
       setError(message)

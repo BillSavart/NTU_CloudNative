@@ -8,6 +8,10 @@ function formatAverageLatency(summary: DashboardSummary | null) {
     return '-'
   }
 
+  if (typeof summary.avgLatencyMs !== 'number') {
+    return '-'
+  }
+
   if (summary.totalEvents > 0 && summary.avgLatencyMs === 0) {
     return '<1.0'
   }
