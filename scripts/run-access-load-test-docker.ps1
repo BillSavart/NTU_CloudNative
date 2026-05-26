@@ -1,14 +1,18 @@
 param(
     [switch]$Full,
-    [switch]$BaseOnly
+    [switch]$BaseOnly,
+    [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$BaseUrl = if ($env:BASE_URL) { $env:BASE_URL } else { "http://127.0.0.1:8080" }
 $RunId = if ($env:RUN_ID) { $env:RUN_ID } else { Get-Date -Format "yyyyMMddHHmmss" }
+$ContainerBaseUrl = if ($env:SIMULATOR_BASE_URL) { $env:SIMULATOR_BASE_URL } else { "http://access-lb:8080" }
+$HostBaseUrl = if ($env:BASE_URL) { $env:BASE_URL } else { "http://127.0.0.1:8080" }
+$ProjectNetwork = if ($env:COMPOSE_PROJECT_NAME) { "$($env:COMPOSE_PROJECT_NAME)_default" } else { "ntu_cloudnative_default" }
+$GoImage = if ($env:GO_DOCKER_IMAGE) { $env:GO_DOCKER_IMAGE } else { "golang:1.26-alpine" }
 
 function Get-EnvOrDefault([string]$Name, [string]$Default) {
     $value = [Environment]::GetEnvironmentVariable($Name)
@@ -16,29 +20,22 @@ function Get-EnvOrDefault([string]$Name, [string]$Default) {
     return $value
 }
 
-function Invoke-Compose {
-    $composeArgs = if ($BaseOnly) {
-        @("-f", "docker-compose.yml")
+function Invoke-Docker {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        throw "Missing required command: docker"
     }
-    else {
-        @("-f", "docker-compose.yml", "-f", "observability/docker-compose.observability.yml")
+    & docker @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker failed with exit code $LASTEXITCODE"
     }
+}
 
-    if (Get-Command docker-compose -ErrorAction SilentlyContinue) {
-        & docker-compose @composeArgs @args
-        if ($LASTEXITCODE -ne 0) {
-            throw "docker-compose failed with exit code $LASTEXITCODE"
-        }
+function Invoke-Compose {
+    if ($BaseOnly) {
+        Invoke-Docker compose -f docker-compose.yml @args
         return
     }
-    if (Get-Command docker -ErrorAction SilentlyContinue) {
-        & docker compose @composeArgs @args
-        if ($LASTEXITCODE -ne 0) {
-            throw "docker compose failed with exit code $LASTEXITCODE"
-        }
-        return
-    }
-    throw "Missing required command: docker-compose or docker compose"
+    Invoke-Docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml @args
 }
 
 function Invoke-Curl {
@@ -50,20 +47,6 @@ function Invoke-Curl {
         throw "curl.exe failed with exit code $LASTEXITCODE"
     }
     return $output
-}
-
-function Get-GoCommand {
-    $go = Get-Command go -ErrorAction SilentlyContinue
-    if ($go) {
-        return $go.Source
-    }
-
-    $defaultGoPath = "C:\Program Files\Go\bin\go.exe"
-    if (Test-Path $defaultGoPath) {
-        return $defaultGoPath
-    }
-
-    throw "Missing required command: go. Install Go, then reopen PowerShell or add Go to PATH."
 }
 
 if ($Full) {
@@ -90,17 +73,20 @@ $ProgressEvery = Get-EnvOrDefault "PROGRESS_EVERY" "3s"
 
 Push-Location $RootDir
 try {
-    if ($BaseOnly) {
-        Write-Host "Starting access stack with base compose..."
-        Invoke-Compose up -d --scale access-api=3 access-lb
-    }
-    else {
-        Write-Host "Starting stack with observability compose override..."
-        Invoke-Compose up -d --build --scale access-api=3
+    if (-not $NoStart) {
+        if ($BaseOnly) {
+            Write-Host "Starting access stack with base compose..."
+            Invoke-Compose up -d --scale access-api=3 access-lb
+        }
+        else {
+            Write-Host "Starting stack with observability compose override..."
+            Invoke-Compose up -d --build --scale access-api=3
+        }
     }
 
     Write-Host ""
-    Write-Host "Running swipe simulator against $BaseUrl"
+    Write-Host "Running Dockerized swipe simulator against $ContainerBaseUrl"
+    Write-Host "network=$ProjectNetwork image=$GoImage"
     Write-Host "employees=$Employees prefix=$EmployeePrefix gates=$Gates duration=$Duration timeScale=$TimeScale workers=$Workers entryRatio=$EntryRatio duplicatePct=$DuplicatePct"
 
     if ($Duration -match '^(\d+(?:\.\d+)?)([smh])$') {
@@ -119,13 +105,15 @@ try {
     }
     Write-Host "progressEvery=$ProgressEvery"
 
-    Push-Location (Join-Path $RootDir "access-api")
-    try {
-        $GoCache = if ($env:GOCACHE) { $env:GOCACHE } else { Join-Path ([System.IO.Path]::GetTempPath()) "ntu-cloudnative-go-build" }
-        $env:GOCACHE = $GoCache
-        $GoCommand = Get-GoCommand
-        & $GoCommand run ./cmd/swipe-simulator `
-            --base-url $BaseUrl `
+    Invoke-Docker run --rm `
+        --network $ProjectNetwork `
+        -v "${RootDir}\access-api:/src" `
+        -v "ntu_cloudnative_go_mod_cache:/go/pkg/mod" `
+        -v "ntu_cloudnative_go_build_cache:/root/.cache/go-build" `
+        -w /src `
+        $GoImage `
+        go run ./cmd/swipe-simulator `
+            --base-url $ContainerBaseUrl `
             --employees $Employees `
             --employee-prefix $EmployeePrefix `
             --gates $Gates `
@@ -135,19 +123,12 @@ try {
             --entry-ratio $EntryRatio `
             --duplicate-pct $DuplicatePct `
             --progress-every $ProgressEvery
-        if ($LASTEXITCODE -ne 0) {
-            throw "go run swipe-simulator failed with exit code $LASTEXITCODE"
-        }
-    }
-    finally {
-        Pop-Location
-    }
 
     Write-Host ""
     Write-Host "Access API metrics after load test:"
     Write-Host "(Note: this is one load-balanced Access API instance, not cluster-wide aggregated metrics.)"
     Start-Sleep -Seconds 3
-    Invoke-Curl -fsS "$BaseUrl/metrics"
+    Invoke-Curl -fsS "$HostBaseUrl/metrics"
     Write-Host ""
 }
 finally {
