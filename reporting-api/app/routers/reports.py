@@ -14,6 +14,7 @@ from app.repositories import (
     get_department_summary,
     get_department_tree,
     get_employee_states,
+    get_report_center,
     get_timeseries,
     list_anomalies,
     parse_optional_datetime,
@@ -59,6 +60,25 @@ def dashboard(
         from_time=parse_optional_datetime(from_),
         to_time=parse_optional_datetime(to),
         department_id=department_id,
+    )
+
+
+@router.get("/reports/report-center")
+def report_center(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+    department_id: str | None = Query(default=None, alias="departmentId"),
+    limit: int = Query(default=500, ge=1, le=1000),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_report_center(
+        db,
+        current_user=current_user,
+        from_time=parse_optional_datetime(from_),
+        to_time=parse_optional_datetime(to),
+        department_id=department_id,
+        limit=limit,
     )
 
 
@@ -187,6 +207,7 @@ def attendance_daily(
 def compliance_anomalies(
     department_id: str | None = Query(default=None, alias="departmentId"),
     anomaly_type: str | None = Query(default=None, alias="type"),
+    days: int = Query(default=7, ge=1, le=31),
     limit: int = Query(default=100, ge=1, le=200),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
@@ -196,6 +217,7 @@ def compliance_anomalies(
         current_user=current_user,
         department_id=department_id,
         anomaly_type=anomaly_type,
+        days=days,
         limit=limit,
     )
 

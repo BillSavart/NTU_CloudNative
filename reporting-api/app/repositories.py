@@ -1,5 +1,7 @@
 import json
-from datetime import datetime, time, timedelta
+from collections import Counter, defaultdict
+from datetime import date, datetime, time, timedelta
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -155,6 +157,7 @@ def get_dashboard(
     to_time: datetime | None = None,
     department_id: str | None = None,
 ) -> dict[str, Any]:
+    started_at = perf_counter()
     if from_time is None and to_time is None:
         latest_event_at = db.scalar(
             select(func.max(_scoped_event_select(db, current_user, department_id, None, None).subquery().c.occurred_at))
@@ -167,12 +170,210 @@ def get_dashboard(
     if to_time is None:
         to_time = datetime.now(TAIPEI)
     summary = get_access_summary(db, current_user, from_time, to_time, department_id)
+    operational_metrics = get_dashboard_operational_metrics(
+        db,
+        current_user=current_user,
+        from_time=from_time,
+        to_time=to_time,
+        department_id=department_id,
+    )
+    anomalies = list_anomalies(db, current_user, from_time, to_time, department_id, limit=10, offset=0)["items"]
+    timeseries = get_timeseries(db, current_user, from_time, to_time, department_id)
     return {
         **summary,
-        "anomalies": list_anomalies(db, current_user, from_time, to_time, department_id, limit=10, offset=0)[
-            "items"
+        **operational_metrics,
+        "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
+        "anomalies": anomalies,
+        "timeseries": timeseries,
+    }
+
+
+def get_report_center(
+    db: Session,
+    current_user: UserAccount | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    department_id: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    started_at = perf_counter()
+    limit = max(1, min(limit, 1000))
+    if from_time is None:
+        from_time = datetime.now(TAIPEI) - timedelta(days=7)
+    if to_time is None:
+        to_time = datetime.now(TAIPEI)
+
+    rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
+    total_events = len(rows)
+    granted_events = sum(1 for row in rows if row.decision == "GRANTED")
+    denied_events = sum(1 for row in rows if row.decision == "DENIED")
+    in_count = sum(1 for row in rows if row.direction == "IN")
+    out_count = sum(1 for row in rows if row.direction == "OUT")
+    latency_values = [row.latency_ms for row in rows if row.latency_ms is not None]
+    department_counts: Counter[str] = Counter()
+    hourly_counts: Counter[str] = Counter()
+
+    for row in rows:
+        department_counts[row.department_id or "UNKNOWN"] += 1
+        hourly_counts[f"{_local_datetime(row.occurred_at).hour:02d}"] += 1
+
+    excluded_department_ids = _report_center_excluded_department_ids(current_user)
+    top_departments = [
+        {"departmentId": row_department_id, "count": count}
+        for row_department_id, count in department_counts.most_common()
+        if row_department_id not in excluded_department_ids
+    ][:6]
+
+    preview = query_access_events(
+        db,
+        current_user=current_user,
+        department_id=department_id,
+        from_time=from_time,
+        to_time=to_time,
+        limit=limit,
+        offset=0,
+    )
+
+    return {
+        "metrics": {
+            "totalEvents": total_events,
+            "grantedEvents": granted_events,
+            "deniedEvents": denied_events,
+            "inEvents": in_count,
+            "outEvents": out_count,
+            "avgLatencyMs": round(sum(latency_values) / len(latency_values), 2) if latency_values else None,
+            "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
+        },
+        "topDepartments": top_departments,
+        "hourlyActivity": [
+            {"hour": hour, "count": count}
+            for hour, count in sorted(hourly_counts.items())
         ],
-        "timeseries": get_timeseries(db, current_user, from_time, to_time, department_id),
+        "events": preview["items"],
+        "previewLimit": limit,
+        "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
+    }
+
+
+def get_dashboard_operational_metrics(
+    db: Session,
+    current_user: UserAccount | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    department_id: str | None = None,
+) -> dict[str, Any]:
+    if from_time is None:
+        from_time = datetime.now(TAIPEI) - timedelta(hours=24)
+    if to_time is None:
+        to_time = datetime.now(TAIPEI)
+
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    employee_query = _scoped_employee_select(db, current_user, department_id)
+    employees = list(db.scalars(employee_query).all())
+    employee_departments = {employee.employee_id: employee.department_id for employee in employees}
+    employee_names = {employee.employee_id: employee.display_name for employee in employees}
+    expected_today = len(employees)
+
+    history_from = min(from_time, to_time - timedelta(days=7))
+    events = _dashboard_event_rows(db, current_user, department_id, history_from, to_time)
+
+    today = to_time.astimezone(TAIPEI).date() if to_time.tzinfo else to_time.date()
+    attended_today = {
+        event.employee_id
+        for event in events
+        if _local_date(event.occurred_at) == today and event.decision == "GRANTED" and event.direction == "IN"
+    }
+    attendance_rate = (len(attended_today) / expected_today * 100) if expected_today else None
+
+    daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
+    department_late_counts: Counter[str] = Counter()
+    weekday_late_counts: Counter[str] = Counter()
+    gate_hour_counts: Counter[tuple[str, int]] = Counter()
+    gate_counts: Counter[str] = Counter()
+    violation_counts: Counter[str] = Counter()
+
+    for event in events:
+        occurred_at = _local_datetime(event.occurred_at)
+        window_start = _local_datetime(from_time)
+        window_end = _local_datetime(to_time)
+        if occurred_at < window_start or occurred_at > window_end:
+            continue
+
+        gate_hour_counts[(event.gate_id, occurred_at.hour)] += 1
+        gate_counts[event.gate_id] += 1
+
+        if event.decision == "DENIED" and event.reason.startswith("ANTI_PASSBACK"):
+            violation_counts[event.employee_id] += 1
+
+    for event in events:
+        if event.decision != "GRANTED":
+            continue
+
+        occurred_at = _local_datetime(event.occurred_at)
+        key = (event.employee_id, occurred_at.date())
+        day = daily[key]
+        if event.direction == "IN" and (day["first_in"] is None or occurred_at < day["first_in"]):
+            day["first_in"] = occurred_at
+        if event.direction == "OUT" and (day["last_out"] is None or occurred_at > day["last_out"]):
+            day["last_out"] = occurred_at
+
+    daily_overtime_alerts = []
+    for (employee_id, work_date), day in daily.items():
+        first_in = day["first_in"]
+        last_out = day["last_out"]
+        if first_in is not None and first_in.time() > time(8, 30) and _local_date(from_time) <= work_date <= _local_date(to_time):
+            department_late_counts[employee_departments.get(employee_id) or "UNASSIGNED"] += 1
+            weekday_late_counts[_weekday_label(work_date)] += 1
+        if first_in is not None and last_out is not None and last_out - first_in > timedelta(hours=12):
+            work_hours = round((last_out - first_in).total_seconds() / 3600, 1)
+            daily_overtime_alerts.append(
+                {
+                    "employeeId": employee_id,
+                    "displayName": employee_names.get(employee_id),
+                    "departmentId": employee_departments.get(employee_id),
+                    "date": work_date.isoformat(),
+                    "workHours": work_hours,
+                    "occurredAt": last_out.isoformat(),
+                }
+            )
+    daily_overtime_alerts.sort(key=lambda item: (item["occurredAt"], item["workHours"]), reverse=True)
+
+    peak_gate = None
+    if gate_hour_counts:
+        (gate_id, hour), count = gate_hour_counts.most_common(1)[0]
+        peak_gate = {"gateId": gate_id, "hour": hour, "count": count}
+
+    top_violation_people = [
+        {
+            "employeeId": employee_id,
+            "displayName": employee_names.get(employee_id),
+            "departmentId": employee_departments.get(employee_id),
+            "count": count,
+        }
+        for employee_id, count in violation_counts.most_common(5)
+    ]
+
+    return {
+        "hrMetrics": {
+            "expectedToday": expected_today,
+            "attendedToday": len(attended_today),
+            "attendanceRate": round(attendance_rate, 1) if attendance_rate is not None else None,
+            "topLateDepartment": _counter_top_item(department_late_counts),
+            "topLateWeekday": _counter_top_item(weekday_late_counts),
+            "overtimeAlerts": daily_overtime_alerts[:5],
+            "overtimeAlertCount": len(daily_overtime_alerts),
+        },
+        "securityMetrics": {
+            "antiPassbackViolations": sum(violation_counts.values()),
+            "topViolationPeople": top_violation_people,
+        },
+        "trafficMetrics": {
+            "peakGateHour": peak_gate,
+            "gateTraffic": [
+                {"gateId": gate_id, "count": count}
+                for gate_id, count in gate_counts.most_common(5)
+            ],
+        },
     }
 
 
@@ -508,10 +709,12 @@ def get_compliance_anomalies(
     current_user: UserAccount | None = None,
     department_id: str | None = None,
     anomaly_type: str | None = None,
+    days: int = 7,
     limit: int = 100,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 200))
-    since = datetime.now(TAIPEI) - timedelta(days=31)
+    days = max(1, min(days, 31))
+    since = datetime.now(TAIPEI) - timedelta(days=days)
     visible_ids = _visible_department_ids(db, current_user, department_id)
     params: dict[str, Any] = {"limit": limit}
     filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
@@ -586,6 +789,16 @@ def get_compliance_anomalies(
             for row in overtime_rows
         ]
 
+    late_items = []
+    if anomaly_type in {None, "all", "late_arrival"}:
+        late_items = _query_late_arrival_items(
+            db,
+            current_user=current_user,
+            department_id=department_id,
+            since=since,
+            limit=limit,
+        )
+
     denied_params: dict[str, Any] = {"limit": limit, "since": since}
     denied_filters = ["e.decision = 'DENIED'", "e.occurred_at >= :since"]
     if visible_ids is not None:
@@ -633,7 +846,7 @@ def get_compliance_anomalies(
         ]
 
     items = sorted(
-        [*overtime_items, *denied_items],
+        [*overtime_items, *late_items, *denied_items],
         key=lambda item: item["occurredAt"],
         reverse=True,
     )[:limit]
@@ -654,9 +867,10 @@ def update_compliance_anomaly_remark(
         return update_denied_access_remark(db, anomaly_id, remark, current_user)
 
     parts = anomaly_id.split(":")
-    if len(parts) != 3 or parts[0] != "overtime":
+    if len(parts) != 3 or parts[0] not in {"overtime", "late"}:
         raise ValueError("unsupported anomaly id")
 
+    anomaly_kind = parts[0]
     work_date = parts[1]
     employee_id = parts[2]
     visible_ids = _visible_department_ids(db, current_user, None)
@@ -683,8 +897,8 @@ def update_compliance_anomaly_remark(
             WHERE {' AND '.join(filters)}
               AND e.gate_id LIKE '%_A'
               AND e.decision = 'GRANTED'
-              AND e.direction = 'OUT'
-            ORDER BY e.occurred_at DESC, e.id DESC
+              AND e.direction = :target_direction
+            ORDER BY e.occurred_at { "ASC" if anomaly_kind == "late" else "DESC" }, e.id { "ASC" if anomaly_kind == "late" else "DESC" }
             LIMIT 1
         )
         UPDATE access_events e
@@ -696,6 +910,7 @@ def update_compliance_anomaly_remark(
     )
     if visible_ids is not None:
         sql = sql.bindparams(bindparam("visible_ids", expanding=True))
+    params["target_direction"] = "IN" if anomaly_kind == "late" else "OUT"
     row = db.execute(sql, params).mappings().first()
     if row is None:
         raise LookupError("anomaly not found")
@@ -759,6 +974,112 @@ def update_denied_access_remark(
         "requestId": row["request_id"],
         "note": row["remark"] or row["reason"] or "待主管確認",
     }
+
+
+def _query_late_arrival_items(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+    since: datetime,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        return _query_late_arrival_items_in_python(db, current_user, department_id, since, limit)
+
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    params: dict[str, Any] = {"since": since, "limit": limit}
+    filters = [
+        "e.gate_id LIKE '%_A'",
+        "e.decision = 'GRANTED'",
+        "e.direction = 'IN'",
+        "e.occurred_at >= :since",
+    ]
+    if visible_ids is not None:
+        filters.append("emp.department_id IN :visible_ids")
+        params["visible_ids"] = visible_ids or ["__none__"]
+    if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+        filters.append("e.employee_id = :employee_id")
+        params["employee_id"] = current_user.employee_id
+
+    sql = text(
+        f"""
+        WITH ranked AS (
+            SELECT
+                e.request_id,
+                e.employee_id,
+                emp.display_name,
+                emp.department_id,
+                e.remark,
+                e.occurred_at,
+                row_number() OVER (
+                    PARTITION BY e.employee_id, e.occurred_at::date
+                    ORDER BY e.occurred_at ASC, e.id ASC
+                ) AS rn
+            FROM access_events e
+            JOIN employees emp ON emp.employee_id = e.employee_id
+            WHERE {' AND '.join(filters)}
+        )
+        SELECT request_id, employee_id, display_name, department_id, remark, occurred_at
+        FROM ranked
+        WHERE rn = 1
+          AND occurred_at::time > time '08:30:00'
+        ORDER BY occurred_at DESC
+        LIMIT :limit
+        """
+    )
+    if visible_ids is not None:
+        sql = sql.bindparams(bindparam("visible_ids", expanding=True))
+    rows = db.execute(sql, params).mappings().all()
+    return [
+        {
+            "id": f"late:{_local_date(row['occurred_at'])}:{row['employee_id']}",
+            "employeeId": row["employee_id"],
+            "displayName": row["display_name"],
+            "departmentId": row["department_id"],
+            "type": "late_arrival",
+            "typeLabel": "遲到人員",
+            "hours": _local_datetime(row["occurred_at"]).strftime("%H:%M"),
+            "occurredAt": row["occurred_at"].isoformat(),
+            "note": row["remark"] or "待主管確認",
+        }
+        for row in rows
+    ]
+
+
+def _query_late_arrival_items_in_python(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+    since: datetime,
+    limit: int,
+) -> list[dict[str, Any]]:
+    late_daily: dict[tuple[str, date], Any] = {}
+    for row in _dashboard_event_rows(db, current_user, department_id, since, datetime.now(TAIPEI)):
+        if row.decision != "GRANTED" or row.direction != "IN" or not row.gate_id.endswith("_A"):
+            continue
+        occurred_at = _local_datetime(row.occurred_at)
+        key = (row.employee_id, occurred_at.date())
+        if key not in late_daily or occurred_at < _local_datetime(late_daily[key].occurred_at):
+            late_daily[key] = row
+    late_rows = sorted(
+        [row for row in late_daily.values() if _local_datetime(row.occurred_at).time() > time(8, 30)],
+        key=lambda row: _local_datetime(row.occurred_at),
+        reverse=True,
+    )[:limit]
+    return [
+        {
+            "id": f"late:{_local_date(row.occurred_at)}:{row.employee_id}",
+            "employeeId": row.employee_id,
+            "displayName": row.display_name,
+            "departmentId": row.department_id,
+            "type": "late_arrival",
+            "typeLabel": "遲到人員",
+            "hours": _local_datetime(row.occurred_at).strftime("%H:%M"),
+            "occurredAt": row.occurred_at.isoformat(),
+            "note": row.remark or "待主管確認",
+        }
+        for row in late_rows
+    ]
 
 
 def get_timeseries(
@@ -828,6 +1149,39 @@ def _scoped_employee_select(db: Session, current_user: UserAccount | None, depar
     return query
 
 
+def _dashboard_event_rows(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+    from_time: datetime,
+    to_time: datetime,
+):
+    query = select(
+        AccessEvent.id,
+        AccessEvent.employee_id,
+        AccessEvent.gate_id,
+        AccessEvent.direction,
+        AccessEvent.decision,
+        AccessEvent.reason,
+        AccessEvent.latency_ms,
+        AccessEvent.remark,
+        AccessEvent.occurred_at,
+        Employee.department_id,
+        Employee.display_name,
+    )
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    if visible_ids is not None:
+        query = query.join(Employee, AccessEvent.employee_id == Employee.employee_id)
+        query = query.where(Employee.department_id.in_(visible_ids))
+    else:
+        query = query.outerjoin(Employee, AccessEvent.employee_id == Employee.employee_id)
+    if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+        query = query.where(AccessEvent.employee_id == current_user.employee_id)
+    query = query.where(AccessEvent.occurred_at >= from_time, AccessEvent.occurred_at <= to_time)
+    query = query.order_by(AccessEvent.occurred_at.asc(), AccessEvent.id.asc())
+    return db.execute(query).all()
+
+
 def _visible_department_ids(db: Session, current_user: UserAccount | None, department_id: str | None) -> list[str] | None:
     requested_ids: set[str] | None = None
     if department_id:
@@ -842,3 +1196,44 @@ def _visible_department_ids(db: Session, current_user: UserAccount | None, depar
             return sorted(requested_ids)
         return sorted(requested_ids.intersection(visible_ids))
     return visible_ids
+
+
+def _local_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=TAIPEI)
+    return value.astimezone(TAIPEI)
+
+
+def _local_date(value: datetime) -> date:
+    return _local_datetime(value).date()
+
+
+def _weekday_label(value: date) -> str:
+    return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][value.weekday()]
+
+
+def _counter_top_item(counter: Counter[str]) -> dict[str, Any] | None:
+    if not counter:
+        return None
+    key, count = counter.most_common(1)[0]
+    return {"key": key, "count": count}
+
+
+def _report_center_excluded_department_ids(current_user: UserAccount | None) -> set[str]:
+    if current_user is None or current_user.role not in {"MANAGER", "EXECUTIVE", "ADMIN"}:
+        return set()
+    if current_user.employee is None or current_user.employee.department_id is None:
+        return set()
+    return {current_user.employee.department_id}
+
+
+def _latest_consecutive_day_count(values: set[date]) -> int:
+    if not values:
+        return 0
+
+    current = max(values)
+    streak = 1
+    while current - timedelta(days=1) in values:
+        streak += 1
+        current -= timedelta(days=1)
+    return streak

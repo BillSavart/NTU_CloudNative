@@ -4,8 +4,9 @@ import {
   type AccessEvent,
   type DepartmentNode,
   fetchAccessEvents,
-  fetchDashboardSummary,
   fetchDepartmentTree,
+  fetchReportCenterData,
+  type ReportCenterResponse,
 } from '../../services/accessEvents'
 
 type DownloadContent = 'raw' | 'visual'
@@ -149,6 +150,29 @@ function toCsv(events: AccessEvent[]) {
   return [headers.join(','), ...rows].join('\n')
 }
 
+async function fetchAccessEventsForCsv(from: string, to: string, departmentId: string) {
+  const pageSize = 200
+  const maxRows = 5000
+  const pages: AccessEvent[] = []
+
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const result = await fetchAccessEvents({
+      from,
+      to,
+      departmentId,
+      limit: pageSize,
+      offset,
+    })
+    pages.push(...result.events)
+
+    if (result.events.length < pageSize) {
+      break
+    }
+  }
+
+  return pages.slice(0, maxRows)
+}
+
 function metricLine(label: string, value: string | number) {
   return `<div class="metric"><span>${htmlEscape(label)}</span><strong>${htmlEscape(value)}</strong></div>`
 }
@@ -168,7 +192,15 @@ function barRows(items: Array<{ label: string; value: number }>) {
     .join('')
 }
 
-function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: string, to: string, departmentId: string) {
+function formatDeniedRate(rate: number, denied: number) {
+  const percentage = rate * 100
+  if (denied > 0 && percentage > 0 && percentage < 0.1) {
+    return '<0.1%'
+  }
+  return `${percentage.toFixed(1)}%`
+}
+
+function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: string, to: string, departmentId: string, generationLatencyMs?: number) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
   const rows =
@@ -196,7 +228,7 @@ function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: 
 <html lang="zh-Hant">
   <head>
     <meta charset="UTF-8" />
-    <title>出勤圖形化報表</title>
+    <title>出勤營運摘要報表</title>
     <style>
       body { color: #172033; font-family: Arial, "Noto Sans TC", sans-serif; margin: 28px; }
       h1 { font-size: 24px; margin: 0 0 8px; }
@@ -218,17 +250,17 @@ function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: 
     </style>
   </head>
   <body>
-    <h1>出勤圖形化報表</h1>
+    <h1>出勤營運摘要報表</h1>
     <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)} | 產生時間：${htmlEscape(generatedAt)}</div>
     <div class="metrics">
       ${metricLine('事件總數', metrics.total)}
       ${metricLine('允許通行', metrics.granted)}
       ${metricLine('拒絕通行', metrics.denied)}
-      ${metricLine('拒絕率', `${(metrics.deniedRate * 100).toFixed(1)}%`)}
+      ${metricLine('拒絕率', formatDeniedRate(metrics.deniedRate, metrics.denied))}
       ${metricLine('刷進', metrics.inCount)}
       ${metricLine('刷出', metrics.outCount)}
       ${metricLine('平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`)}
-      ${metricLine('預覽筆數', events.length)}
+      ${metricLine('產製耗時', typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-')}
     </div>
     <h2>部門事件分布</h2>
     <div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>
@@ -265,8 +297,8 @@ function Reports() {
   const [departmentId, setDepartmentId] = useState('ALL')
   const [downloadContent, setDownloadContent] = useState<DownloadContent>('visual')
   const [events, setEvents] = useState<AccessEvent[]>([])
+  const [reportData, setReportData] = useState<ReportCenterResponse | null>(null)
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([])
-  const [companyTotalEvents, setCompanyTotalEvents] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -277,7 +309,7 @@ function Reports() {
     setMessage(null)
 
     Promise.all([
-      fetchAccessEvents({
+      fetchReportCenterData({
         from,
         to,
         departmentId,
@@ -285,16 +317,16 @@ function Reports() {
         offset: 0,
       }),
       fetchDepartmentTree(),
-      fetchDashboardSummary(),
     ])
-      .then(([eventResult, departments, dashboard]) => {
+      .then(([report, departments]) => {
         if (cancelled) return
-        setEvents(eventResult.events)
+        setReportData(report)
+        setEvents(report.events)
         setDepartmentOptions(flattenDepartments(departments))
-        setCompanyTotalEvents(dashboard.totalEvents)
       })
       .catch((error) => {
         if (cancelled) return
+        setReportData(null)
         setEvents([])
         setMessage(error instanceof Error ? error.message : '報表資料載入失敗')
       })
@@ -307,7 +339,23 @@ function Reports() {
     }
   }, [departmentId, from, to])
 
-  const metrics = useMemo(() => summarizeEvents(events), [events])
+  const metrics = useMemo<ReportMetrics>(() => {
+    if (!reportData) {
+      return summarizeEvents(events)
+    }
+
+    return {
+      total: reportData.metrics.totalEvents,
+      granted: reportData.metrics.grantedEvents,
+      denied: reportData.metrics.deniedEvents,
+      inCount: reportData.metrics.inEvents,
+      outCount: reportData.metrics.outEvents,
+      avgLatencyMs: reportData.metrics.avgLatencyMs === null ? null : Math.round(reportData.metrics.avgLatencyMs),
+      deniedRate: reportData.metrics.deniedRate / 100,
+      topDepartments: reportData.topDepartments,
+      hourlyActivity: reportData.hourlyActivity,
+    }
+  }, [events, reportData])
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
 
@@ -316,18 +364,11 @@ function Reports() {
     setMessage(null)
 
     try {
-      const result = await fetchAccessEvents({
-        from,
-        to,
-        departmentId,
-        limit: downloadContent === 'raw' ? 5000 : 500,
-        offset: 0,
-      })
-      const reportMetrics = summarizeEvents(result.events)
       const deptPart = departmentId === 'ALL' ? 'all' : departmentId.toLowerCase()
 
       if (downloadContent === 'raw') {
-        const csv = toCsv(result.events)
+        const eventsForCsv = await fetchAccessEventsForCsv(from, to, departmentId)
+        const csv = toCsv(eventsForCsv)
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
@@ -337,18 +378,37 @@ function Reports() {
         link.click()
         link.remove()
         URL.revokeObjectURL(url)
-        setMessage(`已下載原始資料 CSV，共 ${result.events.length} 筆。`)
+        setMessage(`已下載原始資料 CSV，共 ${eventsForCsv.length} 筆。`)
         return
+      }
+
+      const result = await fetchReportCenterData({
+        from,
+        to,
+        departmentId,
+        limit: 500,
+        offset: 0,
+      })
+      const reportMetrics: ReportMetrics = {
+        total: result.metrics.totalEvents,
+        granted: result.metrics.grantedEvents,
+        denied: result.metrics.deniedEvents,
+        inCount: result.metrics.inEvents,
+        outCount: result.metrics.outEvents,
+        avgLatencyMs: result.metrics.avgLatencyMs === null ? null : Math.round(result.metrics.avgLatencyMs),
+        deniedRate: result.metrics.deniedRate / 100,
+        topDepartments: result.topDepartments,
+        hourlyActivity: result.hourlyActivity,
       }
 
       const reportWindow = window.open('', '_blank')
       if (!reportWindow) {
-        throw new Error('瀏覽器封鎖了圖形化報表視窗，請允許彈出視窗後再試一次。')
+        throw new Error('瀏覽器封鎖了營運摘要報表視窗，請允許彈出視窗後再試一次。')
       }
       reportWindow.document.open()
-      reportWindow.document.write(buildVisualReport(result.events, reportMetrics, from, to, departmentId))
+      reportWindow.document.write(buildVisualReport(result.events, reportMetrics, from, to, departmentId, result.generationLatencyMs))
       reportWindow.document.close()
-      setMessage(`已開啟圖形化報表，共納入 ${result.events.length} 筆事件預覽。`)
+      setMessage(`已開啟營運摘要報表，共納入 ${result.events.length} 筆事件預覽。`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '下載失敗')
     } finally {
@@ -393,7 +453,7 @@ function Reports() {
           <div className="col-md-3">
             <label className="form-label">下載內容</label>
             <select className="form-select" value={downloadContent} onChange={(event) => setDownloadContent(event.target.value as DownloadContent)}>
-              <option value="visual">圖形化指標報表</option>
+              <option value="visual">營運摘要報表</option>
               <option value="raw">原始事件資料 CSV</option>
             </select>
           </div>
@@ -414,11 +474,12 @@ function Reports() {
         </div>
         <div className="kpi-card">
           <div className="kpi-label">拒絕率</div>
-          <div className="kpi-value">{isLoading ? '-' : `${(metrics.deniedRate * 100).toFixed(1)}%`}</div>
+          <div className="kpi-value">{isLoading ? '-' : formatDeniedRate(metrics.deniedRate, metrics.denied)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">全公司事件總量</div>
-          <div className="kpi-value">{companyTotalEvents.toLocaleString()}</div>
+          <div className="kpi-label">資料產製耗時</div>
+          <div className="kpi-value">{isLoading ? '-' : `${(reportData?.generationLatencyMs ?? 0).toFixed(1)}`}</div>
+          <div className="kpi-footnote">ms</div>
         </div>
       </section>
 
@@ -440,7 +501,7 @@ function Reports() {
                 </div>
               ))
             ) : (
-              <div className="text-secondary small">目前沒有符合條件的部門事件。</div>
+              <div className="text-secondary small">目前沒有可比較的下轄部門事件。</div>
             )}
           </div>
         </div>
@@ -471,9 +532,10 @@ function Reports() {
         <div className="report-hour-grid">
           {metrics.hourlyActivity.length > 0 ? (
             metrics.hourlyActivity.map((item) => (
-              <div className="report-hour" key={item.hour}>
+              <div className="report-hour" key={item.hour} title={`${item.hour}:00 ${item.count.toLocaleString()} 筆`}>
                 <div className="report-hour-bar" style={{ height: `${Math.max(8, (item.count / maxHourlyCount) * 100)}%` }} />
                 <span>{item.hour}</span>
+                <strong>{item.count.toLocaleString()} 筆</strong>
               </div>
             ))
           ) : (

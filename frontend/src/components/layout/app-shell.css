@@ -65,7 +65,7 @@
 
 .attendance-logout-button {
   width: 100%;
-  margin-top: auto;
+  margin-top: 14px;
   border: 1px solid #cbd5e1;
   background: #ffffff;
   color: #334155;
@@ -157,10 +157,21 @@
   color: #0f2742;
 }
 
+.kpi-footnote {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 6px;
+  min-height: 18px;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 12px;
+}
+
+.panel-grid > .panel-card:only-child {
+  grid-column: 1 / -1;
 }
 
 .table-clean {
@@ -230,6 +241,48 @@
   color: #0f2742;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.dashboard-static-row:hover {
+  color: #1f2a37;
+  text-decoration: none;
+}
+
+.dashboard-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.dashboard-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-list-row {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: flex;
+  font-size: 14px;
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.dashboard-list-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-list-row strong {
+  color: #0f2742;
+  flex: 0 0 auto;
+  margin-left: 12px;
 }
 
 .alert-actions-cell {
@@ -326,6 +379,7 @@
   grid-template-rows: 92px auto;
   justify-items: center;
   min-width: 28px;
+  position: relative;
 }
 
 .report-hour-bar {
@@ -339,6 +393,30 @@
   color: #64748b;
   font-size: 11px;
   margin-top: 6px;
+}
+
+.report-hour strong {
+  background: #0f2742;
+  border-radius: 6px;
+  bottom: calc(100% + 8px);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  left: 50%;
+  opacity: 0;
+  padding: 5px 8px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.report-hour:hover strong,
+.report-hour:focus-within strong {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 @media (max-width: 992px) {
@@ -357,6 +435,10 @@
   }
 
   .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-insight-grid {
     grid-template-columns: 1fr;
   }
 

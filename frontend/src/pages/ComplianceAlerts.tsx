@@ -20,7 +20,7 @@ function ComplianceAlerts() {
   const [draftNote, setDraftNote] = useState('')
   const [savingId, setSavingId] = useState<string | null>(null)
 
-  const selectedType = searchParams.get('type') ?? 'all'
+  const selectedType = searchParams.get('type') ?? 'denied_access'
   const keyword = searchParams.get('q') ?? ''
 
   useEffect(() => {
@@ -30,7 +30,7 @@ function ComplianceAlerts() {
       try {
         setLoading(true)
         setError(null)
-        const result = await fetchComplianceAnomalies(200, undefined, selectedType)
+        const result = await fetchComplianceAnomalies(100, undefined, selectedType, 7)
         if (!cancelled) setAlerts(result.items)
       } catch (loadError) {
         if (!cancelled) {
@@ -115,9 +115,9 @@ function ComplianceAlerts() {
             <label className="form-label">異常類型</label>
             <select className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
               <option value="all">全部</option>
+              <option value="late_arrival">遲到人員</option>
               <option value="overtime_daily">單日超過 12 小時</option>
               <option value="denied_access">拒絕通行事件</option>
-              <option value="overtime_crossday">跨日連續超時</option>
               <option value="unpaired_access">未配對進出紀錄</option>
             </select>
           </div>
@@ -131,7 +131,7 @@ function ComplianceAlerts() {
             />
           </div>
           <div className="col-md-4">
-            <div className="small text-secondary">共 {filteredAlerts.length} 筆異常</div>
+            <div className="small text-secondary">最近 7 天，共 {filteredAlerts.length} 筆異常</div>
           </div>
         </div>
       </section>

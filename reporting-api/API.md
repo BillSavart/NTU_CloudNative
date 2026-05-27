@@ -190,7 +190,8 @@ descendants, then intersects with the logged-in user's visible departments.
 
 ### GET /reports/dashboard
 
-Returns summary cards, anomaly rows, and hourly time series points.
+Returns summary cards, HR and security indicators, gate traffic highlights,
+anomaly rows, and hourly time series points.
 
 Response:
 
@@ -204,8 +205,74 @@ Response:
   "employeesOutside": 1,
   "avgLatencyMs": 12.5,
   "lastUpdatedAt": "2026-05-10T14:25:54+00:00",
+  "generationLatencyMs": 18.42,
+  "hrMetrics": {
+    "expectedToday": 4,
+    "attendedToday": 3,
+    "attendanceRate": 75.0,
+    "topLateDepartment": { "key": "FAB_A", "count": 2 },
+    "topLateWeekday": { "key": "Mon", "count": 4 },
+    "overtimeAlerts": [
+      {
+        "employeeId": "EMP001",
+        "displayName": "Operator A",
+        "departmentId": "FAB_A",
+        "date": "2026-05-10",
+        "workHours": 12.8,
+        "occurredAt": "2026-05-10T21:20:00+08:00"
+      }
+    ],
+    "overtimeAlertCount": 1
+  },
+  "securityMetrics": {
+    "antiPassbackViolations": 2,
+    "topViolationPeople": [
+      {
+        "employeeId": "EMP002",
+        "displayName": "Operator B",
+        "departmentId": "FAB_A",
+        "count": 2
+      }
+    ]
+  },
   "anomalies": [],
   "timeseries": []
+}
+```
+
+### GET /reports/report-center
+
+Returns the formal report-center dataset for the selected period and department:
+server-side metrics, department distribution, hourly activity, preview events,
+and report generation latency in milliseconds.
+
+Query params:
+
+```text
+from=2026-05-10T00:00:00Z
+to=2026-05-11T00:00:00Z
+departmentId=fab_1
+limit=500
+```
+
+Response:
+
+```json
+{
+  "metrics": {
+    "totalEvents": 1200,
+    "grantedEvents": 1180,
+    "deniedEvents": 20,
+    "inEvents": 610,
+    "outEvents": 590,
+    "avgLatencyMs": 8.5,
+    "deniedRate": 1.67
+  },
+  "topDepartments": [{ "departmentId": "FAB_A", "count": 420 }],
+  "hourlyActivity": [{ "hour": "08", "count": 300 }],
+  "events": [],
+  "previewLimit": 500,
+  "generationLatencyMs": 24.18
 }
 ```
 

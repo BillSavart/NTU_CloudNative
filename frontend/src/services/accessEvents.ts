@@ -67,6 +67,25 @@ export type DepartmentAnalyticsResponse = {
   days: number
 }
 
+export type ReportCenterMetrics = {
+  totalEvents: number
+  grantedEvents: number
+  deniedEvents: number
+  inEvents: number
+  outEvents: number
+  avgLatencyMs: number | null
+  deniedRate: number
+}
+
+export type ReportCenterResponse = {
+  metrics: ReportCenterMetrics
+  topDepartments: Array<{ departmentId: string; count: number }>
+  hourlyActivity: Array<{ hour: string; count: number }>
+  events: AccessEvent[]
+  previewLimit: number
+  generationLatencyMs: number
+}
+
 export type AccessEventsResponse = {
   events: AccessEvent[]
   items: AccessEvent[]
@@ -84,6 +103,37 @@ export type DashboardSummary = {
   employeesOutside: number
   avgLatencyMs: number | null
   lastUpdatedAt?: string | null
+  generationLatencyMs?: number | null
+  hrMetrics?: {
+    expectedToday: number
+    attendedToday: number
+    attendanceRate: number | null
+    topLateDepartment?: { key: string; count: number } | null
+    topLateWeekday?: { key: string; count: number } | null
+    overtimeAlerts: Array<{
+      employeeId: string
+      displayName?: string | null
+      departmentId?: string | null
+      consecutiveDays?: number
+      date?: string
+      workHours?: number
+      occurredAt?: string
+    }>
+    overtimeAlertCount: number
+  }
+  securityMetrics?: {
+    antiPassbackViolations: number
+    topViolationPeople: Array<{
+      employeeId: string
+      displayName?: string | null
+      departmentId?: string | null
+      count: number
+    }>
+  }
+  trafficMetrics?: {
+    peakGateHour?: { gateId: string; hour: number; count: number } | null
+    gateTraffic: Array<{ gateId: string; count: number }>
+  }
 }
 
 export type AccessEventFilters = {
@@ -156,6 +206,35 @@ export async function fetchDashboardSummary(): Promise<DashboardSummary> {
   return (await response.json()) as DashboardSummary
 }
 
+export async function fetchReportCenterData(filters: AccessEventFilters = {}): Promise<ReportCenterResponse> {
+  const response = await fetch(`/api/reports/report-center?${buildAccessEventsQuery(filters)}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to load report center (${response.status})`)
+  }
+
+  const result = (await response.json()) as Partial<ReportCenterResponse>
+  return {
+    metrics: {
+      totalEvents: Number(result.metrics?.totalEvents ?? 0),
+      grantedEvents: Number(result.metrics?.grantedEvents ?? 0),
+      deniedEvents: Number(result.metrics?.deniedEvents ?? 0),
+      inEvents: Number(result.metrics?.inEvents ?? 0),
+      outEvents: Number(result.metrics?.outEvents ?? 0),
+      avgLatencyMs: typeof result.metrics?.avgLatencyMs === 'number' ? result.metrics.avgLatencyMs : null,
+      deniedRate: Number(result.metrics?.deniedRate ?? 0),
+    },
+    topDepartments: Array.isArray(result.topDepartments) ? result.topDepartments : [],
+    hourlyActivity: Array.isArray(result.hourlyActivity) ? result.hourlyActivity : [],
+    events: Array.isArray(result.events) ? result.events : [],
+    previewLimit: Number(result.previewLimit ?? filters.limit ?? 0),
+    generationLatencyMs: Number(result.generationLatencyMs ?? 0),
+  }
+}
+
 export async function fetchDepartmentTree(): Promise<DepartmentNode[]> {
   const response = await fetch('/api/reports/departments/tree', {
     method: 'GET',
@@ -219,9 +298,11 @@ export async function fetchComplianceAnomalies(
   limit = 100,
   departmentId?: string,
   type?: string,
+  days = 7,
 ): Promise<{ items: ComplianceAnomaly[]; total: number }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
+  params.set('days', String(days))
   if (departmentId) params.set('departmentId', departmentId)
   if (type && type !== 'all') params.set('type', type)
 

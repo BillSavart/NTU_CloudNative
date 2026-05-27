@@ -11,7 +11,10 @@ from app.models import AccessEvent, Base, Department, Employee, UserAccount, Use
 from app.repositories import (
     get_access_summary,
     get_dashboard,
+    get_dashboard_operational_metrics,
+    get_compliance_anomalies,
     get_department_tree,
+    get_report_center,
     parse_access_event,
     parse_event_timestamp,
     query_access_events,
@@ -128,8 +131,146 @@ class RepositoryTestCase(unittest.TestCase):
                 dashboard = get_dashboard(db)
 
         self.assertEqual(dashboard["totalEvents"], 3)
+        self.assertEqual(dashboard["hrMetrics"]["expectedToday"], 3)
+        self.assertEqual(dashboard["hrMetrics"]["attendedToday"], 1)
+        self.assertEqual(dashboard["hrMetrics"]["attendanceRate"], 33.3)
+        self.assertEqual(dashboard["securityMetrics"]["antiPassbackViolations"], 1)
+        self.assertEqual(dashboard["trafficMetrics"]["peakGateHour"]["gateId"], "GATE_01")
+        self.assertIsInstance(dashboard["generationLatencyMs"], float)
         self.assertEqual(len(dashboard["anomalies"]), 1)
         self.assertEqual(dashboard["timeseries"], [{"bucket": "demo"}])
+
+    def test_dashboard_operational_metrics_flags_hr_security_and_peak_gate(self) -> None:
+        with self.SessionLocal() as db:
+            db.add_all(
+                [
+                    AccessEvent(
+                        request_id="req-emp-late-in-1",
+                        employee_id="EMP001",
+                        gate_id="GATE_04",
+                        direction="IN",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="OUT",
+                        current_state="IN",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 21, 9, 0, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="req-emp-late-out-1",
+                        employee_id="EMP001",
+                        gate_id="GATE_04",
+                        direction="OUT",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="IN",
+                        current_state="OUT",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 21, 22, 0, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="req-emp-late-in-2",
+                        employee_id="EMP001",
+                        gate_id="GATE_04",
+                        direction="IN",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="OUT",
+                        current_state="IN",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 22, 9, 5, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="req-emp-late-out-2",
+                        employee_id="EMP001",
+                        gate_id="GATE_04",
+                        direction="OUT",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="IN",
+                        current_state="OUT",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 22, 22, 20, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="req-emp-denied-2",
+                        employee_id="EMP001",
+                        gate_id="GATE_02",
+                        direction="IN",
+                        decision="DENIED",
+                        reason="ANTI_PASSBACK_VIOLATION",
+                        previous_state="IN",
+                        current_state="IN",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 22, 12, 0, tzinfo=TAIPEI),
+                    ),
+                ]
+            )
+            db.commit()
+
+            metrics = get_dashboard_operational_metrics(
+                db,
+                from_time=datetime(2026, 5, 22, 0, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 22, 23, 59, tzinfo=TAIPEI),
+            )
+
+        self.assertEqual(metrics["hrMetrics"]["attendedToday"], 1)
+        self.assertEqual(metrics["hrMetrics"]["topLateDepartment"], {"key": "OPS_A", "count": 1})
+        self.assertEqual(metrics["hrMetrics"]["overtimeAlertCount"], 2)
+        self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["employeeId"], "EMP001")
+        self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["workHours"], 13.2)
+        self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["date"], "2026-05-22")
+        self.assertEqual(metrics["securityMetrics"]["antiPassbackViolations"], 1)
+        self.assertEqual(metrics["securityMetrics"]["topViolationPeople"][0]["employeeId"], "EMP001")
+        self.assertEqual(metrics["trafficMetrics"]["peakGateHour"], {"gateId": "GATE_04", "hour": 9, "count": 1})
+
+    def test_compliance_anomalies_can_filter_late_arrivals(self) -> None:
+        with self.SessionLocal() as db:
+            db.add(
+                AccessEvent(
+                    request_id="req-late-arrival",
+                    employee_id="EMP001",
+                    gate_id="GATE_04_A",
+                    direction="IN",
+                    decision="GRANTED",
+                    reason="ACCESS_ALLOWED",
+                    previous_state="OUT",
+                    current_state="IN",
+                    latency_ms=5,
+                    occurred_at=datetime.now(TAIPEI).replace(hour=9, minute=5, second=0, microsecond=0),
+                )
+            )
+            db.commit()
+
+            result = get_compliance_anomalies(db, anomaly_type="late_arrival")
+
+        self.assertGreaterEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["type"], "late_arrival")
+        self.assertEqual(result["items"][0]["typeLabel"], "遲到人員")
+
+    def test_report_center_returns_server_side_metrics_and_latency(self) -> None:
+        with self.SessionLocal() as db:
+            manager = self._user(db, "manager")
+            report = get_report_center(
+                db,
+                current_user=manager,
+                from_time=datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
+                limit=2,
+            )
+
+        self.assertEqual(report["metrics"]["totalEvents"], 2)
+        self.assertEqual(report["metrics"]["grantedEvents"], 1)
+        self.assertEqual(report["metrics"]["deniedEvents"], 1)
+        self.assertEqual(report["metrics"]["inEvents"], 1)
+        self.assertEqual(report["metrics"]["outEvents"], 1)
+        self.assertEqual(report["metrics"]["avgLatencyMs"], 6.0)
+        self.assertEqual(report["metrics"]["deniedRate"], 50.0)
+        self.assertEqual(report["topDepartments"][0], {"departmentId": "OPS_A", "count": 1})
+        self.assertNotIn("FAB_A", {row["departmentId"] for row in report["topDepartments"]})
+        self.assertEqual(report["hourlyActivity"], [{"hour": "17", "count": 2}])
+        self.assertEqual(len(report["events"]), 2)
+        self.assertIsInstance(report["generationLatencyMs"], float)
 
     def _payload(
         self,
