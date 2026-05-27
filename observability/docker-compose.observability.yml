@@ -68,24 +68,36 @@ services:
       - load-test
     environment:
       BASE_URL: http://reporting-api:8000
+      ACCESS_BASE_URL: http://access-lb:8080
+      REPORTING_BASE_URL: http://reporting-api:8000
+      FRONTEND_BASE_URL: http://frontend
       LOGIN_ID: ${K6_LOGIN_ID:-rd_1_manager}
       LOGIN_PASSWORD: ${K6_LOGIN_PASSWORD:-demo123}
       VUS: ${K6_VUS:-20}
+      ACCESS_VUS: ${K6_ACCESS_VUS:-}
+      REPORTING_VUS: ${K6_REPORTING_VUS:-}
+      FRONTEND_VUS: ${K6_FRONTEND_VUS:-}
       RAMP_UP: ${K6_RAMP_UP:-30s}
       STEADY: ${K6_STEADY:-2m}
       RAMP_DOWN: ${K6_RAMP_DOWN:-30s}
       THINK_TIME_SECONDS: ${K6_THINK_TIME_SECONDS:-1}
       P95_THRESHOLD_MS: ${K6_P95_THRESHOLD_MS:-15000}
+      FAILED_RATE_THRESHOLD: ${K6_FAILED_RATE_THRESHOLD:-0.05}
+      CHECK_RATE_THRESHOLD: ${K6_CHECK_RATE_THRESHOLD:-0.95}
       TEST_ID: ${K6_TEST_ID:-reporting-api-demo}
+      EMPLOYEE_PREFIX: ${K6_EMPLOYEE_PREFIX:-}
+      GATES: ${K6_GATES:-8}
       K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
       K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM: "true"
     command:
       - run
       - --out
       - experimental-prometheus-rw
-      - /scripts/reporting-api.js
+      - ${K6_SCRIPT:-/scripts/reporting-api.js}
     volumes:
       - ./observability/k6:/scripts:ro
     depends_on:
       - prometheus
+      - access-lb
+      - frontend
       - reporting-api

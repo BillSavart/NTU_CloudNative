@@ -39,12 +39,12 @@
       },
       "targets": [
         {
-          "expr": "rate(access_api_swipes_total[1m])",
+          "expr": "rate(access_api_swipes_total[1m]) or vector(0)",
           "legendFormat": "Access swipes/sec",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(reporting_api_http_requests_total[1m]))",
+          "expr": "sum(rate(reporting_api_http_requests_total[1m])) or vector(0)",
           "legendFormat": "Reporting requests/sec",
           "refId": "B"
         }
@@ -83,14 +83,34 @@
       },
       "targets": [
         {
-          "expr": "access_api_event_queue_depth",
+          "expr": "access_api_event_queue_depth or vector(0)",
           "legendFormat": "Access publisher queue",
           "refId": "A"
         },
         {
+          "expr": "rate(access_api_events_published_total[1m])",
+          "legendFormat": "Access published/sec",
+          "refId": "B"
+        },
+        {
+          "expr": "clamp_min(sum(delta(kafka_topic_partition_current_offset{topic=\"access-events\"}[1m])) / 60, 0)",
+          "legendFormat": "Kafka access-events appended/sec",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (consumer) (rate(reporting_api_consumer_processed_total[1m]))",
+          "legendFormat": "{{consumer}} processed/sec",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (consumer) (rate(reporting_api_consumer_inserted_total[1m]))",
+          "legendFormat": "{{consumer}} inserted/sec",
+          "refId": "E"
+        },
+        {
           "expr": "reporting_api_consumer_running",
           "legendFormat": "{{consumer}} running",
-          "refId": "B"
+          "refId": "F"
         }
       ],
       "title": "Event Pipeline",
@@ -127,12 +147,12 @@
       },
       "targets": [
         {
-          "expr": "rate(access_api_events_failed_total[1m])",
+          "expr": "rate(access_api_events_failed_total[1m]) or vector(0)",
           "legendFormat": "Access publish failures/sec",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(reporting_api_consumer_failed_total[1m]))",
+          "expr": "sum(rate(reporting_api_consumer_failed_total[1m])) or vector(0)",
           "legendFormat": "Reporting consumer failures/sec",
           "refId": "B"
         }
@@ -210,7 +230,7 @@
       },
       "targets": [
         {
-          "expr": "rate(access_api_swipes_denied_total[5m]) / clamp_min(rate(access_api_swipes_total[5m]), 1)",
+          "expr": "(rate(access_api_swipes_denied_total[5m]) or vector(0)) / clamp_min((rate(access_api_swipes_total[5m]) or vector(0)), 1)",
           "legendFormat": "Denied ratio",
           "refId": "A"
         }
@@ -249,7 +269,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (endpoint) (rate(k6_http_reqs_total{testid=~\"$k6_testid\"}[1m]))",
+          "expr": "sum by (endpoint) (increase(k6_http_reqs_total{testid=~\"$k6_testid\"}[$__range])) / $__range_s",
           "legendFormat": "{{endpoint}}",
           "refId": "A"
         }
@@ -288,7 +308,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (endpoint) (k6_http_req_duration_seconds{testid=~\"$k6_testid\"}))",
+          "expr": "histogram_quantile(0.95, sum by (endpoint) (increase(k6_http_req_duration_seconds{testid=~\"$k6_testid\"}[$__range])))",
           "legendFormat": "p95 {{endpoint}}",
           "refId": "A"
         }
@@ -366,6 +386,7 @@
         "multi": false,
         "name": "k6_testid",
         "options": [],
+        "allValue": ".*",
         "query": {
           "query": "label_values(k6_http_reqs_total, testid)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"

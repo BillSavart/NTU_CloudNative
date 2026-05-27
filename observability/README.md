@@ -9,7 +9,7 @@
 - 監控 Access API 的刷卡流量、授權/拒絕次數、事件佇列狀態。
 - 監控 Reporting API 的 HTTP request 數量、延遲、Kafka consumer 與 Redis recovery consumer 狀態。
 - 透過 exporters 監控 Redis、PostgreSQL、Kafka。
-- 透過 k6 對 Reporting API 產生登入、報表中心、部門分析與異常合規查詢壓力，並把結果寫回 Prometheus。
+- 透過 k6 對 Reporting API 或 full-stack 流程產生壓力，並把結果寫回 Prometheus。
 - 透過 Grafana dashboard 讓系統健康狀態更容易觀察。
 - 以 Docker Compose override 的方式啟用，不影響原本只跑 base stack 的流程。
 
@@ -20,6 +20,7 @@ observability/
 |-- README.md
 |-- docker-compose.observability.yml
 |-- k6/
+|   |-- full-stack.js
 |   `-- reporting-api.js
 |-- prometheus/
 |   `-- prometheus.yml
@@ -38,6 +39,10 @@ reporting-api/
 `-- requirements-observability.txt
 
 scripts/
+|-- run-k6-full-stack-load-test.sh
+|-- run-k6-full-stack-load-test.ps1
+|-- run-k6-chaos-test.sh
+|-- run-k6-chaos-test.ps1
 |-- run-k6-reporting-load-test.sh
 `-- run-k6-reporting-load-test.ps1
 ```
@@ -295,14 +300,88 @@ Dashboard 影響：
 - Reporting API 與 frontend 可查到跨一年的歷史出勤資料。
 - 員工、部門、權限資料會符合 `TSMC -> fab_1..fab_22 -> RD/IT/PE/EE` 結構。
 
-## k6 Reporting API 壓力測試
+## k6 壓力測試
 
 k6 壓力測試會透過 Docker Compose profile 啟動，預設不會隨一般 stack 自動執行。測試會：
 
 - 使用 `rd_1_manager / demo123` 登入，並帶 `rememberMe: true`。
-- 查詢報表中心、部門分析與異常合規 endpoints。
+- Reporting-only 模式會查詢報表中心、部門分析與異常合規 endpoints。
+- Full-stack 模式會同時打 Access API 刷卡寫入/狀態/最近事件、Reporting API dashboard/summary/report center/events/departments/employees/attendance/compliance 查詢，以及 frontend Nginx `/api` proxy；Reporting API 查詢會輪詢覆蓋，不會在每個 iteration 同時爆打所有報表 endpoint。
 - 將 k6 metrics 透過 Prometheus remote write 寫入 `http://prometheus:9090/api/v1/write`。
 - 在 Grafana `Access Control Observability` dashboard 顯示 k6 requests/sec、p95 latency、failed rate 與 checks rate。
+
+建議先跑 full-stack，因為它會讓 Access API、Reporting API、事件管線與 k6 panels 都有壓測資料：
+
+macOS/Linux:
+
+```bash
+./scripts/run-k6-full-stack-load-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-full-stack-load-test.ps1
+```
+
+Full-stack 腳本預設 `K6_CLEANUP=true`，會用唯一 `K6_EMPLOYEE_PREFIX` 隔離測試員工，並在壓測前後清掉同 prefix 的 PostgreSQL rows、Redis state/dedupe keys 與 Redis recovery stream entries。即使 k6 threshold fail，中途退出也會進入收尾清理。若要手動補清理：
+
+```bash
+./scripts/cleanup-k6-load-test-data.sh <K6_EMPLOYEE_PREFIX>
+```
+
+```powershell
+.\scripts\cleanup-k6-load-test-data.ps1 -EmployeePrefix <K6_EMPLOYEE_PREFIX>
+```
+
+### k6 Chaos 測試
+
+Chaos 測試用同一套 full-stack workload，但會在測試期間故意製造短暫故障：
+
+- 先停止 `reporting-api` 一段時間，讓 frontend proxy 與 reporting 查詢短暫失敗。
+- 恢復 `reporting-api` 後，重啟一個 Kafka broker（預設 `kafka-1`），觀察 Kafka/exporter 與 reporting consumer 是否恢復。
+- 使用唯一 `K6_EMPLOYEE_PREFIX` 產生測試事件，結束後多輪清理 PostgreSQL 與 Redis，不污染 demo seed 資料。
+
+macOS/Linux:
+
+```bash
+./scripts/run-k6-chaos-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-chaos-test.ps1
+```
+
+常用 chaos 參數：
+
+| 目的 | macOS/Linux | PowerShell |
+| --- | --- | --- |
+| 調整 VUs | `K6_VUS=20 ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -Vus 20` |
+| 拉長壓測時間 | `K6_STEADY=5m ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -Steady 5m` |
+| 調整開始故障時間 | `CHAOS_START_DELAY_SECONDS=60 ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -ChaosStartDelaySeconds 60` |
+| 調整 Reporting API 停機秒數 | `CHAOS_REPORTING_DOWN_SECONDS=30 ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -ReportingDownSeconds 30` |
+| 指定 Kafka broker | `CHAOS_KAFKA_BROKER=kafka-2 ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -KafkaBroker kafka-2` |
+| 調整可接受 failure rate | `K6_FAILED_RATE_THRESHOLD=0.40 ./scripts/run-k6-chaos-test.sh` | `.\scripts\run-k6-chaos-test.ps1 -FailedRateThreshold 0.40` |
+
+Chaos 測試期間看到 k6 failed rate、checks rate 下降，或 `Event Pipeline` 的 running/processed 線有缺口，是預期現象。判斷重點是：
+
+- k6 結束後 `reporting-api` 與 Kafka broker 已恢復。
+- `Event Pipeline` 的 `processed/sec` 在恢復後繼續出現。
+- cleanup 最後顯示 `remaining_access_events = 0`、`remaining_employees = 0`。
+
+如果 chaos 或 full-stack 中途被強制關閉，使用同一個 prefix 補清：
+
+```bash
+./scripts/cleanup-k6-load-test-data.sh <K6_EMPLOYEE_PREFIX>
+```
+
+```powershell
+.\scripts\cleanup-k6-load-test-data.ps1 -EmployeePrefix <K6_EMPLOYEE_PREFIX>
+```
+
+若只想測 reporting 查詢面，再跑 reporting-only：
 
 macOS/Linux:
 
@@ -320,11 +399,11 @@ Windows PowerShell:
 
 | 目的 | macOS/Linux | PowerShell |
 | --- | --- | --- |
-| 調整 VUs | `K6_VUS=50 ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -Vus 50` |
-| 拉長穩定壓測時間 | `K6_STEADY=5m ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -Steady 5m` |
-| 調整 p95 threshold | `K6_P95_THRESHOLD_MS=3000 ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -P95ThresholdMs 3000` |
-| 區分測試批次 | `K6_TEST_ID=reporting-api-50vus ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -TestId reporting-api-50vus` |
-| 更換登入帳號 | `K6_LOGIN_ID=employee ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -LoginId employee` |
+| 調整 VUs | `K6_VUS=50 ./scripts/run-k6-full-stack-load-test.sh` | `.\scripts\run-k6-full-stack-load-test.ps1 -Vus 50` |
+| 拉長穩定壓測時間 | `K6_STEADY=5m ./scripts/run-k6-full-stack-load-test.sh` | `.\scripts\run-k6-full-stack-load-test.ps1 -Steady 5m` |
+| 調整 p95 threshold | `K6_P95_THRESHOLD_MS=3000 ./scripts/run-k6-full-stack-load-test.sh` | `.\scripts\run-k6-full-stack-load-test.ps1 -P95ThresholdMs 3000` |
+| 區分測試批次 | `K6_TEST_ID=full-stack-50vus ./scripts/run-k6-full-stack-load-test.sh` | `.\scripts\run-k6-full-stack-load-test.ps1 -TestId full-stack-50vus` |
+| 更換登入帳號 | `K6_LOGIN_ID=employee ./scripts/run-k6-full-stack-load-test.sh` | `.\scripts\run-k6-full-stack-load-test.ps1 -LoginId employee` |
 
 完整可調環境變數：
 
@@ -336,8 +415,12 @@ K6_RAMP_DOWN=30s
 K6_LOGIN_ID=rd_1_manager
 K6_LOGIN_PASSWORD=demo123
 K6_P95_THRESHOLD_MS=15000
+K6_FAILED_RATE_THRESHOLD=0.05
+K6_CHECK_RATE_THRESHOLD=0.95
 K6_THINK_TIME_SECONDS=1
-K6_TEST_ID=reporting-api-demo
+K6_TEST_ID=full-stack-demo
+K6_EMPLOYEE_PREFIX=K61700000000
+K6_GATES=8
 ```
 
 Grafana 觀察路徑：
@@ -347,7 +430,7 @@ http://localhost:3000
 Dashboards -> NTU Cloud Native -> Access Control Observability
 ```
 
-Dashboard 右上方的 `k6_testid` 變數可切換不同壓測批次。若 k6 panels 一開始是空的，請先確認已跑過壓測，並確認 Prometheus 是透過 observability override 啟動，因為 k6 remote write 需要 `--web.enable-remote-write-receiver`，p95 latency panel 使用的 native histogram 也需要 `--enable-feature=native-histograms`。
+Dashboard 右上方的 `k6_testid` 變數可切換不同壓測批次。k6 panels 會用目前 Grafana 時間範圍統計整次壓測；若一開始是空的，請先確認已跑過壓測、時間範圍涵蓋壓測時間、`k6_testid` 已切到本次 `K6_TEST_ID`，並確認 Prometheus 是透過 observability override 啟動，因為 k6 remote write 需要 `--web.enable-remote-write-receiver`，p95 latency panel 使用的 native histogram 也需要 `--enable-feature=native-histograms`。
 
 ## 常用頁面
 

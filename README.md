@@ -278,7 +278,7 @@ Windows PowerShell:
    ```
 
 ### 5. 可觀測性與 k6 壓力測試（Prometheus / Grafana / k6）
-可觀測性環境包含 Prometheus、Grafana、Redis/PostgreSQL/Kafka exporters，以及 Reporting API 的 k6 壓力測試。k6 測試結果會透過 Prometheus remote write 寫入 Prometheus，Grafana dashboard 會顯示 requests/sec、p95 latency、failed rate 與 checks rate。
+可觀測性環境包含 Prometheus、Grafana、Redis/PostgreSQL/Kafka exporters，以及兩種 k6 壓力測試：Reporting API 查詢壓測、Full-stack 壓測。k6 測試結果會透過 Prometheus remote write 寫入 Prometheus，Grafana dashboard 會顯示 requests/sec、p95 latency、failed rate 與 checks rate。
 
 啟動可觀測性環境：
 
@@ -323,7 +323,35 @@ access_api_event_queue_depth
 
 Grafana 已自動 provision Prometheus datasource 與 `Access Control Observability` dashboard。Dashboard 內含 Access API、Reporting API、事件管線、exporters 與 k6 壓力測試 panels。
 
-執行 Reporting API k6 壓力測試：
+執行比較完整的 full-stack k6 壓力測試：
+
+```bash
+./scripts/run-k6-full-stack-load-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-full-stack-load-test.ps1
+```
+
+Full-stack 壓測會同時打 Access API 刷卡寫入/狀態/最近事件、Reporting API dashboard/summary/report center/events/departments/employees/attendance/compliance 查詢，以及 frontend Nginx `/api` proxy。Reporting API 會輪詢覆蓋這些查詢，不會在每個 iteration 同時爆打全部報表 endpoint；這樣比較適合作為穩定 baseline，真正的 timeout/failure 情境請交給 chaos 測試。這條路徑會產生 Access metrics、Reporting metrics、Kafka/reporting consumer 壓力與 k6 metrics，比只跑 Reporting API 更適合觀察整體系統。腳本會使用唯一 `K6_EMPLOYEE_PREFIX` 產生測試員工，並在壓測前後自動清掉同 prefix 的 PostgreSQL rows、Redis state/dedupe keys 與 Redis recovery stream entries，避免污染 demo seed 資料。
+
+若要測故障復原，可執行 chaos k6 測試：
+
+```bash
+./scripts/run-k6-chaos-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-chaos-test.ps1
+```
+
+Chaos 測試會先跑 full-stack workload，然後短暫停止 `reporting-api`，恢復後再短暫重啟一個 Kafka broker（預設 `kafka-1`）。這段期間 Grafana 的 k6 failed rate、checks rate、Event Pipeline、consumer processed/sec 會出現波動是預期現象；重點是服務恢復後 pipeline 能繼續處理。Chaos 腳本也會使用唯一 `K6_EMPLOYEE_PREFIX`，最後多輪清理同 prefix 的 PostgreSQL 與 Redis 測試資料。
+
+若只想測報表查詢，可執行 Reporting API k6 壓力測試：
 
 ```bash
 ./scripts/run-k6-reporting-load-test.sh
@@ -345,7 +373,7 @@ K6_VUS=50 K6_STEADY=5m K6_TEST_ID=reporting-api-50vus ./scripts/run-k6-reporting
 .\scripts\run-k6-reporting-load-test.ps1 -Vus 50 -Steady 5m -TestId reporting-api-50vus
 ```
 
-預設測試會用 `rd_1_manager / demo123` 登入，依序打登入、報表中心、部門分析與異常合規查詢。預設 p95 threshold 是 `15000ms`，若要用更嚴格的架構目標可設定 `K6_P95_THRESHOLD_MS=3000` 或 PowerShell `-P95ThresholdMs 3000`。Grafana 可用 `k6_testid` 變數切換不同壓測批次。
+測試預設都會用 `rd_1_manager / demo123` 登入。若 Grafana 有些 panels 顯示 `No data`，請先確認跑的是 full-stack 或 chaos 腳本、Grafana 右上角 `k6_testid` 已切到本次 `K6_TEST_ID`，並且時間範圍包含壓測執行時間；k6 panels 會用目前 Grafana 時間範圍統計整次壓測。一般 full-stack 的預設 p95 threshold 是 `15000ms`，chaos 預設放寬為 `30000ms`，且允許故障視窗內的短暫 failure。若你想手動重跑清理，可執行 `./scripts/cleanup-k6-load-test-data.sh <K6_EMPLOYEE_PREFIX>`。
 
 ### 6. 登入與 demo 密碼重設
 登入頁面使用「登入帳號」作為欄位名稱；API 仍維持相容舊欄位 `employeeId`，內容可填 username 或 employee id。勾選「記住我」會保存登入帳號並延長 session cookie。

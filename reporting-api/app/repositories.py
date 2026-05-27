@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import bindparam, case, func, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
@@ -122,24 +122,42 @@ def get_access_summary(
     event_query = _scoped_event_select(db, current_user, department_id, from_time, to_time)
     employee_query = _scoped_employee_select(db, current_user, department_id)
 
-    total_events = db.scalar(select(func.count()).select_from(event_query.subquery())) or 0
-    granted_events = (
-        db.scalar(select(func.count()).select_from(event_query.where(AccessEvent.decision == "GRANTED").subquery()))
-        or 0
-    )
-    denied_events = (
-        db.scalar(select(func.count()).select_from(event_query.where(AccessEvent.decision == "DENIED").subquery()))
-        or 0
-    )
-    average_latency = db.scalar(select(func.avg(event_query.subquery().c.latency_ms)))
+    event_rows = event_query.subquery()
+    event_stats = db.execute(
+        select(
+            func.count().label("total_events"),
+            func.coalesce(
+                func.sum(case((event_rows.c.decision == "GRANTED", 1), else_=0)),
+                0,
+            ).label("granted_events"),
+            func.coalesce(
+                func.sum(case((event_rows.c.decision == "DENIED", 1), else_=0)),
+                0,
+            ).label("denied_events"),
+            func.avg(event_rows.c.latency_ms).label("average_latency"),
+            func.max(event_rows.c.occurred_at).label("last_event_at"),
+        ).select_from(event_rows)
+    ).one()
 
-    employees_inside = (
-        db.scalar(select(func.count()).select_from(employee_query.where(Employee.last_known_state == "IN").subquery()))
-        or 0
-    )
-    known_employees = db.scalar(select(func.count()).select_from(employee_query.subquery())) or 0
+    employee_rows = employee_query.subquery()
+    employee_stats = db.execute(
+        select(
+            func.count().label("known_employees"),
+            func.coalesce(
+                func.sum(case((employee_rows.c.last_known_state == "IN", 1), else_=0)),
+                0,
+            ).label("employees_inside"),
+        ).select_from(employee_rows)
+    ).one()
+
+    total_events = int(event_stats.total_events or 0)
+    granted_events = int(event_stats.granted_events or 0)
+    denied_events = int(event_stats.denied_events or 0)
+    average_latency = event_stats.average_latency
+    known_employees = int(employee_stats.known_employees or 0)
+    employees_inside = int(employee_stats.employees_inside or 0)
     employees_outside = max(known_employees - employees_inside, 0)
-    last_event_at = db.scalar(select(func.max(event_query.subquery().c.occurred_at)))
+    last_event_at = event_stats.last_event_at
 
     return {
         "totalEvents": total_events,
