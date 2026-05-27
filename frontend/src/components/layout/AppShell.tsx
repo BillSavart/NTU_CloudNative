@@ -12,7 +12,7 @@ type AppShellProps = {
 const navItems = [
   { to: '/dashboard', label: '首頁總覽' },
   { to: '/employee/my-attendance', label: '我的出勤' },
-  { to: '/analytics', label: '部門分析' },
+  { to: '/analytics', label: '部門分析', staffOnly: true },
   { to: '/alerts', label: '異常合規' },
   { to: '/employee/reports', label: '報表中心' },
 ]
@@ -45,6 +45,7 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
 
   const datetimeText = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleDateString('zh-TW', { weekday: 'long' })} ${now.toLocaleTimeString('zh-TW', { hour12: false })}`
   const displayName = currentUser?.displayName?.trim() || currentUser?.username || '訪客'
+  const visibleNavItems = navItems.filter((item) => !item.staffOnly || currentUser?.role !== 'EMPLOYEE')
 
   const handleLogout = async () => {
     setIsLoggingOut(true)
@@ -66,7 +67,7 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
         </div>
 
         <nav className="attendance-nav">
-          {navItems.map((item) => (
+          {visibleNavItems.map((item) => (
             <Link
               key={item.to}
               to={item.to}

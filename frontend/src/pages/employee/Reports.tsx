@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '../../components/layout/AppShell'
+import { fetchCurrentUser, type CurrentUser } from '../../services/auth'
 import {
   type AccessEvent,
   type DepartmentNode,
+  type WorkHourSummary,
+  type WorkHourTrendPoint,
   fetchAccessEvents,
   fetchDepartmentTree,
   fetchReportCenterData,
@@ -10,6 +13,7 @@ import {
 } from '../../services/accessEvents'
 
 type DownloadContent = 'raw' | 'visual'
+type TrendMode = 'monthly' | 'quarterly' | 'yearly'
 
 type ReportMetrics = {
   total: number
@@ -200,7 +204,33 @@ function formatDeniedRate(rate: number, denied: number) {
   return `${percentage.toFixed(1)}%`
 }
 
-function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: string, to: string, departmentId: string, generationLatencyMs?: number) {
+function trendItems(workHours: WorkHourSummary | null, mode: TrendMode) {
+  if (!workHours) return []
+  if (mode === 'monthly') return workHours.monthlyTrend
+  if (mode === 'quarterly') return workHours.quarterlyTrend
+  return workHours.yearlyTrend
+}
+
+function trendTitle(mode: TrendMode) {
+  if (mode === 'monthly') return '月工時趨勢'
+  if (mode === 'quarterly') return '季工時趨勢'
+  return '年工時趨勢'
+}
+
+function formatHours(value: number | null | undefined) {
+  return typeof value === 'number' ? `${value.toFixed(1)}h` : '-'
+}
+
+function buildVisualReport(
+  events: AccessEvent[],
+  metrics: ReportMetrics,
+  workHours: WorkHourSummary | null,
+  from: string,
+  to: string,
+  departmentId: string,
+  includeDepartmentDistribution: boolean,
+  generationLatencyMs?: number,
+) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
   const rows =
@@ -228,7 +258,7 @@ function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: 
 <html lang="zh-Hant">
   <head>
     <meta charset="UTF-8" />
-    <title>出勤營運摘要報表</title>
+    <title>出勤報表</title>
     <style>
       body { color: #172033; font-family: Arial, "Noto Sans TC", sans-serif; margin: 28px; }
       h1 { font-size: 24px; margin: 0 0 8px; }
@@ -250,7 +280,7 @@ function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: 
     </style>
   </head>
   <body>
-    <h1>出勤營運摘要報表</h1>
+    <h1>出勤報表</h1>
     <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)} | 產生時間：${htmlEscape(generatedAt)}</div>
     <div class="metrics">
       ${metricLine('事件總數', metrics.total)}
@@ -261,9 +291,19 @@ function buildVisualReport(events: AccessEvent[], metrics: ReportMetrics, from: 
       ${metricLine('刷出', metrics.outCount)}
       ${metricLine('平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`)}
       ${metricLine('產製耗時', typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-')}
+      ${metricLine('平均工時', formatHours(workHours?.averageHours))}
     </div>
-    <h2>部門事件分布</h2>
-    <div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>
+    <h2>月工時趨勢</h2>
+    <div class="chart">${barRows((workHours?.monthlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    <h2>季工時趨勢</h2>
+    <div class="chart">${barRows((workHours?.quarterlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    <h2>年工時趨勢</h2>
+    <div class="chart">${barRows((workHours?.yearlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    ${
+      includeDepartmentDistribution
+        ? `<h2>部門事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
+        : ''
+    }
     <h2>時段活動量</h2>
     <div class="chart">${barRows(metrics.hourlyActivity.map((item) => ({ label: `${item.hour}:00`, value: item.count })))}</div>
     <h2>事件明細預覽</h2>
@@ -296,8 +336,10 @@ function Reports() {
   const [to, setTo] = useState(() => localDateInputValue(new Date()))
   const [departmentId, setDepartmentId] = useState('ALL')
   const [downloadContent, setDownloadContent] = useState<DownloadContent>('visual')
+  const [trendMode, setTrendMode] = useState<TrendMode>('monthly')
   const [events, setEvents] = useState<AccessEvent[]>([])
   const [reportData, setReportData] = useState<ReportCenterResponse | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
@@ -317,11 +359,13 @@ function Reports() {
         offset: 0,
       }),
       fetchDepartmentTree(),
+      fetchCurrentUser(),
     ])
-      .then(([report, departments]) => {
+      .then(([report, departments, user]) => {
         if (cancelled) return
         setReportData(report)
         setEvents(report.events)
+        setCurrentUser(user)
         setDepartmentOptions(flattenDepartments(departments))
       })
       .catch((error) => {
@@ -358,6 +402,9 @@ function Reports() {
   }, [events, reportData])
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
+  const isEmployee = currentUser?.role === 'EMPLOYEE'
+  const activeTrend = trendItems(reportData?.workHours ?? null, trendMode)
+  const maxTrendHours = Math.max(1, ...activeTrend.map((item) => item.averageHours))
 
   const downloadReport = async () => {
     setIsDownloading(true)
@@ -403,12 +450,12 @@ function Reports() {
 
       const reportWindow = window.open('', '_blank')
       if (!reportWindow) {
-        throw new Error('瀏覽器封鎖了營運摘要報表視窗，請允許彈出視窗後再試一次。')
+        throw new Error('瀏覽器封鎖了報表視窗，請允許彈出視窗後再試一次。')
       }
       reportWindow.document.open()
-      reportWindow.document.write(buildVisualReport(result.events, reportMetrics, from, to, departmentId, result.generationLatencyMs))
+      reportWindow.document.write(buildVisualReport(result.events, reportMetrics, result.workHours, from, to, departmentId, !isEmployee, result.generationLatencyMs))
       reportWindow.document.close()
-      setMessage(`已開啟營運摘要報表，共納入 ${result.events.length} 筆事件預覽。`)
+      setMessage(`已開啟報表，共納入 ${result.events.length} 筆事件預覽。`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '下載失敗')
     } finally {
@@ -417,7 +464,7 @@ function Reports() {
   }
 
   return (
-    <AppShell title="報表中心" subtitle="出勤指標、事件分布與報表下載">
+    <AppShell title={isEmployee ? '我的報表' : '報表中心'} subtitle="平均工時、工時趨勢與報表下載">
       <section className="panel-card mb-3">
         <div className="reports-toolbar">
           <div>
@@ -438,7 +485,8 @@ function Reports() {
             <label className="form-label">結束日期</label>
             <input className="form-control" type="date" value={to} onChange={(event) => setTo(event.target.value)} />
           </div>
-          <div className="col-md-3">
+          {!isEmployee ? (
+            <div className="col-md-3">
             <label className="form-label">部門</label>
             <select className="form-select" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}>
               <option value="ALL">全部可見部門</option>
@@ -449,11 +497,12 @@ function Reports() {
                 </option>
               ))}
             </select>
-          </div>
+            </div>
+          ) : null}
           <div className="col-md-3">
             <label className="form-label">下載內容</label>
             <select className="form-select" value={downloadContent} onChange={(event) => setDownloadContent(event.target.value as DownloadContent)}>
-              <option value="visual">營運摘要報表</option>
+              <option value="visual">{isEmployee ? '我的報表' : '出勤趨勢報表'}</option>
               <option value="raw">原始事件資料 CSV</option>
             </select>
           </div>
@@ -463,18 +512,12 @@ function Reports() {
 
       <section className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">預覽事件數</div>
+          <div className="kpi-label">平均工時</div>
+          <div className="kpi-value">{isLoading ? '-' : formatHours(reportData?.workHours.averageHours)}</div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-label">刷卡事件數</div>
           <div className="kpi-value">{isLoading ? '-' : metrics.total.toLocaleString()}</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">允許 / 拒絕</div>
-          <div className="kpi-value">
-            {isLoading ? '-' : `${metrics.granted.toLocaleString()} / ${metrics.denied.toLocaleString()}`}
-          </div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">拒絕率</div>
-          <div className="kpi-value">{isLoading ? '-' : formatDeniedRate(metrics.deniedRate, metrics.denied)}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">資料產製耗時</div>
@@ -483,8 +526,35 @@ function Reports() {
         </div>
       </section>
 
+      <section className="panel-card mb-3">
+        <div className="d-flex justify-content-between align-items-center mb-3">
+          <h2 className="h6 m-0">{trendTitle(trendMode)}</h2>
+          <select className="form-select form-select-sm w-auto" value={trendMode} onChange={(event) => setTrendMode(event.target.value as TrendMode)}>
+            <option value="monthly">月</option>
+            <option value="quarterly">季</option>
+            <option value="yearly">年</option>
+          </select>
+        </div>
+        <div className="work-trend-chart">
+          {activeTrend.length > 0 ? (
+            activeTrend.map((item: WorkHourTrendPoint) => (
+              <div className="work-trend-bar" key={item.label} title={`${item.label} ${formatHours(item.averageHours)}`}>
+                <div className="work-trend-track">
+                  <div className="work-trend-fill" style={{ height: `${Math.max(8, (item.averageHours / maxTrendHours) * 100)}%` }} />
+                </div>
+                <span>{item.label}</span>
+                <strong>{formatHours(item.averageHours)}</strong>
+              </div>
+            ))
+          ) : (
+            <div className="text-secondary small">目前沒有完整進出可計算工時。</div>
+          )}
+        </div>
+      </section>
+
       <section className="panel-grid mb-3">
-        <div className="panel-card">
+        {!isEmployee ? (
+          <div className="panel-card">
           <div className="d-flex justify-content-between align-items-center mb-3">
             <h2 className="h6 m-0">部門事件分布</h2>
             <span className="small text-secondary">Top {metrics.topDepartments.length}</span>
@@ -504,7 +574,8 @@ function Reports() {
               <div className="text-secondary small">目前沒有可比較的下轄部門事件。</div>
             )}
           </div>
-        </div>
+          </div>
+        ) : null}
 
         <div className="panel-card">
           <h2 className="h6 mb-3">刷卡方向</h2>

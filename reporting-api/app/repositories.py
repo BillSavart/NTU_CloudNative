@@ -202,6 +202,16 @@ def get_report_center(
         from_time = datetime.now(TAIPEI) - timedelta(days=7)
     if to_time is None:
         to_time = datetime.now(TAIPEI)
+    if db.bind is not None and db.bind.dialect.name != "sqlite":
+        return _get_report_center_sql(
+            db,
+            current_user=current_user,
+            from_time=from_time,
+            to_time=to_time,
+            department_id=department_id,
+            limit=limit,
+            started_at=started_at,
+        )
 
     rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
     total_events = len(rows)
@@ -218,11 +228,17 @@ def get_report_center(
         hourly_counts[f"{_local_datetime(row.occurred_at).hour:02d}"] += 1
 
     excluded_department_ids = _report_center_excluded_department_ids(current_user)
-    top_departments = [
+    visible_top_departments = [
         {"departmentId": row_department_id, "count": count}
         for row_department_id, count in department_counts.most_common()
         if row_department_id not in excluded_department_ids
-    ][:6]
+    ]
+    if not visible_top_departments and department_counts:
+        visible_top_departments = [
+            {"departmentId": row_department_id, "count": count}
+            for row_department_id, count in department_counts.most_common()
+        ]
+    top_departments = visible_top_departments[:6]
 
     preview = query_access_events(
         db,
@@ -245,6 +261,7 @@ def get_report_center(
             "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
         },
         "topDepartments": top_departments,
+        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
         "hourlyActivity": [
             {"hour": hour, "count": count}
             for hour, count in sorted(hourly_counts.items())
@@ -252,6 +269,293 @@ def get_report_center(
         "events": preview["items"],
         "previewLimit": limit,
         "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
+    }
+
+
+def _get_report_center_sql(
+    db: Session,
+    current_user: UserAccount | None,
+    from_time: datetime,
+    to_time: datetime,
+    department_id: str | None,
+    limit: int,
+    started_at: float,
+) -> dict[str, Any]:
+    scoped = _scoped_event_select(db, current_user, department_id, from_time, to_time).subquery()
+    metric_row = db.execute(
+        select(
+            func.count().label("total_events"),
+            func.count().filter(scoped.c.decision == "GRANTED").label("granted_events"),
+            func.count().filter(scoped.c.decision == "DENIED").label("denied_events"),
+            func.count().filter(scoped.c.direction == "IN").label("in_events"),
+            func.count().filter(scoped.c.direction == "OUT").label("out_events"),
+            func.avg(scoped.c.latency_ms).label("avg_latency_ms"),
+        ).select_from(scoped)
+    ).one()
+
+    department_counts = db.execute(
+        select(
+            Employee.department_id.label("department_id"),
+            func.count().label("count"),
+        )
+        .select_from(scoped)
+        .join(Employee, scoped.c.employee_id == Employee.employee_id)
+        .group_by(Employee.department_id)
+        .order_by(func.count().desc())
+    ).mappings().all()
+    excluded_department_ids = _report_center_excluded_department_ids(current_user)
+    top_departments = [
+        {"departmentId": row["department_id"] or "UNKNOWN", "count": int(row["count"])}
+        for row in department_counts
+        if (row["department_id"] or "UNKNOWN") not in excluded_department_ids
+    ]
+    if not top_departments and department_counts:
+        top_departments = [
+            {"departmentId": row["department_id"] or "UNKNOWN", "count": int(row["count"])}
+            for row in department_counts
+        ]
+    top_departments = top_departments[:6]
+
+    hourly_rows = db.execute(
+        select(
+            func.to_char(func.date_trunc("hour", scoped.c.occurred_at), "HH24").label("hour"),
+            func.count().label("count"),
+        )
+        .select_from(scoped)
+        .group_by("hour")
+        .order_by("hour")
+    ).mappings().all()
+
+    preview = query_access_events(
+        db,
+        current_user=current_user,
+        department_id=department_id,
+        from_time=from_time,
+        to_time=to_time,
+        limit=limit,
+        offset=0,
+    )
+
+    total_events = int(metric_row.total_events or 0)
+    denied_events = int(metric_row.denied_events or 0)
+    average_latency = metric_row.avg_latency_ms
+    return {
+        "metrics": {
+            "totalEvents": total_events,
+            "grantedEvents": int(metric_row.granted_events or 0),
+            "deniedEvents": denied_events,
+            "inEvents": int(metric_row.in_events or 0),
+            "outEvents": int(metric_row.out_events or 0),
+            "avgLatencyMs": round(float(average_latency), 2) if average_latency is not None else None,
+            "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
+        },
+        "topDepartments": top_departments,
+        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
+        "hourlyActivity": [
+            {"hour": row["hour"], "count": int(row["count"])}
+            for row in hourly_rows
+        ],
+        "events": preview["items"],
+        "previewLimit": limit,
+        "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
+    }
+
+
+def get_work_hour_summary(
+    db: Session,
+    current_user: UserAccount | None = None,
+    to_time: datetime | None = None,
+    department_id: str | None = None,
+) -> dict[str, Any]:
+    if to_time is None:
+        to_time = datetime.now(TAIPEI)
+    if db.bind is not None and db.bind.dialect.name != "sqlite":
+        return _get_work_hour_summary_sql(db, current_user, to_time, department_id)
+
+    return _get_work_hour_summary_in_python(db, current_user, to_time, department_id)
+
+
+def _get_work_hour_summary_sql(
+    db: Session,
+    current_user: UserAccount | None,
+    to_time: datetime,
+    department_id: str | None,
+) -> dict[str, Any]:
+    history_from = to_time - timedelta(days=370)
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    params: dict[str, Any] = {"history_from": history_from, "to_time": to_time}
+    filters = [
+        "e.gate_id LIKE '%_A'",
+        "e.decision = 'GRANTED'",
+        "e.occurred_at >= :history_from",
+        "e.occurred_at <= :to_time",
+    ]
+    employee_ids: list[str] | None = None
+    if visible_ids is not None:
+        employee_id_query = text(
+            """
+            SELECT employee_id
+            FROM employees
+            WHERE department_id IN :visible_ids
+            """
+        ).bindparams(bindparam("visible_ids", expanding=True))
+        employee_ids = list(db.scalars(employee_id_query, {"visible_ids": visible_ids or ["__none__"]}).all())
+        filters.append("e.employee_id IN :employee_ids")
+        params["employee_ids"] = employee_ids or ["__none__"]
+    if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+        filters.append("e.employee_id = :employee_id")
+        params["employee_id"] = current_user.employee_id
+
+    daily_cte = f"""
+        WITH daily AS MATERIALIZED (
+            SELECT
+                e.employee_id,
+                e.occurred_at::date AS work_date,
+                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+            FROM access_events e
+            WHERE {' AND '.join(filters)}
+            GROUP BY e.employee_id, e.occurred_at::date
+        ),
+        completed AS MATERIALIZED (
+            SELECT
+                work_date,
+                extract(epoch FROM (last_out - first_in)) / 3600.0 AS work_hours
+            FROM daily
+            WHERE first_in IS NOT NULL
+              AND last_out IS NOT NULL
+              AND last_out > first_in
+        )
+    """
+
+    query = text(
+        f"""
+        {daily_cte}
+        SELECT
+            'summary' AS period,
+            NULL::text AS label,
+            round(avg(work_hours)::numeric, 2) AS average_hours,
+            round(sum(work_hours)::numeric, 2) AS total_hours,
+            count(*) AS work_days
+        FROM completed
+        UNION ALL
+        SELECT
+            'monthly' AS period,
+            to_char(date_trunc('month', work_date), 'YYYY-MM') AS label,
+            round(avg(work_hours)::numeric, 2) AS average_hours,
+            round(sum(work_hours)::numeric, 2) AS total_hours,
+            count(*) AS work_days
+        FROM completed
+        GROUP BY label
+        UNION ALL
+        SELECT
+            'quarterly' AS period,
+            concat(extract(year FROM work_date)::int, ' Q', extract(quarter FROM work_date)::int) AS label,
+            round(avg(work_hours)::numeric, 2) AS average_hours,
+            round(sum(work_hours)::numeric, 2) AS total_hours,
+            count(*) AS work_days
+        FROM completed
+        GROUP BY label
+        UNION ALL
+        SELECT
+            'yearly' AS period,
+            extract(year FROM work_date)::int::text AS label,
+            round(avg(work_hours)::numeric, 2) AS average_hours,
+            round(sum(work_hours)::numeric, 2) AS total_hours,
+            count(*) AS work_days
+        FROM completed
+        GROUP BY label
+        """
+    )
+    if employee_ids is not None:
+        query = query.bindparams(bindparam("employee_ids", expanding=True))
+    rows = db.execute(query, params).mappings().all()
+
+    summary = next((row for row in rows if row["period"] == "summary"), {})
+
+    def period_rows(period: str, limit: int) -> list[dict[str, Any]]:
+        period_values = sorted(
+            [row for row in rows if row["period"] == period and row["label"] is not None],
+            key=lambda row: row["label"],
+        )[-limit:]
+        return [
+            {
+                "label": row["label"],
+                "averageHours": float(row["average_hours"]),
+                "totalHours": float(row["total_hours"]),
+                "workDays": int(row["work_days"]),
+            }
+            for row in period_values
+        ]
+
+    average_hours = summary.get("average_hours") if summary else None
+    return {
+        "averageHours": float(average_hours) if average_hours is not None else None,
+        "workDays": int(summary.get("work_days", 0) or 0) if summary else 0,
+        "monthlyTrend": period_rows("monthly", 12),
+        "quarterlyTrend": period_rows("quarterly", 4),
+        "yearlyTrend": period_rows("yearly", 3),
+    }
+
+
+def _get_work_hour_summary_in_python(
+    db: Session,
+    current_user: UserAccount | None,
+    to_time: datetime,
+    department_id: str | None,
+) -> dict[str, Any]:
+    history_from = to_time - timedelta(days=370)
+    rows = _dashboard_event_rows(db, current_user, department_id, history_from, to_time)
+    daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
+
+    for row in rows:
+        if row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+            continue
+        occurred_at = _local_datetime(row.occurred_at)
+        key = (row.employee_id, occurred_at.date())
+        day = daily[key]
+        if row.direction == "IN" and (day["first_in"] is None or occurred_at < day["first_in"]):
+            day["first_in"] = occurred_at
+        if row.direction == "OUT" and (day["last_out"] is None or occurred_at > day["last_out"]):
+            day["last_out"] = occurred_at
+
+    completed_days: list[tuple[date, float]] = []
+    for (_, work_date), day in daily.items():
+        first_in = day["first_in"]
+        last_out = day["last_out"]
+        if first_in is None or last_out is None or last_out <= first_in:
+            continue
+        completed_days.append((work_date, (last_out - first_in).total_seconds() / 3600))
+
+    def summarize_periods(period: str) -> list[dict[str, Any]]:
+        buckets: dict[str, list[float]] = defaultdict(list)
+        for work_date, hours in completed_days:
+            if period == "monthly":
+                label = work_date.strftime("%Y-%m")
+            elif period == "quarterly":
+                quarter = ((work_date.month - 1) // 3) + 1
+                label = f"{work_date.year} Q{quarter}"
+            else:
+                label = str(work_date.year)
+            buckets[label].append(hours)
+
+        return [
+            {
+                "label": label,
+                "averageHours": round(sum(values) / len(values), 2),
+                "totalHours": round(sum(values), 2),
+                "workDays": len(values),
+            }
+            for label, values in sorted(buckets.items())
+        ]
+
+    total_hours = sum(hours for _, hours in completed_days)
+    return {
+        "averageHours": round(total_hours / len(completed_days), 2) if completed_days else None,
+        "workDays": len(completed_days),
+        "monthlyTrend": summarize_periods("monthly")[-12:],
+        "quarterlyTrend": summarize_periods("quarterly")[-4:],
+        "yearlyTrend": summarize_periods("yearly")[-3:],
     }
 
 
@@ -469,7 +773,7 @@ def get_department_analytics(
     if not leaf_ids:
         return {
             "departments": [],
-            "visibleDepartmentCount": len(departments),
+            "visibleDepartmentCount": len(display_nodes),
             "days": days,
         }
 
@@ -490,46 +794,49 @@ def get_department_analytics(
         for row in db.execute(employee_sql, {"leaf_ids": leaf_ids}).mappings().all()
     }
 
-    daily_sql = text(
-        """
-        WITH daily AS (
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        daily_rows = _department_daily_rows_in_python(db, current_user, leaf_ids, since)
+    else:
+        daily_sql = text(
+            """
+            WITH daily AS (
+                SELECT
+                    e.employee_id,
+                    emp.department_id,
+                    e.occurred_at::date AS work_date,
+                    min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                    max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+                FROM access_events e
+                JOIN employees emp ON emp.employee_id = e.employee_id
+                WHERE emp.department_id IN :leaf_ids
+                  AND e.gate_id LIKE '%_A'
+                  AND e.decision = 'GRANTED'
+                  AND e.occurred_at >= :since
+                GROUP BY e.employee_id, emp.department_id, e.occurred_at::date
+            )
             SELECT
-                e.employee_id,
-                emp.department_id,
-                e.occurred_at::date AS work_date,
-                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
-                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
-            FROM access_events e
-            JOIN employees emp ON emp.employee_id = e.employee_id
-            WHERE emp.department_id IN :leaf_ids
-              AND e.gate_id LIKE '%_A'
-              AND e.decision = 'GRANTED'
-              AND e.occurred_at >= :since
-            GROUP BY e.employee_id, emp.department_id, e.occurred_at::date
-        )
-        SELECT
-            department_id,
-            count(*) AS daily_records,
-            count(*) FILTER (
-                WHERE first_in IS NOT NULL
-                  AND last_out IS NOT NULL
-                  AND first_in::time <= time '08:30:00'
-                  AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= 12
-            ) AS normal_records,
-            count(*) FILTER (WHERE first_in::time > time '08:30:00') AS late_records,
-            count(*) FILTER (
-                WHERE first_in IS NOT NULL
-                  AND last_out IS NOT NULL
-                  AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
-            ) AS overtime_records
-        FROM daily
-        GROUP BY department_id
-        """
-    ).bindparams(bindparam("leaf_ids", expanding=True))
-    daily_rows = {
-        row["department_id"]: row
-        for row in db.execute(daily_sql, {"leaf_ids": leaf_ids, "since": since}).mappings().all()
-    }
+                department_id,
+                count(*) AS daily_records,
+                count(*) FILTER (
+                    WHERE first_in IS NOT NULL
+                      AND last_out IS NOT NULL
+                      AND first_in::time <= time '08:30:00'
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= 12
+                ) AS normal_records,
+                count(*) FILTER (WHERE first_in::time > time '08:30:00') AS late_records,
+                count(*) FILTER (
+                    WHERE first_in IS NOT NULL
+                      AND last_out IS NOT NULL
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+                ) AS overtime_records
+            FROM daily
+            GROUP BY department_id
+            """
+        ).bindparams(bindparam("leaf_ids", expanding=True))
+        daily_rows = {
+            row["department_id"]: row
+            for row in db.execute(daily_sql, {"leaf_ids": leaf_ids, "since": since}).mappings().all()
+        }
 
     rows = []
     for node in display_nodes:
@@ -557,9 +864,51 @@ def get_department_analytics(
 
     return {
         "departments": rows,
-        "visibleDepartmentCount": len(departments),
+        "visibleDepartmentCount": len(rows),
         "days": days,
     }
+
+
+def _department_daily_rows_in_python(
+    db: Session,
+    current_user: UserAccount | None,
+    leaf_ids: list[str],
+    since: datetime,
+) -> dict[str, dict[str, int]]:
+    now = datetime.now(TAIPEI)
+    leaf_set = set(leaf_ids)
+    daily: dict[tuple[str, str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
+    for row in _dashboard_event_rows(db, current_user, None, since, now):
+        if row.department_id not in leaf_set or row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+            continue
+        occurred_at = _local_datetime(row.occurred_at)
+        key = (row.department_id, row.employee_id, occurred_at.date())
+        day = daily[key]
+        if row.direction == "IN" and (day["first_in"] is None or occurred_at < day["first_in"]):
+            day["first_in"] = occurred_at
+        if row.direction == "OUT" and (day["last_out"] is None or occurred_at > day["last_out"]):
+            day["last_out"] = occurred_at
+
+    rows: dict[str, dict[str, int]] = defaultdict(lambda: {
+        "daily_records": 0,
+        "normal_records": 0,
+        "late_records": 0,
+        "overtime_records": 0,
+    })
+    for key, day in daily.items():
+        department_id = key[0]
+        first_in = day["first_in"]
+        last_out = day["last_out"]
+        rows[department_id]["daily_records"] += 1
+        if first_in is not None and first_in.time() > time(8, 30):
+            rows[department_id]["late_records"] += 1
+        if first_in is not None and last_out is not None:
+            work_hours = (last_out - first_in).total_seconds() / 3600
+            if work_hours > 12:
+                rows[department_id]["overtime_records"] += 1
+            elif first_in.time() <= time(8, 30):
+                rows[department_id]["normal_records"] += 1
+    return rows
 
 
 def get_employee_states(
@@ -632,7 +981,7 @@ def get_attendance_daily(
     if current_user is None and target_employee_id is None:
         return {"items": [], "total": 0, "limit": limit}
 
-    since = datetime.now(TAIPEI) - timedelta(days=7)
+    since = datetime.now(TAIPEI) - timedelta(days=limit)
     params: dict[str, Any] = {"limit": limit, "since": since}
     filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
     filters.append("e.occurred_at >= :since")

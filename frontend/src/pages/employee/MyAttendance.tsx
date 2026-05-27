@@ -9,6 +9,11 @@ function formatTime(value?: string | null) {
   return date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+function isCurrentMonth(dateText: string) {
+  const now = new Date()
+  return dateText.startsWith(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+}
+
 function MyAttendance() {
   const [items, setItems] = useState<AttendanceDailyItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -32,11 +37,13 @@ function MyAttendance() {
   }, [])
 
   const summary = useMemo(() => {
-    const worked = items.filter((item) => item.firstIn && item.lastOut)
+    const monthItems = items.filter((item) => isCurrentMonth(item.date))
+    const worked = monthItems.filter((item) => item.firstIn && item.lastOut)
     const normal = worked.filter((item) => item.status === '正常').length
     const totalHours = worked.reduce((sum, item) => sum + (item.workHours ?? 0), 0)
-    const anomalies = items.filter((item) => item.status !== '正常').length
+    const anomalies = monthItems.filter((item) => item.status !== '正常').length
     return {
+      monthItems,
       workedDays: worked.length,
       onTimeRate: worked.length > 0 ? Math.round((normal / worked.length) * 100) : 0,
       totalHours,
@@ -48,7 +55,7 @@ function MyAttendance() {
     <AppShell title="我的出勤" subtitle="個人上下班紀錄與工時摘要">
       <section className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">近期出勤天數</div>
+          <div className="kpi-label">當月出勤天數</div>
           <div className="kpi-value">{loading ? '-' : summary.workedDays}</div>
         </div>
         <div className="kpi-card">
@@ -56,7 +63,7 @@ function MyAttendance() {
           <div className="kpi-value">{loading ? '-' : `${summary.onTimeRate}%`}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">近期總工時</div>
+          <div className="kpi-label">當月總工時</div>
           <div className="kpi-value">{loading ? '-' : `${summary.totalHours.toFixed(1)}h`}</div>
         </div>
         <div className="kpi-card">
@@ -66,7 +73,7 @@ function MyAttendance() {
       </section>
 
       <section className="panel-card">
-        <h2 className="h6 mb-3">近期出勤明細</h2>
+        <h2 className="h6 mb-3">當月出勤明細</h2>
         <table className="table-clean">
           <thead>
             <tr>
@@ -82,10 +89,10 @@ function MyAttendance() {
               <tr><td colSpan={5} className="text-secondary">載入中...</td></tr>
             ) : error ? (
               <tr><td colSpan={5} className="text-danger">{error}</td></tr>
-            ) : items.length === 0 ? (
+            ) : summary.monthItems.length === 0 ? (
               <tr><td colSpan={5} className="text-secondary">目前沒有出勤資料</td></tr>
             ) : (
-              items.map((item) => (
+              summary.monthItems.map((item) => (
                 <tr key={`${item.employeeId}-${item.date}`}>
                   <td>{item.date}</td>
                   <td>{formatTime(item.firstIn)}</td>

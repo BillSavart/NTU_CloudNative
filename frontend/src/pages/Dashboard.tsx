@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell'
-import { type AccessEvent, type DashboardSummary, fetchDashboardSummary, fetchRecentAccessEvents } from '../services/accessEvents'
+import { fetchCurrentUser, type CurrentUser } from '../services/auth'
+import { type AccessEvent, type AttendanceDailyItem, type DashboardSummary, fetchAttendanceDaily, fetchDashboardSummary, fetchRecentAccessEvents } from '../services/accessEvents'
 
 function formatAverageLatency(summary: DashboardSummary | null) {
   if (!summary) {
@@ -23,9 +24,30 @@ function formatPercent(value: number | null | undefined) {
   return typeof value === 'number' ? `${value.toFixed(1)}%` : '-'
 }
 
+function currentMonthItems(items: AttendanceDailyItem[]) {
+  const now = new Date()
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  return items.filter((item) => item.date.startsWith(monthKey))
+}
+
+function elapsedWeekdaysInCurrentMonth() {
+  const now = new Date()
+  let days = 0
+  for (let day = 1; day <= now.getDate(); day += 1) {
+    const date = new Date(now.getFullYear(), now.getMonth(), day)
+    const weekday = date.getDay()
+    if (weekday !== 0 && weekday !== 6) {
+      days += 1
+    }
+  }
+  return days
+}
+
 function Dashboard() {
   const [events, setEvents] = useState<AccessEvent[]>([])
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [attendanceItems, setAttendanceItems] = useState<AttendanceDailyItem[]>([])
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsRefreshing, setEventsRefreshing] = useState(false)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -51,7 +73,12 @@ function Dashboard() {
         setEventsError(null)
         if (!eventsLoading) setEventsRefreshing(true)
 
-        const [next, nextSummary] = await Promise.all([fetchRecentAccessEvents(10), fetchDashboardSummary()])
+        const [next, nextSummary, user, attendance] = await Promise.all([
+          fetchRecentAccessEvents(10),
+          fetchDashboardSummary(),
+          fetchCurrentUser(),
+          fetchAttendanceDaily(31),
+        ])
 
         if (!cancelled) {
           const nextIds = next.map((event) => event.requestId).filter(Boolean)
@@ -61,6 +88,8 @@ function Dashboard() {
 
           setEvents(next)
           setSummary(nextSummary)
+          setCurrentUser(user)
+          setAttendanceItems(attendance.items)
           setLastUpdatedAt(new Date())
 
           if (newIds.length > 0) {
@@ -102,15 +131,30 @@ function Dashboard() {
   const securityMetrics = summary?.securityMetrics
   const topViolationPerson = securityMetrics?.topViolationPeople[0]
   const topLateDepartment = hrMetrics?.topLateDepartment
+  const isEmployee = currentUser?.role === 'EMPLOYEE'
+  const monthlyAttendance = useMemo(() => {
+    const monthItems = currentMonthItems(attendanceItems)
+    const attendedDays = monthItems.filter((item) => item.firstIn || item.lastOut).length
+    const expectedDays = Math.max(elapsedWeekdaysInCurrentMonth(), attendedDays)
+    return {
+      attendedDays,
+      expectedDays,
+      rate: expectedDays > 0 ? (attendedDays / expectedDays) * 100 : null,
+    }
+  }, [attendanceItems])
 
   return (
     <AppShell title="首頁總覽" subtitle="今日出勤狀態與異常摘要">
       <section className="kpi-grid">
         <div className="kpi-card">
-          <div className="kpi-label">即時出勤率</div>
-          <div className="kpi-value">{formatPercent(hrMetrics?.attendanceRate)}</div>
+          <div className="kpi-label">{isEmployee ? '當月出勤率' : '即時出勤率'}</div>
+          <div className="kpi-value">{isEmployee ? formatPercent(monthlyAttendance.rate) : formatPercent(hrMetrics?.attendanceRate)}</div>
           <div className="kpi-footnote">
-            {hrMetrics ? `${hrMetrics.attendedToday}/${hrMetrics.expectedToday} 今日已進廠` : '今日應到 / 實到'}
+            {isEmployee
+              ? `${monthlyAttendance.attendedDays}/${monthlyAttendance.expectedDays} 當月已出勤`
+              : hrMetrics
+                ? `${hrMetrics.attendedToday}/${hrMetrics.expectedToday} 今日已進廠`
+                : '今日應到 / 實到'}
           </div>
         </div>
         <div className="kpi-card">
@@ -120,16 +164,20 @@ function Dashboard() {
             {topViolationPerson ? `${topViolationPerson.displayName ?? topViolationPerson.employeeId} ${topViolationPerson.count} 次` : '近 24 小時'}
           </div>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-label">目前在廠</div>
-          <div className="kpi-value">{summary?.employeesInside ?? '-'}</div>
-          <div className="kpi-footnote">last known state = IN</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">目前不在廠</div>
-          <div className="kpi-value">{summary?.employeesOutside ?? '-'}</div>
-          <div className="kpi-footnote">已知員工 - 在廠</div>
-        </div>
+        {!isEmployee ? (
+          <>
+            <div className="kpi-card">
+              <div className="kpi-label">目前在廠</div>
+              <div className="kpi-value">{summary?.employeesInside ?? '-'}</div>
+              <div className="kpi-footnote">last known state = IN</div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-label">目前不在廠</div>
+              <div className="kpi-value">{summary?.employeesOutside ?? '-'}</div>
+              <div className="kpi-footnote">已知員工 - 在廠</div>
+            </div>
+          </>
+        ) : null}
       </section>
 
       <section className="panel-grid">
@@ -187,7 +235,8 @@ function Dashboard() {
           </table>
         </div>
 
-        <div className="panel-card">
+        {!isEmployee ? (
+          <div className="panel-card">
           <h2 className="h6 mb-3">HR 與安全熱區</h2>
           <Link className="alert-link-row" to="/analytics">
             <span>遲到最高部門</span>
@@ -207,11 +256,13 @@ function Dashboard() {
             <span>平均延遲 ms</span>
             <span className="danger-text">{formatAverageLatency(summary)}</span>
           </div>
-        </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="dashboard-insight-grid">
-        <div className="panel-card">
+        {!isEmployee ? (
+          <div className="panel-card">
           <h2 className="h6 mb-3">過勞紅燈</h2>
           <div className="dashboard-list">
             {hrMetrics?.overtimeAlerts.length ? (
@@ -225,10 +276,11 @@ function Dashboard() {
               <div className="text-secondary">目前沒有單日超過 12 小時警示</div>
             )}
           </div>
-        </div>
+          </div>
+        ) : null}
 
         <div className="panel-card">
-          <h2 className="h6 mb-3">Anti-Passback 人員</h2>
+          <h2 className="h6 mb-3">Anti-Passback 紀錄</h2>
           <div className="dashboard-list">
             {securityMetrics?.topViolationPeople.length ? (
               securityMetrics.topViolationPeople.map((item) => (

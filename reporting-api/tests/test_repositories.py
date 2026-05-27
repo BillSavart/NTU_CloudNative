@@ -13,6 +13,7 @@ from app.repositories import (
     get_dashboard,
     get_dashboard_operational_metrics,
     get_compliance_anomalies,
+    get_department_analytics,
     get_department_tree,
     get_report_center,
     parse_access_event,
@@ -124,6 +125,15 @@ class RepositoryTestCase(unittest.TestCase):
 
         self.assertEqual([department["departmentId"] for department in tree], ["FAB_A"])
         self.assertEqual(tree[0]["children"][0]["departmentId"], "OPS_A")
+
+    def test_department_analytics_counts_displayed_child_departments(self) -> None:
+        with self.SessionLocal() as db:
+            manager = self._user(db, "manager")
+            analytics = get_department_analytics(db, current_user=manager)
+
+        self.assertEqual(analytics["visibleDepartmentCount"], len(analytics["departments"]))
+        self.assertEqual(analytics["visibleDepartmentCount"], 1)
+        self.assertEqual(analytics["departments"][0]["departmentId"], "OPS_A")
 
     def test_dashboard_combines_summary_anomalies_and_timeseries(self) -> None:
         with self.SessionLocal() as db:
@@ -271,6 +281,22 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(report["hourlyActivity"], [{"hour": "17", "count": 2}])
         self.assertEqual(len(report["events"]), 2)
         self.assertIsInstance(report["generationLatencyMs"], float)
+
+    def test_report_center_keeps_leaf_manager_department_distribution(self) -> None:
+        with self.SessionLocal() as db:
+            db.add(UserAccount(user_id=3, username="ops_manager", role="MANAGER", employee_id="EMP001", is_active=True))
+            db.add(UserDepartmentScope(user_id=3, department_id="OPS_A", include_descendants=True))
+            db.commit()
+            manager = self._user(db, "ops_manager")
+            report = get_report_center(
+                db,
+                current_user=manager,
+                from_time=datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
+                limit=2,
+            )
+
+        self.assertEqual(report["topDepartments"], [{"departmentId": "OPS_A", "count": 1}])
 
     def _payload(
         self,

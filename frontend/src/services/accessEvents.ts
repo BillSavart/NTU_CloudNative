@@ -77,9 +77,25 @@ export type ReportCenterMetrics = {
   deniedRate: number
 }
 
+export type WorkHourTrendPoint = {
+  label: string
+  averageHours: number
+  totalHours: number
+  workDays: number
+}
+
+export type WorkHourSummary = {
+  averageHours: number | null
+  workDays: number
+  monthlyTrend: WorkHourTrendPoint[]
+  quarterlyTrend: WorkHourTrendPoint[]
+  yearlyTrend: WorkHourTrendPoint[]
+}
+
 export type ReportCenterResponse = {
   metrics: ReportCenterMetrics
   topDepartments: Array<{ departmentId: string; count: number }>
+  workHours: WorkHourSummary
   hourlyActivity: Array<{ hour: string; count: number }>
   events: AccessEvent[]
   previewLimit: number
@@ -217,6 +233,7 @@ export async function fetchReportCenterData(filters: AccessEventFilters = {}): P
   }
 
   const result = (await response.json()) as Partial<ReportCenterResponse>
+  const workHours = result.workHours
   return {
     metrics: {
       totalEvents: Number(result.metrics?.totalEvents ?? 0),
@@ -228,6 +245,13 @@ export async function fetchReportCenterData(filters: AccessEventFilters = {}): P
       deniedRate: Number(result.metrics?.deniedRate ?? 0),
     },
     topDepartments: Array.isArray(result.topDepartments) ? result.topDepartments : [],
+    workHours: {
+      averageHours: typeof workHours?.averageHours === 'number' ? workHours.averageHours : null,
+      workDays: Number(workHours?.workDays ?? 0),
+      monthlyTrend: Array.isArray(workHours?.monthlyTrend) ? workHours.monthlyTrend : [],
+      quarterlyTrend: Array.isArray(workHours?.quarterlyTrend) ? workHours.quarterlyTrend : [],
+      yearlyTrend: Array.isArray(workHours?.yearlyTrend) ? workHours.yearlyTrend : [],
+    },
     hourlyActivity: Array.isArray(result.hourlyActivity) ? result.hourlyActivity : [],
     events: Array.isArray(result.events) ? result.events : [],
     previewLimit: Number(result.previewLimit ?? filters.limit ?? 0),

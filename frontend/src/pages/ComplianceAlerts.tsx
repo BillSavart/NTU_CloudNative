@@ -20,7 +20,8 @@ function ComplianceAlerts() {
   const [draftNote, setDraftNote] = useState('')
   const [savingId, setSavingId] = useState<string | null>(null)
 
-  const selectedType = searchParams.get('type') ?? 'denied_access'
+  const selectedTypeParam = searchParams.get('type')
+  const selectedType = selectedTypeParam && selectedTypeParam !== 'all' ? selectedTypeParam : 'denied_access'
   const keyword = searchParams.get('q') ?? ''
 
   useEffect(() => {
@@ -50,7 +51,7 @@ function ComplianceAlerts() {
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((item) => {
-      const typeMatch = selectedType === 'all' || item.type === selectedType
+      const typeMatch = item.type === selectedType
       const normalizedKeyword = keyword.trim().toLowerCase()
       const keywordMatch =
         normalizedKeyword === '' ||
@@ -64,11 +65,7 @@ function ComplianceAlerts() {
 
   const handleTypeChange = (value: string) => {
     const next = new URLSearchParams(searchParams)
-    if (value === 'all') {
-      next.delete('type')
-    } else {
-      next.set('type', value)
-    }
+    next.set('type', value)
     setSearchParams(next)
   }
 
@@ -114,7 +111,6 @@ function ComplianceAlerts() {
           <div className="col-md-4">
             <label className="form-label">異常類型</label>
             <select className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
-              <option value="all">全部</option>
               <option value="late_arrival">遲到人員</option>
               <option value="overtime_daily">單日超過 12 小時</option>
               <option value="denied_access">拒絕通行事件</option>

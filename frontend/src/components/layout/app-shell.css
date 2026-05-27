@@ -334,6 +334,54 @@
   height: 100%;
 }
 
+.work-trend-chart {
+  align-items: end;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+  gap: 10px;
+  min-height: 190px;
+}
+
+.work-trend-bar {
+  align-items: center;
+  display: grid;
+  grid-template-rows: 128px auto auto;
+  justify-items: center;
+  min-width: 0;
+}
+
+.work-trend-track {
+  align-items: end;
+  background: #eef4f8;
+  border: 1px solid #d7e0e7;
+  border-radius: 8px 8px 4px 4px;
+  display: flex;
+  height: 128px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.work-trend-fill {
+  align-self: flex-end;
+  background: #1d6f8f;
+  border-radius: 8px 8px 0 0;
+  width: 100%;
+}
+
+.work-trend-bar span {
+  color: #64748b;
+  font-size: 11px;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.work-trend-bar strong {
+  color: #0f2742;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .report-direction {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
