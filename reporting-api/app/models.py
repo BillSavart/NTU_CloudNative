@@ -99,7 +99,11 @@ class UserAccount(Base):
 
     user_id: Mapped[int] = mapped_column(sqlite_autoincrement_id, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_reset_token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_reset_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="EMPLOYEE")
     employee_id: Mapped[str | None] = mapped_column(
         String(64),

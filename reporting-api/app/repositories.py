@@ -14,6 +14,9 @@ from app.permissions import get_descendant_department_ids, get_visible_departmen
 from app.serializers import serialize_access_event, serialize_department_tree
 
 
+WORK_HOUR_SUMMARY_CACHE_TTL_SECONDS = 600
+_work_hour_summary_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+
 REQUIRED_EVENT_FIELDS = {
     "requestId",
     "employeeId",
@@ -369,10 +372,35 @@ def get_work_hour_summary(
 ) -> dict[str, Any]:
     if to_time is None:
         to_time = datetime.now(TAIPEI)
-    if db.bind is not None and db.bind.dialect.name != "sqlite":
-        return _get_work_hour_summary_sql(db, current_user, to_time, department_id)
+    cache_key = _work_hour_summary_cache_key(db, current_user, to_time, department_id)
+    cached = _work_hour_summary_cache.get(cache_key)
+    now = perf_counter()
+    if cached is not None and now - cached[0] < WORK_HOUR_SUMMARY_CACHE_TTL_SECONDS:
+        return cached[1]
 
-    return _get_work_hour_summary_in_python(db, current_user, to_time, department_id)
+    if db.bind is not None and db.bind.dialect.name != "sqlite":
+        summary = _get_work_hour_summary_sql(db, current_user, to_time, department_id)
+    else:
+        summary = _get_work_hour_summary_in_python(db, current_user, to_time, department_id)
+
+    _work_hour_summary_cache[cache_key] = (now, summary)
+    if len(_work_hour_summary_cache) > 128:
+        oldest_key = min(_work_hour_summary_cache, key=lambda key: _work_hour_summary_cache[key][0])
+        _work_hour_summary_cache.pop(oldest_key, None)
+    return summary
+
+
+def _work_hour_summary_cache_key(
+    db: Session,
+    current_user: UserAccount | None,
+    to_time: datetime,
+    department_id: str | None,
+) -> tuple[Any, ...]:
+    visible_ids = _visible_department_ids(db, current_user, department_id)
+    scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
+    to_date = _local_date(to_time).isoformat()
+    user_key = current_user.user_id if current_user is not None else "anonymous"
+    return (user_key, department_id or "ALL", scope_key, to_date)
 
 
 def _get_work_hour_summary_sql(

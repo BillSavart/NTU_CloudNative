@@ -187,6 +187,7 @@ def seed_demo_data() -> None:
                 db.add(user)
             user.role = role
             user.employee_id = employee_id
+            user.email = f"{username}@demo.local"
             user.password_hash = hash_password(DEMO_PASSWORD)
             user.is_active = True
 

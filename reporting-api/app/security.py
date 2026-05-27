@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import secrets
 import time
 
 from app.config import get_settings
@@ -9,6 +10,7 @@ from app.config import get_settings
 
 SESSION_COOKIE = "reporting_session"
 TOKEN_TTL_SECONDS = 60 * 60 * 8
+REMEMBER_ME_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 PASSWORD_ITERATIONS = 120_000
 
 
@@ -49,8 +51,8 @@ def verify_password(password: str, stored_hash: str | None) -> bool:
         return False
 
 
-def create_session_token(user_id: int) -> str:
-    expires_at = int(time.time()) + TOKEN_TTL_SECONDS
+def create_session_token(user_id: int, ttl_seconds: int = TOKEN_TTL_SECONDS) -> str:
+    expires_at = int(time.time()) + ttl_seconds
     payload = f"{user_id}:{expires_at}"
     signature = _sign(payload)
     token = f"{payload}:{signature}"
@@ -76,5 +78,18 @@ def _sign(payload: str) -> str:
     return hmac.new(
         settings.app_secret_key.encode("utf-8"),
         payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def create_password_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_reset_token(token: str) -> str:
+    settings = get_settings()
+    return hmac.new(
+        settings.app_secret_key.encode("utf-8"),
+        token.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()

@@ -6,8 +6,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.dependencies import get_current_user
 from app.models import Base, Employee, UserAccount
-from app.routers.auth import LoginRequest, login
-from app.security import SESSION_COOKIE, hash_password
+from app.routers.auth import LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest, confirm_password_reset, login, request_password_reset
+from app.security import SESSION_COOKIE, hash_password, verify_password
 
 
 class AuthTestCase(unittest.TestCase):
@@ -21,6 +21,7 @@ class AuthTestCase(unittest.TestCase):
                 UserAccount(
                     user_id=1,
                     username="manager",
+                    email="manager@demo.local",
                     role="MANAGER",
                     employee_id="MGR001",
                     password_hash=hash_password("demo123", salt=b"0123456789abcdef"),
@@ -48,6 +49,13 @@ class AuthTestCase(unittest.TestCase):
         self.assertEqual(body["user"]["username"], "manager")
         self.assertIn(SESSION_COOKIE, response.headers["set-cookie"])
 
+    def test_login_remember_me_extends_session_cookie(self) -> None:
+        with self.SessionLocal() as db:
+            response = Response()
+            login(LoginRequest(employeeId="manager", password="demo123", rememberMe=True), response, db)
+
+        self.assertIn("Max-Age=2592000", response.headers["set-cookie"])
+
     def test_login_rejects_wrong_password_and_inactive_user(self) -> None:
         with self.SessionLocal() as db:
             with self.assertRaises(HTTPException) as wrong_password:
@@ -67,6 +75,28 @@ class AuthTestCase(unittest.TestCase):
 
         self.assertEqual(missing_token.exception.status_code, 401)
         self.assertEqual(bad_token.exception.status_code, 401)
+
+    def test_password_reset_link_is_one_time(self) -> None:
+        with self.SessionLocal() as db:
+            result = request_password_reset(
+                PasswordResetRequest(loginId="manager", email="someone@example.com"),
+                db,
+            )
+            token = result["resetLink"].split("token=", 1)[1]
+            confirm = confirm_password_reset(
+                PasswordResetConfirmRequest(token=token, password="newpass1"),
+                db,
+            )
+            user = db.get(UserAccount, 1)
+            assert user is not None
+
+            with self.assertRaises(HTTPException) as reused:
+                confirm_password_reset(PasswordResetConfirmRequest(token=token, password="newpass2"), db)
+
+        self.assertEqual(confirm["message"], "密碼已更新，請使用新密碼登入。")
+        self.assertEqual(result["sentTo"], "someone@example.com")
+        self.assertTrue(verify_password("newpass1", user.password_hash))
+        self.assertEqual(reused.exception.status_code, 400)
 
 
 if __name__ == "__main__":

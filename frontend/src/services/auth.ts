@@ -1,11 +1,17 @@
 ﻿export type LoginPayload = {
   employeeId: string
   password: string
+  rememberMe?: boolean
 }
 
 export type LoginResponse = {
   message: string
   user?: CurrentUser
+}
+
+export type PasswordResetRequestResponse = {
+  message: string
+  resetLink?: string
 }
 
 export type CurrentUser = {
@@ -70,6 +76,52 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
   }
 
   return result
+}
+
+export async function requestPasswordReset(loginId: string, email: string): Promise<PasswordResetRequestResponse> {
+  await ensureCsrfCookie()
+  const csrfToken = getCookie('csrftoken')
+
+  const response = await fetch('/api/auth/password-reset/request', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify({ loginId, email }),
+  })
+
+  const result = (await response.json()) as PasswordResetRequestResponse
+
+  if (!response.ok) {
+    throw new Error(result.message || '重設密碼連結產生失敗')
+  }
+
+  return result
+}
+
+export async function confirmPasswordReset(token: string, password: string): Promise<{ message: string }> {
+  await ensureCsrfCookie()
+  const csrfToken = getCookie('csrftoken')
+
+  const response = await fetch('/api/auth/password-reset/confirm', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify({ token, password }),
+  })
+
+  const result = (await response.json()) as { message?: string; detail?: string }
+
+  if (!response.ok) {
+    throw new Error(result.message || result.detail || '密碼更新失敗')
+  }
+
+  return { message: result.message || '密碼已更新' }
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUser | null> {
