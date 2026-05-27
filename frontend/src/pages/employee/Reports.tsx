@@ -405,6 +405,17 @@ function Reports() {
   const isEmployee = currentUser?.role === 'EMPLOYEE'
   const activeTrend = trendItems(reportData?.workHours ?? null, trendMode)
   const maxTrendHours = Math.max(1, ...activeTrend.map((item) => item.averageHours))
+  const trendChartWidth = 640
+  const trendChartHeight = 154
+  const trendChartPadding = { top: 22, right: 28, bottom: 34, left: 28 }
+  const trendInnerWidth = trendChartWidth - trendChartPadding.left - trendChartPadding.right
+  const trendInnerHeight = 82
+  const trendPoints = activeTrend.map((item, index) => {
+    const x = trendChartPadding.left + (activeTrend.length <= 1 ? trendInnerWidth / 2 : (index / (activeTrend.length - 1)) * trendInnerWidth)
+    const y = trendChartPadding.top + trendInnerHeight - (item.averageHours / maxTrendHours) * trendInnerHeight
+    return { ...item, x, y }
+  })
+  const trendPath = trendPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
 
   const downloadReport = async () => {
     setIsDownloading(true)
@@ -526,7 +537,7 @@ function Reports() {
         </div>
       </section>
 
-      <section className="panel-card mb-3">
+      <section className="panel-card work-trend-panel mb-3">
         <div className="d-flex justify-content-between align-items-center mb-3">
           <h2 className="h6 m-0">{trendTitle(trendMode)}</h2>
           <select className="form-select form-select-sm w-auto" value={trendMode} onChange={(event) => setTrendMode(event.target.value as TrendMode)}>
@@ -537,17 +548,26 @@ function Reports() {
         </div>
         <div className="work-trend-chart">
           {activeTrend.length > 0 ? (
-            activeTrend.map((item: WorkHourTrendPoint) => (
-              <div className="work-trend-bar" key={item.label} title={`${item.label} ${formatHours(item.averageHours)}`}>
-                <div className="work-trend-track">
-                  <div className="work-trend-fill" style={{ height: `${Math.max(8, (item.averageHours / maxTrendHours) * 100)}%` }} />
-                </div>
-                <span>{item.label}</span>
-                <strong>{formatHours(item.averageHours)}</strong>
-              </div>
-            ))
+            <svg className="work-trend-line" viewBox={`0 0 ${trendChartWidth} ${trendChartHeight}`} role="img" aria-label={trendTitle(trendMode)}>
+              {[0, 0.5, 1].map((ratio) => {
+                const y = trendChartPadding.top + trendInnerHeight - ratio * trendInnerHeight
+                return <line className="work-trend-grid-line" key={ratio} x1={trendChartPadding.left} x2={trendChartWidth - trendChartPadding.right} y1={y} y2={y} />
+              })}
+              {trendPoints.length > 1 ? <path className="work-trend-path" d={trendPath} /> : null}
+              {trendPoints.map((point: WorkHourTrendPoint & { x: number; y: number }) => (
+                <g key={point.label}>
+                  <circle className="work-trend-point" cx={point.x} cy={point.y} r="4" />
+                  <text className="work-trend-value" x={point.x} y={Math.max(14, point.y - 10)}>
+                    {formatHours(point.averageHours)}
+                  </text>
+                  <text className="work-trend-label" x={point.x} y={trendChartHeight - 16}>
+                    {point.label}
+                  </text>
+                </g>
+              ))}
+            </svg>
           ) : (
-            <div className="text-secondary small">目前沒有完整進出可計算工時。</div>
+            <div className="work-trend-empty text-secondary small">目前沒有完整進出可計算工時。</div>
           )}
         </div>
       </section>

@@ -95,7 +95,7 @@ Reporting API demo 帳號（見 `reporting-api/API.md`）例如：
 - `/employee/my-attendance`：我的出勤（個人上下班紀錄與工時摘要）
 - `/analytics`：部門分析（轄下部門出勤比較與趨勢）
 - `/alerts`：異常合規（超時工時與高風險出勤事件）
-- `/employee/reports`：報表中心（報表匯出與下載 UI）
+- `/employee/reports`：報表中心 / 我的報表（平均工時、月/季/年工時趨勢、刷卡事件統計與報表匯出）
 - `/login`：登入頁
 
 ### 已接 API
@@ -110,7 +110,8 @@ Reporting API demo 帳號（見 `reporting-api/API.md`）例如：
 ### 資料來源狀態
 
 - Dashboard KPI、即時刷卡事件、我的出勤、部門分析與異常合規都會透過 Reporting API 讀取實際資料，並依登入帳號的可視部門範圍過濾。
-- 報表中心下載流程尚未重新設計，目前先保留 UI，後續會再接實際報表 API。
+- 報表中心已接 `GET /api/reports/report-center`，主管可看轄下部門平均工時與月/季/年工時趨勢；Employee 只看自己的平均工時與趨勢，不顯示部門事件分布。
+- 工時趨勢圖已改為靠左、固定高度、固定最大寬度的折線圖卡片，不再使用柱狀圖；月/季/年切換時會維持一致的卡片大小與線圖比例，避免季度或年度資料把圖表撐大或拉滿整頁。
 
 ## 如何模擬刷卡（產生即時事件）
 

@@ -9,6 +9,7 @@
 - 監控 Access API 的刷卡流量、授權/拒絕次數、事件佇列狀態。
 - 監控 Reporting API 的 HTTP request 數量、延遲、Kafka consumer 與 Redis recovery consumer 狀態。
 - 透過 exporters 監控 Redis、PostgreSQL、Kafka。
+- 透過 k6 對 Reporting API 產生登入、報表中心、部門分析與異常合規查詢壓力，並把結果寫回 Prometheus。
 - 透過 Grafana dashboard 讓系統健康狀態更容易觀察。
 - 以 Docker Compose override 的方式啟用，不影響原本只跑 base stack 的流程。
 
@@ -18,6 +19,8 @@
 observability/
 |-- README.md
 |-- docker-compose.observability.yml
+|-- k6/
+|   `-- reporting-api.js
 |-- prometheus/
 |   `-- prometheus.yml
 `-- grafana/
@@ -33,6 +36,10 @@ reporting-api/
 |-- app/
 |   `-- observability.py
 `-- requirements-observability.txt
+
+scripts/
+|-- run-k6-reporting-load-test.sh
+`-- run-k6-reporting-load-test.ps1
 ```
 
 ## 完整確認流程
@@ -100,7 +107,7 @@ Dashboards -> NTU Cloud Native -> Access Control Observability
 
 如果圖表一開始是空的，通常是因為還沒有 request 或刷卡事件。可以依照下一步產生測試流量。
 
-### 5. 產生測試流量
+### 5. 產生測試流量或壓力測試
 
 先打基本 health / metrics endpoints：
 
@@ -113,6 +120,8 @@ curl.exe http://localhost:8000/metrics
 這些 request 會讓 Reporting API request count、latency 等 metrics 有資料。
 
 若要產生較接近實際系統的刷卡事件，請使用下方「產生刷卡事件 PowerShell 範例」。
+
+若要針對 Reporting API 執行 k6 壓力測試，請使用下方「k6 Reporting API 壓力測試」。
 
 ### 6. 收尾停止 Stack
 
@@ -286,9 +295,59 @@ Dashboard 影響：
 - Reporting API 與 frontend 可查到跨一年的歷史出勤資料。
 - 員工、部門、權限資料會符合 `TSMC -> fab_1..fab_22 -> RD/IT/PE/EE` 結構。
 
-### 5. 壓力測試狀態
+## k6 Reporting API 壓力測試
 
-新版壓力測試尚未重新設計。這份文件目前只描述 setup、單筆刷卡驗證、anti-passback 驗證與 fake data 匯入；不要把 fake data 匯入視為壓力測試。
+k6 壓力測試會透過 Docker Compose profile 啟動，預設不會隨一般 stack 自動執行。測試會：
+
+- 使用 `rd_1_manager / demo123` 登入，並帶 `rememberMe: true`。
+- 查詢報表中心、部門分析與異常合規 endpoints。
+- 將 k6 metrics 透過 Prometheus remote write 寫入 `http://prometheus:9090/api/v1/write`。
+- 在 Grafana `Access Control Observability` dashboard 顯示 k6 requests/sec、p95 latency、failed rate 與 checks rate。
+
+macOS/Linux:
+
+```bash
+./scripts/run-k6-reporting-load-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-reporting-load-test.ps1
+```
+
+常用調整參數：
+
+| 目的 | macOS/Linux | PowerShell |
+| --- | --- | --- |
+| 調整 VUs | `K6_VUS=50 ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -Vus 50` |
+| 拉長穩定壓測時間 | `K6_STEADY=5m ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -Steady 5m` |
+| 調整 p95 threshold | `K6_P95_THRESHOLD_MS=3000 ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -P95ThresholdMs 3000` |
+| 區分測試批次 | `K6_TEST_ID=reporting-api-50vus ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -TestId reporting-api-50vus` |
+| 更換登入帳號 | `K6_LOGIN_ID=employee ./scripts/run-k6-reporting-load-test.sh` | `.\scripts\run-k6-reporting-load-test.ps1 -LoginId employee` |
+
+完整可調環境變數：
+
+```text
+K6_VUS=20
+K6_RAMP_UP=30s
+K6_STEADY=2m
+K6_RAMP_DOWN=30s
+K6_LOGIN_ID=rd_1_manager
+K6_LOGIN_PASSWORD=demo123
+K6_P95_THRESHOLD_MS=15000
+K6_THINK_TIME_SECONDS=1
+K6_TEST_ID=reporting-api-demo
+```
+
+Grafana 觀察路徑：
+
+```text
+http://localhost:3000
+Dashboards -> NTU Cloud Native -> Access Control Observability
+```
+
+Dashboard 右上方的 `k6_testid` 變數可切換不同壓測批次。若 k6 panels 一開始是空的，請先確認已跑過壓測，並確認 Prometheus 是透過 observability override 啟動，因為 k6 remote write 需要 `--web.enable-remote-write-receiver`，p95 latency panel 使用的 native histogram 也需要 `--enable-feature=native-histograms`。
 
 ## 常用頁面
 

@@ -96,14 +96,17 @@ Response:
 ### POST /login/
 
 Legacy frontend-compatible login path. The request body field is named
-`employeeId`, but it accepts either username or employee id.
+`employeeId`, but it accepts either username or employee id. The frontend label
+is `登入帳號`. `rememberMe` is optional; when true, the session cookie uses the
+longer remember-me TTL and the frontend remembers the login account locally.
 
 Request:
 
 ```json
 {
   "employeeId": "fab_1_manager",
-  "password": "demo123"
+  "password": "demo123",
+  "rememberMe": true
 }
 ```
 
@@ -132,6 +135,58 @@ Invalid credentials return `401`.
 ### POST /auth/login
 
 Same request and response as `POST /login/`.
+
+### POST /auth/password-reset/request
+
+Creates a one-time password reset link for demo use. The API requires a login
+account and an email address, but in the current demo stage it does not verify
+whether the email belongs to that account. If the login account exists, the
+reset link is generated for that account and the response records the email
+address that should receive it.
+
+Request:
+
+```json
+{
+  "login": "employee",
+  "email": "anyone@example.com"
+}
+```
+
+Response:
+
+```json
+{
+  "message": "已產生一次性更改密碼連結",
+  "resetLink": "http://localhost:5173/reset-password?token=...",
+  "sentTo": "anyone@example.com"
+}
+```
+
+Unknown login accounts return `404`.
+
+### POST /auth/password-reset/confirm
+
+Consumes a one-time password reset token and updates the account password.
+
+Request:
+
+```json
+{
+  "token": "string",
+  "newPassword": "new-demo-password"
+}
+```
+
+Response:
+
+```json
+{
+  "message": "密碼已更新"
+}
+```
+
+Expired, invalid, or already-used reset tokens return `400`.
 
 ### GET /auth/me
 

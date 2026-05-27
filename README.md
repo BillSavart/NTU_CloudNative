@@ -277,13 +277,13 @@ Windows PowerShell:
    npm run dev
    ```
 
-### 5. 可觀測性環境（Prometheus / Grafana）
-目前已先架好 Prometheus 與 Grafana 的基礎環境，讓後續組員可以接著設計 dashboard、告警與更多 exporter。
+### 5. 可觀測性與 k6 壓力測試（Prometheus / Grafana / k6）
+可觀測性環境包含 Prometheus、Grafana、Redis/PostgreSQL/Kafka exporters，以及 Reporting API 的 k6 壓力測試。k6 測試結果會透過 Prometheus remote write 寫入 Prometheus，Grafana dashboard 會顯示 requests/sec、p95 latency、failed rate 與 checks rate。
 
 啟動可觀測性環境：
 
 ```bash
-docker-compose up -d prometheus grafana
+docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml up -d prometheus grafana
 ```
 
 Prometheus：
@@ -321,7 +321,36 @@ access_api_events_dropped_total
 access_api_event_queue_depth
 ```
 
-Grafana 已自動 provision Prometheus datasource。Dashboard、告警規則、Kafka/Redis/PostgreSQL exporter 尚未實作，保留給後續可觀測性分工。
+Grafana 已自動 provision Prometheus datasource 與 `Access Control Observability` dashboard。Dashboard 內含 Access API、Reporting API、事件管線、exporters 與 k6 壓力測試 panels。
+
+執行 Reporting API k6 壓力測試：
+
+```bash
+./scripts/run-k6-reporting-load-test.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\run-k6-reporting-load-test.ps1
+```
+
+可用環境變數或 PowerShell 參數調整壓力測試規模，例如：
+
+```bash
+K6_VUS=50 K6_STEADY=5m K6_TEST_ID=reporting-api-50vus ./scripts/run-k6-reporting-load-test.sh
+```
+
+```powershell
+.\scripts\run-k6-reporting-load-test.ps1 -Vus 50 -Steady 5m -TestId reporting-api-50vus
+```
+
+預設測試會用 `rd_1_manager / demo123` 登入，依序打登入、報表中心、部門分析與異常合規查詢。預設 p95 threshold 是 `15000ms`，若要用更嚴格的架構目標可設定 `K6_P95_THRESHOLD_MS=3000` 或 PowerShell `-P95ThresholdMs 3000`。Grafana 可用 `k6_testid` 變數切換不同壓測批次。
+
+### 6. 登入與 demo 密碼重設
+登入頁面使用「登入帳號」作為欄位名稱；API 仍維持相容舊欄位 `employeeId`，內容可填 username 或 employee id。勾選「記住我」會保存登入帳號並延長 session cookie。
+
+Demo 階段的忘記密碼流程會讓使用者輸入登入帳號與 email，系統只用登入帳號找帳號，不會比對 email 是否正確；只要帳號存在，就會產生一次性更改密碼連結並回傳/寄送到填寫的 email。
 
 ## 開發流程
 若要在本地完整運行整個應用程式，您需要：
@@ -338,6 +367,7 @@ NTU_CloudNative/
 ├── access-api/          # Go: 處理 In/Out 決策、Anti-Passback 邏輯
 ├── reporting-api/       # FastAPI: Kafka -> DB consumer、報表 API 基礎、使用者/部門權限 schema
 ├── frontend/            # React + TS: 主管報表視覺化儀表板 
+├── observability/       # Prometheus、Grafana、exporters 與 k6 壓力測試設定
 ├── infra/               # Nginx、Redis Sentinel、Prometheus、Grafana 設定
 ├── k8s/                 # Kubernetes 部署與 HPA (水平擴展) 設定檔 
 └── .gitignore           # 多語言環境過濾配置

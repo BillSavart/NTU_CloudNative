@@ -6,6 +6,12 @@ services:
         INSTALL_OBSERVABILITY: "true"
 
   prometheus:
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=native-histograms"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheusdata:/prometheus
@@ -55,3 +61,31 @@ services:
       - kafka-1
       - kafka-2
       - kafka-3
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles:
+      - load-test
+    environment:
+      BASE_URL: http://reporting-api:8000
+      LOGIN_ID: ${K6_LOGIN_ID:-rd_1_manager}
+      LOGIN_PASSWORD: ${K6_LOGIN_PASSWORD:-demo123}
+      VUS: ${K6_VUS:-20}
+      RAMP_UP: ${K6_RAMP_UP:-30s}
+      STEADY: ${K6_STEADY:-2m}
+      RAMP_DOWN: ${K6_RAMP_DOWN:-30s}
+      THINK_TIME_SECONDS: ${K6_THINK_TIME_SECONDS:-1}
+      P95_THRESHOLD_MS: ${K6_P95_THRESHOLD_MS:-15000}
+      TEST_ID: ${K6_TEST_ID:-reporting-api-demo}
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM: "true"
+    command:
+      - run
+      - --out
+      - experimental-prometheus-rw
+      - /scripts/reporting-api.js
+    volumes:
+      - ./observability/k6:/scripts:ro
+    depends_on:
+      - prometheus
+      - reporting-api
