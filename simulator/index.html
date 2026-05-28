@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>門禁刷卡模擬器</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --blue: #388bfd;
+    --blue-hover: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+
+  header .badge {
+    background: #1f2937;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    letter-spacing: 0.5px;
+  }
+
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+    gap: 0;
+  }
+
+  .tab {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.15s;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--blue-hover);
+    border-bottom-color: var(--blue);
+  }
+
+  .panel { display: none; }
+  .panel.active { display: grid; grid-template-columns: 380px 1fr; gap: 20px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  .card h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 18px;
+  }
+
+  .field { margin-bottom: 16px; }
+
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    padding: 8px 12px;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus, select:focus { border-color: var(--blue); }
+
+  select option { background: var(--surface); }
+
+  .direction-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .direction-toggle button {
+    flex: 1;
+    padding: 8px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    transition: all 0.15s;
+  }
+
+  .direction-toggle button.active-in {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--green);
+  }
+
+  .direction-toggle button.active-out {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--red);
+  }
+
+  .direction-toggle button:not(.active-in):not(.active-out):hover {
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+  }
+
+  .quick-ids {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .quick-ids button {
+    background: rgba(56, 139, 253, 0.1);
+    border: 1px solid rgba(56, 139, 253, 0.3);
+    border-radius: 4px;
+    color: var(--blue-hover);
+    font-size: 11px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    transition: all 0.1s;
+  }
+
+  .quick-ids button:hover {
+    background: rgba(56, 139, 253, 0.2);
+  }
+
+  .btn-primary {
+    width: 100%;
+    padding: 10px;
+    background: var(--blue);
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 4px;
+  }
+
+  .btn-primary:hover { background: var(--blue-hover); }
+  .btn-primary:disabled { background: #21262d; color: var(--muted); cursor: not-allowed; }
+
+  .btn-danger {
+    width: 100%;
+    padding: 10px;
+    background: rgba(248, 81, 73, 0.15);
+    border: 1px solid var(--red);
+    border-radius: 6px;
+    color: var(--red);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-danger:hover { background: rgba(248, 81, 73, 0.25); }
+
+  .response-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    min-height: 120px;
+    color: var(--muted);
+    overflow-y: auto;
+    max-height: 500px;
+  }
+
+  .response-box .key { color: #79c0ff; }
+  .response-box .str { color: #a5d6ff; }
+  .response-box .num { color: var(--purple); }
+  .response-box .bool-true { color: var(--green); }
+  .response-box .bool-false { color: var(--red); }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    padding: 4px 10px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+  }
+
+  .status-badge.granted { background: rgba(63,185,80,0.12); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .status-badge.denied  { background: rgba(248,81,73,0.12);  color: var(--red);   border: 1px solid rgba(248,81,73,0.3); }
+  .status-badge.pending { background: rgba(139,148,158,0.12); color: var(--muted); border: 1px solid var(--border); }
+  .status-badge.error   { background: rgba(210,153,34,0.12); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+
+  /* stress test */
+  .stress-panel { display: none; }
+  .stress-panel.active { display: grid; grid-template-columns: 380px 1fr; gap: 20px; }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .stat-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+  }
+
+  .stat-card .val {
+    font-size: 26px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    line-height: 1.2;
+  }
+
+  .stat-card .lbl {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .stat-card.s-total .val { color: var(--text); }
+  .stat-card.s-ok .val    { color: var(--green); }
+  .stat-card.s-fail .val  { color: var(--red); }
+  .stat-card.s-rps .val   { color: var(--blue-hover); }
+  .stat-card.s-lat .val   { color: var(--purple); }
+  .stat-card.s-err .val   { color: var(--yellow); }
+
+  .progress-wrap {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    height: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--blue), var(--purple));
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
+  .log-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.8;
+    height: 300px;
+    overflow-y: auto;
+    color: var(--muted);
+  }
+
+  .log-box .log-ok   { color: var(--green); }
+  .log-box .log-fail { color: var(--red); }
+  .log-box .log-info { color: var(--blue-hover); }
+  .log-box .log-warn { color: var(--yellow); }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .checkbox-row input[type="checkbox"] {
+    width: 14px; height: 14px;
+    accent-color: var(--blue);
+  }
+
+  .checkbox-row label {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .separator { height: 1px; background: var(--border); margin: 16px 0; }
+
+  .direction-group {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .dir-opt {
+    padding: 7px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--muted);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.1s;
+  }
+
+  .dir-opt:hover { border-color: var(--blue); color: var(--blue-hover); }
+  .dir-opt.selected { border-color: var(--blue); background: rgba(56,139,253,0.12); color: var(--blue-hover); }
+  .dir-opt.selected-in { border-color: var(--green); background: rgba(63,185,80,0.1); color: var(--green); }
+  .dir-opt.selected-out { border-color: var(--red); background: rgba(248,81,73,0.1); color: var(--red); }
+
+  .running-indicator {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    color: var(--green);
+    font-size: 13px;
+    font-family: var(--font-mono);
+    margin-bottom: 10px;
+  }
+  .running-indicator.show { display: flex; }
+  .spin {
+    width: 12px; height: 12px;
+    border: 2px solid rgba(63,185,80,0.3);
+    border-top-color: var(--green);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>門禁刷卡模擬器</h1>
+  <span class="badge">Access API · localhost:8080</span>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('single')">單一刷卡</button>
+  <button class="tab" onclick="switchTab('stress')">壓力測試</button>
+</div>
+
+<!-- ── SINGLE SWIPE ── -->
+<div id="panel-single" class="panel active">
+  <div class="card">
+    <h2>刷卡設定</h2>
+
+    <div class="field">
+      <label>Employee ID</label>
+      <input type="text" id="s-empId" value="100001" placeholder="e.g. 100001" />
+      <div class="quick-ids">
+        <button onclick="setEmp('100001')">100001</button>
+        <button onclick="setEmp('100002')">100002</button>
+        <button onclick="setEmp('100003')">100003</button>
+        <button onclick="setEmp('100004')">100004</button>
+        <button onclick="setEmp('100005')">100005</button>
+        <button onclick="setEmp('110001')">110001</button>
+        <button onclick="setEmp('120001')">120001</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Gate ID</label>
+      <select id="s-gateId">
+        <option>gate_01</option>
+        <option>gate_02</option>
+        <option>gate_03</option>
+        <option>gate_04</option>
+        <option>gate_05</option>
+        <option>gate_06</option>
+        <option>gate_07</option>
+        <option>gate_08</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Direction</label>
+      <div class="direction-toggle">
+        <button id="btn-in" class="active-in" onclick="setDir('IN')">IN ↓</button>
+        <button id="btn-out" onclick="setDir('OUT')">OUT ↑</button>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btn-swipe" onclick="doSwipe()">發送刷卡</button>
+  </div>
+
+  <div class="card">
+    <h2>回應結果</h2>
+    <div id="s-status" class="status-badge pending">— 等待發送</div>
+    <div id="s-response" class="response-box">// 點擊「發送刷卡」後結果會顯示在這裡</div>
+  </div>
+</div>
+
+<!-- ── STRESS TEST ── -->
+<div id="panel-stress" class="panel">
+  <div class="card">
+    <h2>壓力設定</h2>
+
+    <div class="field">
+      <label>Employee ID</label>
+      <input type="text" id="t-empId" value="100001" id="t-empId" placeholder="固定 ID" />
+      <div class="checkbox-row">
+        <input type="checkbox" id="t-empRandom" onchange="toggleEmpRandom()">
+        <label for="t-empRandom">隨機產生（格式：SIM{00001}）</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Gate ID</label>
+      <select id="t-gateId">
+        <option>gate_01</option>
+        <option>gate_02</option>
+        <option>gate_03</option>
+        <option>gate_04</option>
+        <option>gate_05</option>
+        <option>gate_06</option>
+        <option>gate_07</option>
+        <option>gate_08</option>
+      </select>
+      <div class="checkbox-row">
+        <input type="checkbox" id="t-gateRandom" onchange="toggleGateRandom()">
+        <label for="t-gateRandom">隨機閘門（gate_01 ~ gate_08）</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Direction 模式</label>
+      <div class="direction-group">
+        <div class="dir-opt selected-in" data-dir="IN" onclick="setStressDir('IN')">IN ↓</div>
+        <div class="dir-opt" data-dir="OUT" onclick="setStressDir('OUT')">OUT ↑</div>
+        <div class="dir-opt selected" data-dir="ALT" onclick="setStressDir('ALT')">交替 IN/OUT</div>
+        <div class="dir-opt" data-dir="RND" onclick="setStressDir('RND')">隨機</div>
+      </div>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="field">
+      <label>並發數（同時進行的請求）</label>
+      <input type="number" id="t-concurrency" value="5" min="1" max="50" />
+    </div>
+
+    <div class="field">
+      <label>總請求數</label>
+      <input type="number" id="t-total" value="100" min="1" max="10000" />
+    </div>
+
+    <button class="btn-primary" id="btn-start" onclick="startStress()">開始壓測</button>
+    <br><br>
+    <button class="btn-danger" id="btn-stop" onclick="stopStress()" disabled>停止</button>
+  </div>
+
+  <div class="card">
+    <h2>即時統計</h2>
+
+    <div class="running-indicator" id="running-ind">
+      <div class="spin"></div>
+      <span id="running-label">壓測進行中...</span>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-bar" id="prog-bar"></div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card s-total">
+        <div class="val" id="stat-total">0</div>
+        <div class="lbl">Total</div>
+      </div>
+      <div class="stat-card s-ok">
+        <div class="val" id="stat-ok">0</div>
+        <div class="lbl">Granted</div>
+      </div>
+      <div class="stat-card s-fail">
+        <div class="val" id="stat-fail">0</div>
+        <div class="lbl">Denied / Err</div>
+      </div>
+      <div class="stat-card s-rps">
+        <div class="val" id="stat-rps">0</div>
+        <div class="lbl">RPS</div>
+      </div>
+      <div class="stat-card s-lat">
+        <div class="val" id="stat-lat">—</div>
+        <div class="lbl">Avg Latency</div>
+      </div>
+      <div class="stat-card s-err">
+        <div class="val" id="stat-errpct">—</div>
+        <div class="lbl">Error Rate</div>
+      </div>
+    </div>
+
+    <h2 style="margin-bottom:10px;">請求日誌</h2>
+    <div class="log-box" id="t-log">// 壓測開始後日誌顯示在這裡<br></div>
+  </div>
+</div>
+
+<script>
+  const API = '/proxy/access';
+  let singleDir = 'IN';
+  let stressDir = 'IN';
+  let stressRunning = false;
+  let stressStop = false;
+  let iterCount = 0;
+
+  // ── Tab ──
+  function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['single','stress'][i] === tab));
+    document.getElementById('panel-single').classList.toggle('active', tab === 'single');
+    document.getElementById('panel-stress').classList.toggle('active', tab === 'stress');
+  }
+
+  // ── Single ──
+  function setEmp(id) { document.getElementById('s-empId').value = id; }
+
+  function setDir(d) {
+    singleDir = d;
+    document.getElementById('btn-in').className  = d === 'IN'  ? 'active-in'  : '';
+    document.getElementById('btn-out').className = d === 'OUT' ? 'active-out' : '';
+  }
+
+  async function doSwipe() {
+    const empId  = document.getElementById('s-empId').value.trim();
+    const gateId = document.getElementById('s-gateId').value;
+    const btn = document.getElementById('btn-swipe');
+
+    if (!empId) { alert('請輸入 Employee ID'); return; }
+    btn.disabled = true;
+    btn.textContent = '發送中...';
+
+    setStatus('pending', '發送中...');
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${API}/swipe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: empId, gateId, direction: singleDir })
+      });
+      const ms = Date.now() - t0;
+      const data = await res.json();
+      const granted = data.decision === 'GRANTED';
+      setStatus(granted ? 'granted' : 'denied',
+        `${granted ? '✓ GRANTED' : '✗ DENIED'}  ·  ${ms}ms  ·  ${gateId}  ·  ${singleDir}`);
+      renderJSON(data);
+    } catch(e) {
+      setStatus('error', `✗ 網路錯誤：${e.message}`);
+      document.getElementById('s-response').innerHTML = `<span style="color:var(--red)">${e}</span>`;
+    }
+    btn.disabled = false;
+    btn.textContent = '發送刷卡';
+  }
+
+  function setStatus(type, msg) {
+    const el = document.getElementById('s-status');
+    el.className = `status-badge ${type}`;
+    el.textContent = msg;
+  }
+
+  function renderJSON(obj) {
+    const el = document.getElementById('s-response');
+    el.innerHTML = syntaxHL(JSON.stringify(obj, null, 2));
+  }
+
+  function syntaxHL(json) {
+    return json
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, m => {
+        if (/^"/.test(m)) return /:$/.test(m) ? `<span class="key">${m}</span>` : `<span class="str">${m}</span>`;
+        if (/true/.test(m)) return `<span class="bool-true">${m}</span>`;
+        if (/false/.test(m)) return `<span class="bool-false">${m}</span>`;
+        return `<span class="num">${m}</span>`;
+      });
+  }
+
+  // ── Stress ──
+  function toggleEmpRandom() {
+    document.getElementById('t-empId').disabled = document.getElementById('t-empRandom').checked;
+  }
+
+  function toggleGateRandom() {
+    document.getElementById('t-gateId').disabled = document.getElementById('t-gateRandom').checked;
+  }
+
+  function setStressDir(d) {
+    stressDir = d;
+    document.querySelectorAll('.dir-opt').forEach(el => {
+      el.className = 'dir-opt';
+      if (el.dataset.dir === d) {
+        if (d === 'IN') el.classList.add('selected-in');
+        else if (d === 'OUT') el.classList.add('selected-out');
+        else el.classList.add('selected');
+      }
+    });
+  }
+
+  function randGate() { return `gate_0${Math.floor(Math.random()*8)+1}`; }
+  function randEmp()  { return `SIM${String(Math.floor(Math.random()*99999)+1).padStart(5,'0')}`; }
+
+  function resolveDir(iter) {
+    if (stressDir === 'IN') return 'IN';
+    if (stressDir === 'OUT') return 'OUT';
+    if (stressDir === 'ALT') return iter % 2 === 0 ? 'IN' : 'OUT';
+    return Math.random() < 0.5 ? 'IN' : 'OUT';
+  }
+
+  let statTotal=0, statOk=0, statFail=0, latencies=[], rpsWindow=[];
+
+  function resetStats() {
+    statTotal=0; statOk=0; statFail=0; latencies=[]; rpsWindow=[];
+    ['stat-total','stat-ok','stat-fail','stat-rps','stat-lat','stat-errpct'].forEach(id => {
+      document.getElementById(id).textContent = id.includes('lat') || id.includes('err') ? '—' : '0';
+    });
+    document.getElementById('prog-bar').style.width = '0%';
+    document.getElementById('t-log').innerHTML = '';
+  }
+
+  function updateStats(total) {
+    document.getElementById('stat-total').textContent = statTotal;
+    document.getElementById('stat-ok').textContent    = statOk;
+    document.getElementById('stat-fail').textContent  = statFail;
+
+    const now = Date.now();
+    rpsWindow = rpsWindow.filter(t => now - t < 1000);
+    document.getElementById('stat-rps').textContent = rpsWindow.length;
+
+    if (latencies.length) {
+      const avg = Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length);
+      document.getElementById('stat-lat').textContent = avg + 'ms';
+    }
+
+    const errRate = statTotal ? ((statFail/statTotal)*100).toFixed(1)+'%' : '—';
+    document.getElementById('stat-errpct').textContent = errRate;
+
+    document.getElementById('prog-bar').style.width = Math.min(100, (statTotal/total*100)).toFixed(1)+'%';
+  }
+
+  function log(msg, cls='log-info') {
+    const box = document.getElementById('t-log');
+    const line = document.createElement('div');
+    line.className = cls;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    box.appendChild(line);
+    if (box.children.length > 200) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function startStress() {
+    if (stressRunning) return;
+    stressRunning = true;
+    stressStop = false;
+    iterCount = 0;
+    resetStats();
+
+    const total       = parseInt(document.getElementById('t-total').value) || 100;
+    const concurrency = parseInt(document.getElementById('t-concurrency').value) || 5;
+    const empRandom   = document.getElementById('t-empRandom').checked;
+    const gateRandom  = document.getElementById('t-gateRandom').checked;
+    const baseEmpId   = document.getElementById('t-empId').value.trim() || '100001';
+    const baseGateId  = document.getElementById('t-gateId').value;
+
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled  = false;
+    document.getElementById('running-ind').classList.add('show');
+
+    log(`開始壓測：total=${total} concurrency=${concurrency}`, 'log-info');
+
+    const queue = Array.from({length: total}, (_, i) => i);
+    let active = 0;
+    let done = 0;
+
+    const runOne = async (idx) => {
+      if (stressStop) return;
+      const empId  = empRandom  ? randEmp()  : baseEmpId;
+      const gateId = gateRandom ? randGate() : baseGateId;
+      const dir    = resolveDir(idx);
+      const t0 = Date.now();
+      try {
+        const res = await fetch(`${API}/swipe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ employeeId: empId, gateId, direction: dir })
+        });
+        const ms = Date.now() - t0;
+        latencies.push(ms);
+        rpsWindow.push(Date.now());
+        statTotal++;
+        const data = await res.json();
+        if (data.decision === 'GRANTED') {
+          statOk++;
+          if (statTotal % 10 === 0 || ms > 200)
+            log(`✓ ${empId} @ ${gateId} [${dir}] ${ms}ms`, 'log-ok');
+        } else {
+          statFail++;
+          if (statTotal % 5 === 0)
+            log(`✗ ${empId} @ ${gateId} [${dir}] ${data.reason || 'DENIED'} ${ms}ms`, 'log-fail');
+        }
+      } catch(e) {
+        statTotal++; statFail++;
+        log(`⚠ ${empId} 網路錯誤：${e.message}`, 'log-warn');
+      }
+      done++;
+      updateStats(total);
+    };
+
+    // concurrency pool
+    const workers = async () => {
+      while (queue.length > 0 && !stressStop) {
+        const idx = queue.shift();
+        await runOne(idx);
+      }
+    };
+
+    const pool = Array.from({length: concurrency}, workers);
+    await Promise.all(pool);
+
+    stressRunning = false;
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled  = true;
+    document.getElementById('running-ind').classList.remove('show');
+
+    if (stressStop) {
+      log(`壓測已中止，完成 ${statTotal}/${total} 請求`, 'log-warn');
+    } else {
+      log(`壓測完成！成功 ${statOk} / 失敗 ${statFail} / 總計 ${statTotal}`, 'log-info');
+    }
+  }
+
+  function stopStress() {
+    stressStop = true;
+    document.getElementById('running-label').textContent = '停止中...';
+  }
+</script>
+</body>
+</html>

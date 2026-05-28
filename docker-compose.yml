@@ -96,6 +96,15 @@ services:
     depends_on:
       - reporting-api
 
+  simulator:
+    build:
+      context: ./simulator
+    ports:
+      - "${SIMULATOR_HOST_PORT:-5174}:80"
+    depends_on:
+      access-api:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v3.0.1
     ports:
