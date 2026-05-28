@@ -359,6 +359,138 @@
       ],
       "title": "k6 Quality",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(reporting_api_http_requests_total{path=\"/api/login/\"}[1m])) or vector(0)",
+          "legendFormat": "login status {{status}}/sec",
+          "refId": "A"
+        }
+      ],
+      "title": "Login Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=\"reporting-api\"} or vector(0)",
+          "legendFormat": "Reporting resident memory",
+          "refId": "A"
+        },
+        {
+          "expr": "process_virtual_memory_bytes{job=\"reporting-api\"} or vector(0)",
+          "legendFormat": "Reporting virtual memory",
+          "refId": "B"
+        }
+      ],
+      "title": "Reporting API Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "access_api_runtime_goroutines or vector(0)",
+          "legendFormat": "Access goroutines",
+          "refId": "A"
+        },
+        {
+          "expr": "access_api_runtime_alloc_bytes / 1048576",
+          "legendFormat": "Access heap alloc MiB",
+          "refId": "B"
+        },
+        {
+          "expr": "access_api_runtime_sys_bytes / 1048576",
+          "legendFormat": "Access sys memory MiB",
+          "refId": "C"
+        }
+      ],
+      "title": "Access API Runtime Load",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -407,6 +539,6 @@
   "timezone": "browser",
   "title": "Access Control Observability",
   "uid": "access-control-observability",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

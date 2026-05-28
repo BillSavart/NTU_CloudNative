@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -220,6 +221,9 @@ func (a *App) ListEvents(c *gin.Context) {
 
 func (a *App) Metrics(c *gin.Context) {
 	publisherStats := a.publisher.Stats()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
 	c.Header("Content-Type", "text/plain; version=0.0.4")
 	c.String(http.StatusOK, fmt.Sprintf(`# HELP access_api_swipes_total Total fake badge swipe requests.
 # TYPE access_api_swipes_total counter
@@ -251,6 +255,15 @@ access_api_events_dropped_total %d
 # HELP access_api_event_queue_depth Current async publisher queue depth.
 # TYPE access_api_event_queue_depth gauge
 access_api_event_queue_depth %d
+# HELP access_api_runtime_alloc_bytes Bytes of allocated heap objects in the Access API process.
+# TYPE access_api_runtime_alloc_bytes gauge
+access_api_runtime_alloc_bytes %d
+# HELP access_api_runtime_sys_bytes Bytes of memory obtained from the OS by the Access API process.
+# TYPE access_api_runtime_sys_bytes gauge
+access_api_runtime_sys_bytes %d
+# HELP access_api_runtime_goroutines Current number of goroutines in the Access API process.
+# TYPE access_api_runtime_goroutines gauge
+access_api_runtime_goroutines %d
 `,
 		a.totalSwipes.Load(),
 		a.grantedSwipes.Load(),
@@ -262,6 +275,9 @@ access_api_event_queue_depth %d
 		publisherStats.Retried.Load(),
 		publisherStats.Dropped.Load(),
 		publisherStats.QueueDepth.Load(),
+		mem.Alloc,
+		mem.Sys,
+		runtime.NumGoroutine(),
 	))
 }
 

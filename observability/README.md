@@ -206,6 +206,9 @@ access_api_swipes_total
 access_api_swipes_granted_total
 access_api_swipes_denied_total
 access_api_event_queue_depth
+access_api_runtime_alloc_bytes
+access_api_runtime_sys_bytes
+access_api_runtime_goroutines
 ```
 
 也可以查 Reporting API 是否收到事件：
@@ -519,6 +522,44 @@ p95 的意思是：在一段時間內，約 95% request 的延遲低於這個值
 - 驗證 anti-passback 規則是否生效。
 - 觀察異常拒絕是否突然增加。
 - 若 denied ratio 異常偏高，可能是狀態資料錯誤、Redis 狀態異常，或使用者操作行為異常。
+
+### Login Activity
+
+觀察 Reporting API 登入 endpoint 的 request rate。
+
+- `login status 200/sec`：登入成功的流量。
+- `login status 401/sec` 或其他非 2xx 狀態：登入失敗或異常回應的流量。
+
+用途：
+
+- 對應題目要求中的 `user login activity`。
+- 在 shift change 或 demo 壓測期間，觀察登入流量是否出現尖峰。
+- 若登入失敗率突然上升，可以搭配 Reporting API logs 或 `/api/health/` 判斷是帳密錯誤、DB 問題，還是 API 服務異常。
+
+### Reporting API Memory
+
+觀察 Reporting API Python process 的記憶體使用量。
+
+- `Reporting resident memory`：實際常駐記憶體，通常最適合用來看服務是否吃掉過多 RAM。
+- `Reporting virtual memory`：process 可見的虛擬記憶體範圍，通常會比 resident memory 大。
+
+用途：
+
+- 對應題目要求中的 `system load`。
+- 跑 fake data、報表查詢或 k6 壓測時，觀察 Reporting API 是否有記憶體持續上升的跡象。
+
+### Access API Runtime Load
+
+觀察 Access API Go process 的 runtime 負載。
+
+- `Access goroutines`：目前 Go goroutine 數量。
+- `Access heap alloc MiB`：Go heap 目前配置量。
+- `Access sys memory MiB`：Go runtime 從 OS 取得的記憶體量。
+
+用途：
+
+- 對應題目要求中的 `system load`。
+- 在 shift change 刷卡尖峰或 k6 full-stack 壓測期間，觀察 Access API 是否因大量 request 出現 goroutine 或記憶體異常上升。
 
 ## Prometheus Targets 怎麼看
 

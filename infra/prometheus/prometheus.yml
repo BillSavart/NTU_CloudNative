@@ -13,3 +13,9 @@ scrape_configs:
     static_configs:
       - targets:
           - access-lb:8080
+
+  - job_name: reporting-api
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - reporting-api:8000
