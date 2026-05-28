@@ -129,7 +129,7 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafanadata:/var/lib/grafana
-      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
 
