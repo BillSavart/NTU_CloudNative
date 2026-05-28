@@ -63,7 +63,10 @@ def main() -> None:
             f"for up to {attendance_employee_count} employees.",
             flush=True,
         )
-        seed_attendance_events(db, work_days, attendance_employee_count, movement_pct, max_moves_per_day)
+        seeded_until = datetime.now(TAIPEI).replace(microsecond=0)
+        print(f"Seeding only events up to {seeded_until.isoformat()}.", flush=True)
+        seed_attendance_events(db, work_days, attendance_employee_count, movement_pct, max_moves_per_day, seeded_until)
+        prune_future_fake_events(db, seeded_until)
         refresh_employee_states(db)
         db.commit()
 
@@ -131,6 +134,7 @@ def seed_attendance_events(
     employee_count: int,
     movement_pct: int,
     max_moves_per_day: int,
+    seeded_until: datetime,
 ) -> None:
     for day_index, work_day in enumerate(work_days, start=1):
         db.execute(
@@ -216,14 +220,20 @@ def seed_attendance_events(
                 SELECT request_id, employee_id, gate_id, direction, decision, reason,
                        previous_state, current_state, latency_ms, NULL, occurred_at
                 FROM checkins
+                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
                 UNION ALL
                 SELECT request_id, employee_id, gate_id, direction, decision, reason,
                        previous_state, current_state, latency_ms, NULL, occurred_at
                 FROM checkouts
+                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
                 ON CONFLICT (request_id) DO NOTHING
                 """
             ),
-            {"work_date": work_day.isoformat(), "employee_count": employee_count},
+            {
+                "work_date": work_day.isoformat(),
+                "employee_count": employee_count,
+                "seeded_until": seeded_until.isoformat(),
+            },
         )
         db.execute(
             text(
@@ -306,10 +316,12 @@ def seed_attendance_events(
                 SELECT request_id, employee_id, gate_id, direction, decision, reason,
                        previous_state, current_state, latency_ms, NULL, occurred_at
                 FROM move_out
+                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
                 UNION ALL
                 SELECT request_id, employee_id, gate_id, direction, decision, reason,
                        previous_state, current_state, latency_ms, NULL, occurred_at
                 FROM move_in
+                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
                 ON CONFLICT (request_id) DO NOTHING
                 """
             ),
@@ -318,11 +330,28 @@ def seed_attendance_events(
                 "employee_count": employee_count,
                 "movement_pct": movement_pct,
                 "max_moves_per_day": max_moves_per_day,
+                "seeded_until": seeded_until.isoformat(),
             },
         )
         if day_index % 25 == 0 or day_index == len(work_days):
             db.commit()
             print(f"Seeded attendance days: {day_index}/{len(work_days)}", flush=True)
+
+
+def prune_future_fake_events(db, seeded_until: datetime) -> None:
+    result = db.execute(
+        text(
+            """
+            DELETE FROM access_events
+            WHERE request_id LIKE 'fake:%'
+              AND occurred_at > CAST(:seeded_until AS timestamptz)
+            """
+        ),
+        {"seeded_until": seeded_until.isoformat()},
+    )
+    deleted = result.rowcount or 0
+    if deleted:
+        print(f"Removed future fake events: {deleted}", flush=True)
 
 
 def refresh_employee_states(db) -> None:
