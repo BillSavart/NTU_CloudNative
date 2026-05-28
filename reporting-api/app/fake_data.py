@@ -241,28 +241,69 @@ def seed_attendance_events(
                 WITH target_employees AS (
                     SELECT
                         employee_id,
-                        COALESCE((regexp_match(department_id, '([0-9]+)$'))[1], '1') AS fab_no,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'move'), 1, 8))::bit(32)::bigint) AS move_hash
+                        COALESCE((regexp_match(department_id, '([0-9]+)$'))[1], '1') AS fab_no
                     FROM employees
                     WHERE department_id IS NOT NULL
                       AND department_id <> 'TSMC'
                     ORDER BY employee_id
                     LIMIT :employee_count
                 ),
+                hashes AS (
+                    SELECT
+                        employee_id,
+                        fab_no,
+                        abs(('x' || substr(md5(:work_date || employee_id || 'in'), 1, 8))::bit(32)::bigint) AS in_hash,
+                        abs(('x' || substr(md5(:work_date || employee_id || 'out'), 1, 8))::bit(32)::bigint) AS out_hash,
+                        abs(('x' || substr(md5(:work_date || employee_id || 'move'), 1, 8))::bit(32)::bigint) AS move_hash
+                    FROM target_employees
+                ),
+                attendance_bounds AS (
+                    SELECT
+                        employee_id,
+                        fab_no,
+                        move_hash,
+                        CASE
+                            WHEN in_hash % 100 < 4 THEN
+                                (CAST(:work_date AS date) + time '08:31')
+                                + ((in_hash % 45) * interval '1 minute')
+                                + (((in_hash / 17) % 60) * interval '1 second')
+                            ELSE
+                                (CAST(:work_date AS date) + time '08:00')
+                                + ((in_hash % 31) * interval '1 minute')
+                                + (((in_hash / 17) % 60) * interval '1 second')
+                        END AS checkin_at,
+                        CASE
+                            WHEN out_hash % 1000 < 8 THEN
+                                (CAST(:work_date AS date) + time '20:30')
+                                + ((out_hash % 209) * interval '1 minute')
+                                + (((out_hash / 23) % 60) * interval '1 second')
+                            ELSE
+                                (CAST(:work_date AS date) + time '17:00')
+                                + ((out_hash % 120) * interval '1 minute')
+                                + (((out_hash / 23) % 60) * interval '1 second')
+                        END AS checkout_at
+                    FROM hashes
+                ),
                 movers AS (
                     SELECT
                         employee_id,
                         fab_no,
                         move_hash,
+                        checkin_at,
+                        checkout_at,
                         1 + (move_hash % :max_moves_per_day)::int AS move_count
-                    FROM target_employees
+                    FROM attendance_bounds
                     WHERE move_hash % 100 < :movement_pct
+                      AND checkout_at > checkin_at + interval '1 hour'
                 ),
                 move_slots AS (
                     SELECT
                         movers.employee_id,
                         movers.fab_no,
                         movers.move_hash,
+                        movers.checkin_at,
+                        movers.checkout_at,
+                        movers.move_count,
                         slot_no,
                         abs(('x' || substr(md5(:work_date || movers.employee_id || 'slot' || slot_no), 1, 8))::bit(32)::bigint) AS slot_hash
                     FROM movers
@@ -279,8 +320,16 @@ def seed_attendance_events(
                         'IN' AS previous_state,
                         'OUT' AS current_state,
                         4 + (slot_hash % 10)::int AS latency_ms,
-                        (CAST(:work_date AS date) + time '09:00')
-                            + ((slot_hash % 24000) * interval '1 second') AS occurred_at,
+                        checkin_at
+                            + (
+                                floor(
+                                    extract(epoch FROM (checkout_at - checkin_at))
+                                    * slot_no::double precision
+                                    / (move_count + 1)
+                                ) * interval '1 second'
+                            )
+                            - interval '15 minutes'
+                            + ((slot_hash % 600) * interval '1 second') AS occurred_at,
                         slot_no,
                         slot_hash
                     FROM move_slots
@@ -297,7 +346,7 @@ def seed_attendance_events(
                         'IN' AS current_state,
                         latency_ms,
                         occurred_at
-                            + (300 + ((slot_hash / 29) % 2400)) * interval '1 second' AS occurred_at
+                            + (300 + ((slot_hash / 29) % 1200)) * interval '1 second' AS occurred_at
                     FROM move_out
                 )
                 INSERT INTO access_events (
