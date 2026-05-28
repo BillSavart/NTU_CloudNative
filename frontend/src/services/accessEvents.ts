@@ -67,6 +67,41 @@ export type DepartmentAnalyticsResponse = {
   days: number
 }
 
+export type DepartmentEmployeeMetric = {
+  employeeId: string
+  displayName?: string | null
+  departmentId?: string | null
+  managerEmployeeId?: string | null
+  lastKnownState: 'UNKNOWN' | 'IN' | 'OUT'
+  lastSeenAt?: string | null
+  monthlyWorkHours: number
+  monthlyAttendanceDays: number
+  monthlyLateCount: number
+  monthlyOvertimeCount: number
+  monthlyDeniedCount: number
+  monthlyAnomalyCount: number
+  averageDailyHours?: number | null
+}
+
+export type DepartmentEmployeeMetricsResponse = {
+  departmentId: string
+  name: string
+  monthStart: string
+  items: DepartmentEmployeeMetric[]
+  summary: {
+    totalEmployees: number
+    pageEmployees: number
+    insideCount: number
+    outsideCount: number
+    unknownCount: number
+    totalMonthlyWorkHours: number
+    totalMonthlyAnomalies: number
+  }
+  total: number
+  limit: number
+  offset: number
+}
+
 export type ReportCenterMetrics = {
   totalEvents: number
   grantedEvents: number
@@ -295,6 +330,46 @@ export async function fetchDepartmentAnalytics(days = 31): Promise<DepartmentAna
     departments: Array.isArray(result.departments) ? result.departments : [],
     visibleDepartmentCount: Number(result.visibleDepartmentCount ?? 0),
     days: Number(result.days ?? days),
+  }
+}
+
+export async function fetchDepartmentEmployeeMetrics(
+  departmentId: string,
+  limit = 200,
+  offset = 0,
+): Promise<DepartmentEmployeeMetricsResponse> {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+
+  const response = await fetch(
+    `/api/reports/departments/${encodeURIComponent(departmentId)}/employees?${params.toString()}`,
+    {
+      method: 'GET',
+      credentials: 'same-origin',
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`Failed to load department employees (${response.status})`)
+  }
+  const result = (await response.json()) as Partial<DepartmentEmployeeMetricsResponse>
+  return {
+    departmentId: String(result.departmentId ?? departmentId),
+    name: String(result.name ?? departmentId),
+    monthStart: String(result.monthStart ?? ''),
+    items: Array.isArray(result.items) ? result.items : [],
+    summary: {
+      totalEmployees: Number(result.summary?.totalEmployees ?? 0),
+      pageEmployees: Number(result.summary?.pageEmployees ?? 0),
+      insideCount: Number(result.summary?.insideCount ?? 0),
+      outsideCount: Number(result.summary?.outsideCount ?? 0),
+      unknownCount: Number(result.summary?.unknownCount ?? 0),
+      totalMonthlyWorkHours: Number(result.summary?.totalMonthlyWorkHours ?? 0),
+      totalMonthlyAnomalies: Number(result.summary?.totalMonthlyAnomalies ?? 0),
+    },
+    total: Number(result.total ?? 0),
+    limit: Number(result.limit ?? limit),
+    offset: Number(result.offset ?? offset),
   }
 }
 

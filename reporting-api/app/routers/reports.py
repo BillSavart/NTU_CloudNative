@@ -11,6 +11,7 @@ from app.repositories import (
     get_compliance_anomalies,
     get_dashboard,
     get_department_analytics,
+    get_department_employee_metrics,
     get_department_summary,
     get_department_tree,
     get_employee_states,
@@ -144,6 +145,23 @@ def department_analytics(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_department_analytics(db, current_user=current_user, days=days)
+
+
+@router.get("/reports/departments/{department_id}/employees")
+def department_employees(
+    department_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_department_employee_metrics(
+        db,
+        department_id=department_id,
+        current_user=current_user,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/reports/employees/current-state")

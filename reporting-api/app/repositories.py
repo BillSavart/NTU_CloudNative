@@ -991,6 +991,243 @@ def get_employee_states(
     }
 
 
+def get_department_employee_metrics(
+    db: Session,
+    department_id: str,
+    current_user: UserAccount | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    now = datetime.now(TAIPEI)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    department = db.get(Department, department_id)
+    employee_query = _scoped_employee_select(db, current_user, department_id)
+    total = db.scalar(select(func.count()).select_from(employee_query.subquery())) or 0
+    employees = list(
+        db.scalars(
+            employee_query
+            .order_by(Employee.department_id, Employee.employee_id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+    employee_ids = [employee.employee_id for employee in employees]
+    metrics = _monthly_employee_metrics(db, current_user, department_id, employee_ids, month_start, now)
+
+    inside_count = sum(1 for employee in employees if employee.last_known_state == "IN")
+    outside_count = sum(1 for employee in employees if employee.last_known_state == "OUT")
+    unknown_count = sum(1 for employee in employees if employee.last_known_state == "UNKNOWN")
+    total_work_hours = sum(metrics.get(employee_id, {}).get("monthlyWorkHours", 0.0) for employee_id in employee_ids)
+    total_anomalies = sum(metrics.get(employee_id, {}).get("monthlyAnomalyCount", 0) for employee_id in employee_ids)
+
+    return {
+        "departmentId": department_id,
+        "name": department.name if department is not None else department_id,
+        "monthStart": month_start.date().isoformat(),
+        "items": [
+            {
+                "employeeId": employee.employee_id,
+                "displayName": employee.display_name,
+                "departmentId": employee.department_id,
+                "managerEmployeeId": employee.manager_employee_id,
+                "lastKnownState": employee.last_known_state,
+                "lastSeenAt": employee.last_seen_at.isoformat() if employee.last_seen_at else None,
+                **metrics.get(
+                    employee.employee_id,
+                    {
+                        "monthlyWorkHours": 0.0,
+                        "monthlyAttendanceDays": 0,
+                        "monthlyLateCount": 0,
+                        "monthlyOvertimeCount": 0,
+                        "monthlyDeniedCount": 0,
+                        "monthlyAnomalyCount": 0,
+                        "averageDailyHours": None,
+                    },
+                ),
+            }
+            for employee in employees
+        ],
+        "summary": {
+            "totalEmployees": total,
+            "pageEmployees": len(employees),
+            "insideCount": inside_count,
+            "outsideCount": outside_count,
+            "unknownCount": unknown_count,
+            "totalMonthlyWorkHours": round(total_work_hours, 2),
+            "totalMonthlyAnomalies": total_anomalies,
+        },
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _monthly_employee_metrics(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str,
+    employee_ids: list[str],
+    month_start: datetime,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    if not employee_ids:
+        return {}
+
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        return _monthly_employee_metrics_in_python(db, current_user, department_id, employee_ids, month_start, now)
+
+    sql = text(
+        """
+        WITH daily AS (
+            SELECT
+                e.employee_id,
+                e.occurred_at::date AS work_date,
+                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+            FROM access_events e
+            WHERE e.employee_id IN :employee_ids
+              AND e.gate_id LIKE '%_A'
+              AND e.decision = 'GRANTED'
+              AND e.occurred_at >= :month_start
+              AND e.occurred_at <= :now
+            GROUP BY e.employee_id, e.occurred_at::date
+        ),
+        daily_rollup AS (
+            SELECT
+                employee_id,
+                count(*) FILTER (WHERE first_in IS NOT NULL) AS attendance_days,
+                coalesce(sum(
+                    CASE
+                        WHEN first_in IS NOT NULL AND last_out IS NOT NULL
+                        THEN extract(epoch FROM (last_out - first_in)) / 3600.0
+                        ELSE 0
+                    END
+                ), 0) AS work_hours,
+                count(*) FILTER (WHERE first_in::time > time '08:30:00') AS late_count,
+                count(*) FILTER (
+                    WHERE first_in IS NOT NULL
+                      AND last_out IS NOT NULL
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+                ) AS overtime_count
+            FROM daily
+            GROUP BY employee_id
+        ),
+        denied AS (
+            SELECT employee_id, count(*) AS denied_count
+            FROM access_events
+            WHERE employee_id IN :employee_ids
+              AND decision = 'DENIED'
+              AND occurred_at >= :month_start
+              AND occurred_at <= :now
+            GROUP BY employee_id
+        )
+        SELECT
+            emp.employee_id,
+            coalesce(daily_rollup.attendance_days, 0) AS attendance_days,
+            round(coalesce(daily_rollup.work_hours, 0)::numeric, 2) AS work_hours,
+            coalesce(daily_rollup.late_count, 0) AS late_count,
+            coalesce(daily_rollup.overtime_count, 0) AS overtime_count,
+            coalesce(denied.denied_count, 0) AS denied_count
+        FROM employees emp
+        LEFT JOIN daily_rollup ON daily_rollup.employee_id = emp.employee_id
+        LEFT JOIN denied ON denied.employee_id = emp.employee_id
+        WHERE emp.employee_id IN :employee_ids
+        ORDER BY emp.department_id, emp.employee_id
+        """
+    ).bindparams(bindparam("employee_ids", expanding=True))
+    rows = db.execute(sql, {"employee_ids": employee_ids, "month_start": month_start, "now": now}).mappings().all()
+    return {
+        row["employee_id"]: _format_employee_metric_row(
+            float(row["work_hours"]),
+            int(row["attendance_days"]),
+            int(row["late_count"]),
+            int(row["overtime_count"]),
+            int(row["denied_count"]),
+        )
+        for row in rows
+    }
+
+
+def _monthly_employee_metrics_in_python(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str,
+    employee_ids: list[str],
+    month_start: datetime,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    employee_id_set = set(employee_ids)
+    daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
+    denied_counts: Counter[str] = Counter()
+    for row in _dashboard_event_rows(db, current_user, department_id, month_start, now):
+        if row.employee_id not in employee_id_set:
+            continue
+        if row.decision == "DENIED":
+            denied_counts[row.employee_id] += 1
+            continue
+        if row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+            continue
+        occurred_at = _local_datetime(row.occurred_at)
+        key = (row.employee_id, occurred_at.date())
+        day = daily[key]
+        if row.direction == "IN" and (day["first_in"] is None or occurred_at < day["first_in"]):
+            day["first_in"] = occurred_at
+        if row.direction == "OUT" and (day["last_out"] is None or occurred_at > day["last_out"]):
+            day["last_out"] = occurred_at
+
+    rollup: dict[str, dict[str, float | int]] = defaultdict(lambda: {
+        "work_hours": 0.0,
+        "attendance_days": 0,
+        "late_count": 0,
+        "overtime_count": 0,
+    })
+    for (employee_id, _work_date), day in daily.items():
+        first_in = day["first_in"]
+        last_out = day["last_out"]
+        if first_in is not None:
+            rollup[employee_id]["attendance_days"] += 1
+            if first_in.time() > time(8, 30):
+                rollup[employee_id]["late_count"] += 1
+        if first_in is not None and last_out is not None:
+            work_hours = (last_out - first_in).total_seconds() / 3600
+            rollup[employee_id]["work_hours"] += work_hours
+            if work_hours > 12:
+                rollup[employee_id]["overtime_count"] += 1
+
+    return {
+        employee_id: _format_employee_metric_row(
+            float(rollup[employee_id]["work_hours"]),
+            int(rollup[employee_id]["attendance_days"]),
+            int(rollup[employee_id]["late_count"]),
+            int(rollup[employee_id]["overtime_count"]),
+            denied_counts[employee_id],
+        )
+        for employee_id in employee_ids
+    }
+
+
+def _format_employee_metric_row(
+    work_hours: float,
+    attendance_days: int,
+    late_count: int,
+    overtime_count: int,
+    denied_count: int,
+) -> dict[str, Any]:
+    anomaly_count = late_count + overtime_count + denied_count
+    return {
+        "monthlyWorkHours": round(work_hours, 2),
+        "monthlyAttendanceDays": attendance_days,
+        "monthlyLateCount": late_count,
+        "monthlyOvertimeCount": overtime_count,
+        "monthlyDeniedCount": denied_count,
+        "monthlyAnomalyCount": anomaly_count,
+        "averageDailyHours": round(work_hours / attendance_days, 2) if attendance_days else None,
+    }
+
+
 def list_anomalies(
     db: Session,
     current_user: UserAccount | None = None,

@@ -46,6 +46,7 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
   const datetimeText = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleDateString('zh-TW', { weekday: 'long' })} ${now.toLocaleTimeString('zh-TW', { hour12: false })}`
   const displayName = currentUser?.displayName?.trim() || currentUser?.username || '訪客'
   const visibleNavItems = navItems.filter((item) => !item.staffOnly || currentUser?.role !== 'EMPLOYEE')
+  const isActiveNavItem = (to: string) => location.pathname === to || location.pathname.startsWith(`${to}/`)
 
   const handleLogout = async () => {
     setIsLoggingOut(true)
@@ -71,7 +72,7 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
             <Link
               key={item.to}
               to={item.to}
-              className={`attendance-nav-item ${location.pathname === item.to ? 'active' : ''}`}
+              className={`attendance-nav-item ${isActiveNavItem(item.to) ? 'active' : ''}`}
             >
               {item.label}
             </Link>

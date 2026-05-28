@@ -223,6 +223,96 @@
   font-weight: 600;
 }
 
+.warning-text {
+  color: #9a5b00;
+  font-weight: 600;
+}
+
+.panel-heading-row {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-heading-row h2 {
+  color: #0f2742;
+  font-size: 16px;
+  margin: 0;
+}
+
+.panel-helper-text,
+.table-subtext {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.panel-helper-text {
+  margin: 4px 0 0;
+}
+
+.table-subtext {
+  margin-top: 3px;
+}
+
+.table-action-link,
+.secondary-action-link {
+  align-items: center;
+  border: 1px solid #b9c7d6;
+  border-radius: 8px;
+  color: #0f2742;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  justify-content: center;
+  min-height: 34px;
+  padding: 7px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.table-action-link:hover,
+.secondary-action-link:hover {
+  background: #eff4fa;
+  border-color: #8aa0b7;
+}
+
+.page-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
+.status-pill {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 58px;
+  padding: 4px 9px;
+  justify-content: center;
+}
+
+.status-pill-in {
+  background: #e7f6ed;
+  color: #1f6f43;
+}
+
+.status-pill-out {
+  background: #eef2f6;
+  color: #475569;
+}
+
+.status-pill-unknown {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.employee-metrics-table {
+  min-width: 980px;
+}
+
 .alert-link-row {
   display: flex;
   justify-content: space-between;
