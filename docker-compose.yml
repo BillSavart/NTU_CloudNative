@@ -114,7 +114,7 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
     volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus:/etc/prometheus:ro
       - prometheusdata:/prometheus
     depends_on:
       - access-lb
@@ -132,6 +132,25 @@ services:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+      - loki
+
+  loki:
+    image: grafana/loki:3.3.2
+    ports:
+      - "${LOKI_HOST_PORT:-3100}:3100"
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./infra/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - lokidata:/loki
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    volumes:
+      - ./infra/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    depends_on:
+      - loki
 
   redis:
     image: redis:7-alpine
@@ -272,3 +291,4 @@ volumes:
   kafka3data:
   prometheusdata:
   grafanadata:
+  lokidata:

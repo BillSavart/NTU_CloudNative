@@ -1,0 +1,169 @@
+groups:
+  # ── Four Golden Signals: Errors ────────────────────────────────────────────
+  - name: errors
+    rules:
+      - alert: AccessApiHighEventFailureRate
+        expr: rate(access_api_events_failed_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: access-api
+        annotations:
+          summary: "Access API Kafka publish failures detected"
+          description: >
+            Events are failing to publish to Kafka at {{ $value | humanize }} failures/sec.
+            Check Kafka broker connectivity and queue depth.
+
+      - alert: ReportingApiHighErrorRate
+        expr: >
+          sum(rate(reporting_api_http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(reporting_api_http_requests_total[5m])) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          service: reporting-api
+        annotations:
+          summary: "Reporting API HTTP 5xx error rate exceeds 1%"
+          description: >
+            Error rate is {{ $value | humanizePercentage }}.
+            Threshold: 1% (lecture: >1% = escalate immediately).
+
+      - alert: ReportingConsumerFailuresHigh
+        expr: >
+          increase(reporting_api_consumer_failed_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          service: reporting-api
+        annotations:
+          summary: "Reporting API consumer is dropping events"
+          description: >
+            Consumer {{ $labels.consumer }} has failed {{ $value }} events
+            in the last 5 minutes.
+
+  # ── Four Golden Signals: Latency ───────────────────────────────────────────
+  - name: latency
+    rules:
+      - alert: ReportingApiHighP95Latency
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(reporting_api_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.2
+        for: 2m
+        labels:
+          severity: warning
+          service: reporting-api
+        annotations:
+          summary: "Reporting API P95 latency exceeds 200ms target"
+          description: >
+            P95 latency is {{ $value | humanizeDuration }}.
+            Project SLO target: <200ms for read path.
+
+      - alert: ReportingApiHighP99Latency
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(reporting_api_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 2m
+        labels:
+          severity: critical
+          service: reporting-api
+        annotations:
+          summary: "Reporting API P99 latency exceeds 1s"
+          description: >
+            P99 latency is {{ $value | humanizeDuration }}.
+            Worst 1% of users are experiencing severe degradation.
+
+  # ── Four Golden Signals: Traffic ───────────────────────────────────────────
+  - name: traffic
+    rules:
+      - alert: AccessApiNoSwipeTraffic
+        expr: rate(access_api_swipes_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: access-api
+        annotations:
+          summary: "No swipe traffic detected for 5 minutes"
+          description: >
+            Access API has received zero swipe requests for 5 minutes.
+            This may indicate the load balancer or upstream clients are down.
+
+  # ── Four Golden Signals: Saturation ────────────────────────────────────────
+  - name: saturation
+    rules:
+      - alert: AccessApiPublisherQueueHigh
+        expr: access_api_event_queue_depth > 5000
+        for: 1m
+        labels:
+          severity: warning
+          service: access-api
+        annotations:
+          summary: "Access API async publisher queue is saturated"
+          description: >
+            Queue depth is {{ $value }}.
+            Kafka publisher is falling behind; events may be delayed or dropped.
+
+      - alert: AccessApiPublisherQueueCritical
+        expr: access_api_event_queue_depth > 50000
+        for: 30s
+        labels:
+          severity: critical
+          service: access-api
+        annotations:
+          summary: "Access API publisher queue critically high — risk of data loss"
+          description: >
+            Queue depth is {{ $value }}.
+            Events may be dropped if queue reaches capacity.
+
+  # ── Service Availability ───────────────────────────────────────────────────
+  - name: availability
+    rules:
+      - alert: AccessApiDown
+        expr: up{job="access-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: access-api
+        annotations:
+          summary: "Access API is unreachable"
+          description: >
+            Prometheus cannot scrape access-api metrics endpoint.
+            All card-swipe decisions are unavailable.
+
+      - alert: ReportingApiDown
+        expr: up{job="reporting-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: reporting-api
+        annotations:
+          summary: "Reporting API is unreachable"
+          description: >
+            Prometheus cannot scrape reporting-api metrics endpoint.
+            All report queries and dashboards will fail.
+
+      - alert: ReportingConsumerDown
+        expr: reporting_api_consumer_running{consumer="kafka"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: reporting-api
+        annotations:
+          summary: "Reporting API Kafka consumer has stopped"
+          description: >
+            The Kafka consumer is no longer running.
+            Access events are not being persisted to the database.
+
+      - alert: ReportingRecoveryConsumerDown
+        expr: reporting_api_consumer_running{consumer="redis_recovery"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: reporting-api
+        annotations:
+          summary: "Reporting API Redis recovery consumer has stopped"
+          description: >
+            The Redis Stream recovery consumer is not running.
+            Buffered events from Redis may not be recovered after Kafka lag.
