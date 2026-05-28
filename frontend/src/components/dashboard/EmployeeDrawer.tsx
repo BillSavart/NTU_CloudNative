@@ -20,8 +20,8 @@ function EmployeeDrawer({ employeeId, onClose }: Props) {
           <li>2026-04-20：12.5 小時（備註：追蹤）</li>
         </ul>
         <div className="mb-3">
-          <label className="form-label">新增備註</label>
-          <textarea className="form-control" rows={3}></textarea>
+          <label className="form-label" htmlFor="employee-drawer-note">新增備註</label>
+          <textarea id="employee-drawer-note" className="form-control" rows={3}></textarea>
         </div>
         <div className="d-flex justify-content-end">
           <button className="btn btn-primary">儲存備註</button>

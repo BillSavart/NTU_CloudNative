@@ -109,8 +109,8 @@ function ComplianceAlerts() {
         <h2 className="h6 mb-3">篩選器</h2>
         <div className="row g-3 align-items-end">
           <div className="col-md-4">
-            <label className="form-label">異常類型</label>
-            <select className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
+            <label className="form-label" htmlFor="compliance-alert-type">異常類型</label>
+            <select id="compliance-alert-type" className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
               <option value="late_arrival">遲到人員</option>
               <option value="overtime_daily">單日超過 12 小時</option>
               <option value="denied_access">拒絕通行事件</option>
@@ -118,8 +118,9 @@ function ComplianceAlerts() {
             </select>
           </div>
           <div className="col-md-4">
-            <label className="form-label">員工搜尋</label>
+            <label className="form-label" htmlFor="compliance-alert-keyword">員工搜尋</label>
             <input
+              id="compliance-alert-keyword"
               className="form-control"
               value={keyword}
               onChange={(event) => handleKeywordChange(event.target.value)}

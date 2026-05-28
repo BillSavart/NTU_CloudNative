@@ -1,7 +1,15 @@
 import http from 'k6/http'
 import { check, group, sleep } from 'k6'
 
-const baseUrl = __ENV.BASE_URL || 'http://reporting-api:8000'
+function requiredEnv(name) {
+  const value = __ENV[name]
+  if (!value) {
+    throw new Error(`${name} must be set by the load-test environment`)
+  }
+  return value
+}
+
+const baseUrl = requiredEnv('BASE_URL')
 const loginId = __ENV.LOGIN_ID || 'rd_1_manager'
 const password = __ENV.LOGIN_PASSWORD || 'demo123'
 const thinkTimeSeconds = Number(__ENV.THINK_TIME_SECONDS || '1')

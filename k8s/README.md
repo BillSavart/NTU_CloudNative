@@ -52,9 +52,9 @@ If the VM becomes tight, reduce Kafka to one broker for demo only, or temporaril
 Build the project images before applying manifests to a local cluster:
 
 ```bash
-docker build -t access-api:latest ./access-api
-docker build -t reporting-api:latest ./reporting-api
-docker build -t frontend:latest ./frontend
+docker build -t access-api:0.1.0 ./access-api
+docker build -t reporting-api:0.1.0 ./reporting-api
+docker build -t frontend:0.1.0 ./frontend
 ```
 
 For minikube or kind, load or build the images inside the cluster image runtime.

@@ -1,13 +1,12 @@
-import os
-
 from sqlalchemy import delete, select, text
 
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models import Department, Employee, UserAccount, UserDepartmentScope
 from app.security import hash_password
 
 
-DEMO_PASSWORD = "demo123"
+DEMO_PASSWORD = get_settings().demo_seed_password
 BATCH_SIZE = 1000
 FAB_COUNT = 22
 FAB_UNITS = ("RD", "IT", "PE", "EE")
@@ -138,6 +137,9 @@ DEMO_MANAGER_BY_DEPARTMENT = {
 
 
 def seed_demo_data() -> None:
+    if not DEMO_PASSWORD:
+        raise RuntimeError("DEMO_SEED_PASSWORD must be set before seeding demo accounts")
+
     with SessionLocal() as db:
         cleanup_legacy_demo_data(db)
 

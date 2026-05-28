@@ -1,9 +1,17 @@
 import http from 'k6/http'
 import { check, group, sleep } from 'k6'
 
-const accessBaseUrl = __ENV.ACCESS_BASE_URL || 'http://access-lb:8080'
-const reportingBaseUrl = __ENV.REPORTING_BASE_URL || 'http://reporting-api:8000'
-const frontendBaseUrl = __ENV.FRONTEND_BASE_URL || 'http://frontend'
+function requiredEnv(name) {
+  const value = __ENV[name]
+  if (!value) {
+    throw new Error(`${name} must be set by the load-test environment`)
+  }
+  return value
+}
+
+const accessBaseUrl = requiredEnv('ACCESS_BASE_URL')
+const reportingBaseUrl = requiredEnv('REPORTING_BASE_URL')
+const frontendBaseUrl = requiredEnv('FRONTEND_BASE_URL')
 const loginId = __ENV.LOGIN_ID || 'rd_1_manager'
 const password = __ENV.LOGIN_PASSWORD || 'demo123'
 const thinkTimeSeconds = Number(__ENV.THINK_TIME_SECONDS || '1')
@@ -13,7 +21,7 @@ const checkRateThreshold = Number(__ENV.CHECK_RATE_THRESHOLD || '0.95')
 const accessVus = Number(__ENV.ACCESS_VUS || __ENV.VUS || '20')
 const reportingVus = Number(__ENV.REPORTING_VUS || Math.max(1, Math.ceil(accessVus / 4)).toString())
 const frontendVus = Number(__ENV.FRONTEND_VUS || Math.max(1, Math.ceil(accessVus / 4)).toString())
-const employeePrefix = (__ENV.EMPLOYEE_PREFIX || `K6${Date.now()}`).replace(/[^A-Za-z0-9_-]/g, '')
+const employeePrefix = (__ENV.EMPLOYEE_PREFIX || `K6${Date.now()}`).replaceAll(/[^A-Za-z0-9_-]/g, '')
 const gateCount = Number(__ENV.GATES || '8')
 
 export const options = {

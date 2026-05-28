@@ -27,6 +27,7 @@ spec:
       labels:
         app: redis
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis
           image: redis:7-alpine
@@ -47,9 +48,11 @@ spec:
             requests:
               cpu: 50m
               memory: 128Mi
+              ephemeral-storage: 512Mi
             limits:
               cpu: 250m
               memory: 256Mi
+              ephemeral-storage: 1Gi
           volumeMounts:
             - name: redis-data
               mountPath: /data
@@ -88,6 +91,7 @@ spec:
       labels:
         app: redis-replica-1
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis
           image: redis:7-alpine
@@ -108,9 +112,11 @@ spec:
             requests:
               cpu: 25m
               memory: 96Mi
+              ephemeral-storage: 256Mi
             limits:
               cpu: 150m
               memory: 128Mi
+              ephemeral-storage: 512Mi
 ---
 apiVersion: v1
 kind: Service
@@ -142,6 +148,7 @@ spec:
       labels:
         app: redis-replica-2
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis
           image: redis:7-alpine
@@ -162,9 +169,11 @@ spec:
             requests:
               cpu: 25m
               memory: 96Mi
+              ephemeral-storage: 256Mi
             limits:
               cpu: 150m
               memory: 128Mi
+              ephemeral-storage: 512Mi
 ---
 apiVersion: v1
 kind: Service
@@ -196,6 +205,7 @@ spec:
       labels:
         app: redis-sentinel-1
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis-sentinel
           image: redis:7-alpine
@@ -216,9 +226,11 @@ spec:
             requests:
               cpu: 25m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 100m
               memory: 96Mi
+              ephemeral-storage: 128Mi
           volumeMounts:
             - name: sentinel-config
               mountPath: /etc/redis
@@ -257,6 +269,7 @@ spec:
       labels:
         app: redis-sentinel-2
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis-sentinel
           image: redis:7-alpine
@@ -277,9 +290,11 @@ spec:
             requests:
               cpu: 25m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 100m
               memory: 96Mi
+              ephemeral-storage: 128Mi
           volumeMounts:
             - name: sentinel-config
               mountPath: /etc/redis
@@ -318,6 +333,7 @@ spec:
       labels:
         app: redis-sentinel-3
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis-sentinel
           image: redis:7-alpine
@@ -338,9 +354,11 @@ spec:
             requests:
               cpu: 25m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 100m
               memory: 96Mi
+              ephemeral-storage: 128Mi
           volumeMounts:
             - name: sentinel-config
               mountPath: /etc/redis

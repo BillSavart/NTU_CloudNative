@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import Employee, UserAccount
@@ -47,10 +48,14 @@ def _local_datetime(value: datetime) -> datetime:
     return value.astimezone(TAIPEI)
 
 
+def _cookie_secure() -> bool:
+    return get_settings().app_cookie_secure
+
+
 @router.get("/csrf/")
 def csrf(response: Response) -> dict[str, str]:
     token = secrets.token_urlsafe(24)
-    response.set_cookie("csrftoken", token, samesite="lax")
+    response.set_cookie("csrftoken", token, httponly=True, samesite="lax", secure=_cookie_secure())
     return {"csrfToken": token}
 
 
@@ -86,6 +91,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         token,
         httponly=True,
         samesite="lax",
+        secure=_cookie_secure(),
         max_age=ttl_seconds,
     )
     return {

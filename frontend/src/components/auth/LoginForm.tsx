@@ -192,9 +192,11 @@ function LoginForm() {
           {resetLink ? (
             <div className="small mt-3">
               一次性連結：
-              <a href={resetLink} className="ms-1">
+              <div>
+                <a href={resetLink}>
                 {resetLink}
-              </a>
+                </a>
+              </div>
             </div>
           ) : null}
         </form>

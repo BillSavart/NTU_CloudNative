@@ -14,7 +14,9 @@ class Settings(BaseSettings):
     app_env: str = "local"
     app_debug: bool = True
     app_secret_key: str = "replace-with-a-long-random-secret"
+    app_cookie_secure: bool = False
     cors_origins: str = ""
+    demo_seed_password: str = ""
 
     postgres_db: str = "access_control"
     postgres_user: str = "root"

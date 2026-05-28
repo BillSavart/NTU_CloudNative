@@ -122,6 +122,7 @@ spec:
       labels:
         app: redis-exporter
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: redis-exporter
           image: oliver006/redis_exporter:v1.67.0
@@ -140,9 +141,11 @@ spec:
             requests:
               cpu: 25m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 100m
               memory: 128Mi
+              ephemeral-storage: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -174,6 +177,7 @@ spec:
       labels:
         app: postgres-exporter
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: postgres-exporter
           image: prometheuscommunity/postgres-exporter:v0.16.0
@@ -204,9 +208,11 @@ spec:
             requests:
               cpu: 25m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 100m
               memory: 128Mi
+              ephemeral-storage: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -238,6 +244,7 @@ spec:
       labels:
         app: kafka-exporter
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: kafka-exporter
           image: danielqsj/kafka-exporter:v1.8.0
@@ -252,9 +259,11 @@ spec:
             requests:
               cpu: 50m
               memory: 128Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 250m
               memory: 256Mi
+              ephemeral-storage: 128Mi
 ---
 apiVersion: v1
 kind: Service
@@ -286,6 +295,7 @@ spec:
       labels:
         app: prometheus
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: prometheus
           image: prom/prometheus:v3.0.1
@@ -301,9 +311,11 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
+              ephemeral-storage: 512Mi
             limits:
               cpu: 500m
               memory: 512Mi
+              ephemeral-storage: 1Gi
           volumeMounts:
             - name: prometheus-config
               mountPath: /etc/prometheus
@@ -342,6 +354,7 @@ spec:
       labels:
         app: grafana
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: grafana
           image: grafana/grafana:11.4.0
@@ -365,9 +378,11 @@ spec:
             requests:
               cpu: 100m
               memory: 192Mi
+              ephemeral-storage: 256Mi
             limits:
               cpu: 500m
               memory: 512Mi
+              ephemeral-storage: 512Mi
           volumeMounts:
             - name: grafana-provisioning
               mountPath: /etc/grafana/provisioning/datasources/datasource.yml

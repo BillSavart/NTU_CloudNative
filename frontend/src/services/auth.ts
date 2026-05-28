@@ -26,38 +26,18 @@ export type CurrentUser = {
   canViewAllDepartments?: boolean
 }
 
-function getCookie(name: string): string {
-  const all = document.cookie
-    .split('; ')
-    .find((item) => item.startsWith(`${name}=`))
-
-  if (!all) {
-    return ''
-  }
-
-  return decodeURIComponent(all.split('=').slice(1).join('='))
-}
-
-async function ensureCsrfCookie(): Promise<void> {
-  await fetch('/api/csrf/', {
+async function fetchCsrfToken(): Promise<string> {
+  const response = await fetch('/api/csrf/', {
     method: 'GET',
     credentials: 'same-origin',
   })
+
+  const result = (await response.json()) as { csrfToken?: string }
+  return result.csrfToken ?? ''
 }
 
 export async function login(payload: LoginPayload): Promise<LoginResponse> {
-  if (payload.employeeId === 'frontend' && payload.password === '123') {
-    return {
-      message: 'Login successful',
-      user: {
-        username: 'frontend',
-        isStaff: false,
-      },
-    }
-  }
-
-  await ensureCsrfCookie()
-  const csrfToken = getCookie('csrftoken')
+  const csrfToken = await fetchCsrfToken()
 
   const response = await fetch('/api/login/', {
     method: 'POST',
@@ -79,8 +59,7 @@ export async function login(payload: LoginPayload): Promise<LoginResponse> {
 }
 
 export async function requestPasswordReset(loginId: string, email: string): Promise<PasswordResetRequestResponse> {
-  await ensureCsrfCookie()
-  const csrfToken = getCookie('csrftoken')
+  const csrfToken = await fetchCsrfToken()
 
   const response = await fetch('/api/auth/password-reset/request', {
     method: 'POST',
@@ -102,8 +81,7 @@ export async function requestPasswordReset(loginId: string, email: string): Prom
 }
 
 export async function confirmPasswordReset(token: string, password: string): Promise<{ message: string }> {
-  await ensureCsrfCookie()
-  const csrfToken = getCookie('csrftoken')
+  const csrfToken = await fetchCsrfToken()
 
   const response = await fetch('/api/auth/password-reset/confirm', {
     method: 'POST',
@@ -142,8 +120,7 @@ export async function fetchCurrentUser(): Promise<CurrentUser | null> {
 }
 
 export async function logout(): Promise<void> {
-  await ensureCsrfCookie()
-  const csrfToken = getCookie('csrftoken')
+  const csrfToken = await fetchCsrfToken()
 
   const response = await fetch('/api/auth/logout', {
     method: 'POST',

@@ -5,13 +5,11 @@ import { login } from './auth'
 describe('auth service', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    document.cookie = 'csrftoken=; Max-Age=0'
   })
 
   it('fetches csrf before posting login credentials', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(async () => {
-        document.cookie = 'csrftoken=test-token'
         return new Response(JSON.stringify({ csrfToken: 'test-token' }), { status: 200 })
       })
       .mockImplementationOnce(async () => (
@@ -41,7 +39,6 @@ describe('auth service', () => {
   it('throws the response message when login fails', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(async () => {
-        document.cookie = 'csrftoken=test-token'
         return new Response(JSON.stringify({ csrfToken: 'test-token' }), { status: 200 })
       })
       .mockImplementationOnce(async () => (

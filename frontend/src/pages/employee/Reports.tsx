@@ -459,13 +459,16 @@ function Reports() {
         hourlyActivity: result.hourlyActivity,
       }
 
-      const reportWindow = window.open('', '_blank')
-      if (!reportWindow) {
-        throw new Error('瀏覽器封鎖了報表視窗，請允許彈出視窗後再試一次。')
-      }
-      reportWindow.document.open()
-      reportWindow.document.write(buildVisualReport(result.events, reportMetrics, result.workHours, from, to, departmentId, !isEmployee, result.generationLatencyMs))
-      reportWindow.document.close()
+      const reportHtml = buildVisualReport(result.events, reportMetrics, result.workHours, from, to, departmentId, !isEmployee, result.generationLatencyMs)
+      const reportUrl = URL.createObjectURL(new Blob([reportHtml], { type: 'text/html;charset=utf-8' }))
+      const link = document.createElement('a')
+      link.href = reportUrl
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(reportUrl), 60_000)
       setMessage(`已開啟報表，共納入 ${result.events.length} 筆事件預覽。`)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '下載失敗')
@@ -489,17 +492,17 @@ function Reports() {
 
         <div className="row g-3 align-items-end mt-1">
           <div className="col-md-3">
-            <label className="form-label">起始日期</label>
-            <input className="form-control" type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+            <label className="form-label" htmlFor="report-from-date">起始日期</label>
+            <input id="report-from-date" className="form-control" type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
           </div>
           <div className="col-md-3">
-            <label className="form-label">結束日期</label>
-            <input className="form-control" type="date" value={to} onChange={(event) => setTo(event.target.value)} />
+            <label className="form-label" htmlFor="report-to-date">結束日期</label>
+            <input id="report-to-date" className="form-control" type="date" value={to} onChange={(event) => setTo(event.target.value)} />
           </div>
           {!isEmployee ? (
             <div className="col-md-3">
-            <label className="form-label">部門</label>
-            <select className="form-select" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}>
+            <label className="form-label" htmlFor="report-department">部門</label>
+            <select id="report-department" className="form-select" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}>
               <option value="ALL">全部可見部門</option>
               {departmentOptions.map((option) => (
                 <option key={option.departmentId} value={option.departmentId}>
@@ -511,8 +514,8 @@ function Reports() {
             </div>
           ) : null}
           <div className="col-md-3">
-            <label className="form-label">下載內容</label>
-            <select className="form-select" value={downloadContent} onChange={(event) => setDownloadContent(event.target.value as DownloadContent)}>
+            <label className="form-label" htmlFor="report-download-content">下載內容</label>
+            <select id="report-download-content" className="form-select" value={downloadContent} onChange={(event) => setDownloadContent(event.target.value as DownloadContent)}>
               <option value="visual">{isEmployee ? '我的報表' : '出勤趨勢報表'}</option>
               <option value="raw">原始事件資料 CSV</option>
             </select>

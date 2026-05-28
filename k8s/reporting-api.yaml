@@ -15,9 +15,10 @@ spec:
       labels:
         app: reporting-api
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: reporting-api
-          image: reporting-api:latest
+          image: reporting-api:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -29,11 +30,21 @@ spec:
               value: kubernetes
             - name: APP_DEBUG
               value: "false"
+            - name: APP_COOKIE_SECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: access-control-config
+                  key: APP_COOKIE_SECURE
             - name: APP_SECRET_KEY
               valueFrom:
                 secretKeyRef:
                   name: access-control-secrets
                   key: APP_SECRET_KEY
+            - name: DEMO_SEED_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: DEMO_SEED_PASSWORD
             - name: CORS_ORIGINS
               valueFrom:
                 configMapKeyRef:
@@ -111,9 +122,11 @@ spec:
             requests:
               cpu: 150m
               memory: 256Mi
+              ephemeral-storage: 512Mi
             limits:
               cpu: "1"
               memory: 768Mi
+              ephemeral-storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

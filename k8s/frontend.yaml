@@ -15,9 +15,10 @@ spec:
       labels:
         app: frontend
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: frontend
-          image: frontend:latest
+          image: frontend:0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -38,9 +39,11 @@ spec:
             requests:
               cpu: 50m
               memory: 64Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 250m
               memory: 128Mi
+              ephemeral-storage: 256Mi
 ---
 apiVersion: v1
 kind: Service
