@@ -165,9 +165,9 @@ data:
       trace:
         backend: local
         wal:
-          path: /tempo/wal
+          path: /var/tempo/wal
         local:
-          path: /tempo/traces
+          path: /var/tempo/traces
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -526,7 +526,7 @@ spec:
             - name: tempo-config
               mountPath: /etc/tempo
             - name: tempo-data
-              mountPath: /tempo
+              mountPath: /var/tempo
       volumes:
         - name: tempo-config
           configMap:

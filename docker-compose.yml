@@ -161,7 +161,7 @@ services:
     command: -config.file=/etc/tempo/tempo-config.yaml
     volumes:
       - ./infra/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
-      - tempodata:/tempo
+      - tempodata:/var/tempo
 
   alloy:
     image: grafana/alloy:v1.5.1
