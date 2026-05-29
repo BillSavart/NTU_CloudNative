@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-full-stack
+  namespace: access-control
+  labels:
+    app: k6-full-stack
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: k6-full-stack
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: k6
+          image: grafana/k6:0.54.0
+          args:
+            - run
+            - /scripts/full-stack.js
+          env:
+            - name: ACCESS_BASE_URL
+              value: http://access-api:80
+            - name: REPORTING_BASE_URL
+              value: http://reporting-api:8000
+            - name: FRONTEND_BASE_URL
+              value: http://frontend:80
+            - name: LOGIN_ID
+              value: rd_1_manager
+            - name: LOGIN_PASSWORD
+              value: demo123
+            - name: VUS
+              value: "20"
+            - name: RAMP_UP
+              value: 30s
+            - name: STEADY
+              value: 2m
+            - name: RAMP_DOWN
+              value: 30s
+            - name: TEST_ID
+              value: k8s-full-stack-demo
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+          volumeMounts:
+            - name: k6-scripts
+              mountPath: /scripts
+      volumes:
+        - name: k6-scripts
+          configMap:
+            name: k6-scripts

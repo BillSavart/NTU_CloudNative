@@ -2,13 +2,19 @@
 
 這個資料夾放的是本專案額外的 Observability 設定。它主要是給 IT / 維運人員確認系統健康狀態，不是給一般使用者看的業務報表 Dashboard。
 
-目前範圍以 **Metrics** 為主，使用 Prometheus 收集指標、Grafana 顯示圖表。Logs 目前可透過 Docker logs 查看，Traces 尚未實作。
+目前範圍包含 **Metrics、Logs、Traces**：
+
+- Metrics：Prometheus 收集指標，Grafana 顯示 dashboard。
+- Logs：Grafana Alloy 收集 Docker / Kubernetes logs，送到 Loki。
+- Traces：Access API 與 Reporting API 透過 OpenTelemetry 送 trace 到 Alloy，再寫入 Tempo。
 
 ## 這一層做什麼
 
 - 監控 Access API 的刷卡流量、授權/拒絕次數、事件佇列狀態。
 - 監控 Reporting API 的 HTTP request 數量、延遲、Kafka consumer 與 Redis recovery consumer 狀態。
 - 透過 exporters 監控 Redis、PostgreSQL、Kafka。
+- 透過 Loki + Alloy 集中查詢服務 logs。
+- 透過 Tempo + Alloy 接收 OpenTelemetry traces。
 - 透過 k6 對 Reporting API 或 full-stack 流程產生壓力，並把結果寫回 Prometheus。
 - 透過 Grafana dashboard 讓系統健康狀態更容易觀察。
 - 以 Docker Compose override 的方式啟用，不影響原本只跑 base stack 的流程。
@@ -27,11 +33,22 @@ observability/
 `-- grafana/
     `-- provisioning/
         |-- datasources/
-        |   `-- prometheus.yml
+        |   |-- loki.yml
+        |   |-- prometheus.yml
+        |   `-- tempo.yml
         `-- dashboards/
             |-- dashboards.yml
             `-- json/
                 `-- observability-dashboard.json
+
+infra/
+|-- alloy/
+|   |-- config.alloy
+|   `-- k8s-config.alloy
+|-- loki/
+|   `-- loki-config.yaml
+`-- tempo/
+    `-- tempo-config.yaml
 
 reporting-api/
 |-- app/
@@ -61,7 +78,7 @@ cd <project-root>
 docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml up -d --build
 ```
 
-這會啟動 Access API、Reporting API、PostgreSQL、Redis、Kafka、Prometheus、Grafana，以及 Redis/PostgreSQL/Kafka exporters。
+這會啟動 Access API、Reporting API、PostgreSQL、Redis、Kafka、Prometheus、Grafana、Loki、Tempo、Alloy，以及 Redis/PostgreSQL/Kafka exporters。
 
 ### 2. 選擇性確認 Containers
 
@@ -674,32 +691,73 @@ Prometheus 與 Grafana 目前沒有在這個 override 額外設定 restart polic
 | 類型 | 目前狀態 |
 | --- | --- |
 | Metrics | 已使用 Prometheus + Grafana 實作 |
-| Logs | 可透過 Docker logs 查看，尚未集中化 |
-| Traces | 尚未實作 |
+| Logs | 已使用 Alloy 收集 Docker / Kubernetes logs，集中送到 Loki |
+| Traces | Access API 與 Reporting API 已使用 OpenTelemetry，透過 Alloy 送到 Tempo |
 
-查看 logs：
+在 Grafana 查看 logs：
+
+```text
+Explore -> datasource 選 Loki
+```
+
+常用 LogQL：
+
+```text
+{service="reporting-api"}
+{service="access-api"}
+{container=~".*reporting-api.*"}
+```
+
+Docker 仍可直接查看 logs：
 
 ```powershell
 docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml logs reporting-api
 docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml logs access-api
 ```
 
-後續若要擴充：
+在 Grafana 查看 traces：
 
-- Logs：可加入 Loki + Promtail 或 Grafana Alloy。
-- Traces：可加入 OpenTelemetry instrumentation、OpenTelemetry Collector、Tempo 或 Jaeger。
+```text
+Explore -> datasource 選 Tempo
+```
+
+目前 trace 來源包含 Access API HTTP request、Reporting API HTTP request，以及 Reporting consumer 寫入 access event 的背景處理。Access API 會把 `traceparent` / `tracestate` 放進 Kafka headers 與 Redis Stream payload，Reporting API consumer 會接續這個 trace context，因此可以從單次刷卡 request 追到後續事件落庫流程。
+
+## Docker 與上雲版本差異
+
+目前 Logs / Traces 採用同一套可延伸架構：
+
+```text
+Docker Compose:
+container logs -> Alloy -> Loki -> Grafana
+Access API / Reporting API OTLP traces -> Alloy -> Tempo -> Grafana
+
+Kubernetes / cloud:
+pod logs -> Alloy DaemonSet -> Loki -> Grafana
+Access API / Reporting API OTLP traces -> Alloy Service -> Tempo -> Grafana
+```
+
+已補成 Docker 與 Kubernetes / cloud 都可使用的項目：
+
+| 項目 | Docker 狀態 | Kubernetes / cloud 狀態 | 備註 |
+| --- | --- | --- | --- |
+| k6 full-stack load test | Docker Compose profile | Kubernetes Job `k8s/k6-full-stack-job.yaml` | 上雲可直接在 cluster 內跑，也可改用外部 runner 或 Grafana Cloud k6 |
+| Grafana dashboard JSON | Docker 掛載同一份 dashboard | Kubernetes 透過 Kustomize 產生 `grafana-dashboard-json` ConfigMap | 避免 Docker 與 k8s dashboard 分岔 |
+| Prometheus alert rules | Docker/base Prometheus 已有 | Kubernetes 透過 Kustomize 產生 `prometheus-alert-rules` ConfigMap | 共用 `infra/prometheus/alert_rules.yml` |
+| 刷卡測試頁 simulator | Docker Compose service | Kubernetes Deployment / Service `simulator` | k8s 版 nginx proxy 會指向 `access-api:80` |
+| 跨 Kafka/Redis 的 trace context | 已透過 payload/header 帶 `traceparent` | 已透過 payload/header 帶 `traceparent` | 涵蓋 Access API HTTP span 與 Reporting consumer persist span |
+
+仍需依實際雲端環境調整的項目：
+
+| 項目 | 現況 | 上雲建議 |
+| --- | --- | --- |
+| Loki / Tempo 儲存 | Docker 使用 volume；k8s demo 使用 `emptyDir` | production 改 PVC 或雲端 object storage，避免 Pod 重建後資料消失 |
+| PostgreSQL / Redis / Kafka | repo 內提供 demo manifests | production 優先考慮 managed service 或 operator |
+| 對外網址 | 本機使用 `localhost`，Kubernetes demo 使用 Ingress hostname | 上雲後改成正式 DNS、TLS、Ingress Controller 或 Load Balancer |
 
 ## Frontend
 
-目前 Docker Compose stack 沒有啟動 React frontend。若要跑前端：
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-啟動後開終端機顯示的 Vite URL，通常是：
+Docker Compose 會啟動 frontend container：
 
 ```text
 http://localhost:5173

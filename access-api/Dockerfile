@@ -5,7 +5,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY config.go handlers.go main.go models.go publisher.go store.go ./
+COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/access-api .
 
 FROM alpine:3.22

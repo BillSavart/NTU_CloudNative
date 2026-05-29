@@ -1,3 +1,4 @@
+from datetime import time
 from functools import lru_cache
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,6 +30,11 @@ class Settings(BaseSettings):
     kafka_consumer_enabled: bool = True
     kafka_consumer_group_id: str = "reporting-api"
     kafka_auto_offset_reset: str = "earliest"
+    # Message-level retry backoff when persistence fails (e.g. DB outage).
+    # The consumer keeps its Kafka connection and retries the same message
+    # instead of crashing and reconnecting.
+    kafka_consume_retry_initial_seconds: float = 1.0
+    kafka_consume_retry_max_seconds: float = 30.0
 
     redis_addr: str = "127.0.0.1:6379"
     redis_password: str = ""
@@ -39,6 +45,14 @@ class Settings(BaseSettings):
     redis_recovery_consumer_name: str = "reporting-api-1"
     redis_recovery_block_ms: int = 5000
     redis_recovery_batch_size: int = 100
+
+    # --- Attendance / access business rules (single source of truth) ---
+    # SQL LIKE pattern identifying "main entrance" gates used for attendance.
+    attendance_main_gate_pattern: str = "%_A"
+    # Daily late-arrival cutoff. First IN after this time counts as late.
+    attendance_late_threshold: str = "08:30:00"
+    # Worked hours above this threshold count as overtime.
+    attendance_overtime_hours: float = 12.0
 
     @computed_field
     @property
@@ -64,6 +78,11 @@ class Settings(BaseSettings):
     def redis_url(self) -> str:
         auth = f":{self.redis_password}@" if self.redis_password else ""
         return f"redis://{auth}{self.redis_addr}/{self.redis_db}"
+
+    @computed_field
+    @property
+    def attendance_late_threshold_time(self) -> time:
+        return time.fromisoformat(self.attendance_late_threshold)
 
 
 @lru_cache

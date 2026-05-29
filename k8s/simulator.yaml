@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simulator-nginx-config
+  namespace: access-control
+data:
+  default.conf: |
+    server {
+        listen 80;
+
+        location / {
+            root /usr/share/nginx/html;
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /proxy/access/ {
+            rewrite ^/proxy/access/(.*)$ /api/access/$1 break;
+            proxy_pass http://access-api:80;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator
+  namespace: access-control
+  labels:
+    app: simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: simulator
+          image: simulator:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 128Mi
+          volumeMounts:
+            - name: simulator-nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+      volumes:
+        - name: simulator-nginx-config
+          configMap:
+            name: simulator-nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simulator
+  namespace: access-control
+spec:
+  selector:
+    app: simulator
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

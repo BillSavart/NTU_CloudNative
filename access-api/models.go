@@ -54,6 +54,8 @@ type AccessEvent struct {
 	CurrentState  string    `json:"currentState"`
 	LatencyMs     int64     `json:"latencyMs"`
 	Timestamp     time.Time `json:"timestamp"`
+	TraceParent   string    `json:"traceparent,omitempty"`
+	TraceState    string    `json:"tracestate,omitempty"`
 }
 
 type EventDTO struct {

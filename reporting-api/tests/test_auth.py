@@ -1,19 +1,18 @@
 import unittest
 
 from fastapi import HTTPException, Response
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.dependencies import get_current_user
-from app.models import Base, Employee, UserAccount
+from app.models import Employee, UserAccount
+from tests.support import create_test_engine
 from app.routers.auth import LoginRequest, PasswordResetConfirmRequest, PasswordResetRequest, confirm_password_reset, login, request_password_reset
 from app.security import SESSION_COOKIE, hash_password, verify_password
 
 
 class AuthTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine)
+        engine = create_test_engine()
         self.SessionLocal = sessionmaker(bind=engine)
         with self.SessionLocal() as db:
             db.add(Employee(employee_id="MGR001", display_name="Manager", last_known_state="UNKNOWN"))

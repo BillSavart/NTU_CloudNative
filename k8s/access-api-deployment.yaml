@@ -64,6 +64,10 @@ spec:
               value: "100"
             - name: PUBLISHER_FLUSH_MS
               value: "10"
+            - name: OTEL_SERVICE_NAME
+              value: access-api
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://alloy:4318/v1/traces
           readinessProbe:
             httpGet:
               path: /healthz

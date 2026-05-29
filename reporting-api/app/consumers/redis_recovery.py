@@ -10,6 +10,14 @@ from redis.exceptions import ResponseError
 from app.config import Settings
 from app.repositories import REQUIRED_EVENT_FIELDS, save_access_event
 
+try:
+    from app.observability import access_event_consumer_span
+except ImportError:
+    from contextlib import nullcontext
+
+    def access_event_consumer_span(payload, source):
+        return nullcontext()
+
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +149,8 @@ class RedisRecoveryConsumerService:
             return True
 
         try:
-            inserted = await asyncio.to_thread(save_access_event, payload)
+            with access_event_consumer_span(payload, "redis-stream"):
+                inserted = await asyncio.to_thread(save_access_event, payload)
             self.status.processed += 1
             if inserted:
                 self.status.inserted += 1

@@ -104,6 +104,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: OTEL_SERVICE_NAME
+              value: reporting-api
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://alloy:4318/v1/traces
           readinessProbe:
             httpGet:
               path: /api/health/

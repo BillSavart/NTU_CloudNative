@@ -66,7 +66,9 @@ if maxlen and maxlen > 0 then
 		"previousState", ARGV[7],
 		"currentState", ARGV[8],
 		"latencyMs", ARGV[9],
-		"timestamp", ARGV[11])
+		"timestamp", ARGV[11],
+		"traceparent", ARGV[13],
+		"tracestate", ARGV[14])
 else
 	redis.call("XADD", KEYS[2], "*",
 		"requestId", ARGV[1],
@@ -78,7 +80,9 @@ else
 		"previousState", ARGV[7],
 		"currentState", ARGV[8],
 		"latencyMs", ARGV[9],
-		"timestamp", ARGV[11])
+		"timestamp", ARGV[11],
+		"traceparent", ARGV[13],
+		"tracestate", ARGV[14])
 end
 return 1
 `
@@ -208,6 +212,8 @@ func (s *RedisStore) AppendEvent(ctx context.Context, event AccessEvent) error {
 			"currentState":  event.CurrentState,
 			"latencyMs":     event.LatencyMs,
 			"timestamp":     event.Timestamp.Format(time.RFC3339Nano),
+			"traceparent":   event.TraceParent,
+			"tracestate":    event.TraceState,
 		},
 	}).Err()
 }
@@ -235,6 +241,8 @@ func (s *RedisStore) AppendEventOnce(ctx context.Context, event AccessEvent) err
 		ttlSeconds,
 		event.Timestamp.Format(time.RFC3339Nano),
 		s.cfg.EventStreamMaxLen,
+		event.TraceParent,
+		event.TraceState,
 	).Err()
 }
 

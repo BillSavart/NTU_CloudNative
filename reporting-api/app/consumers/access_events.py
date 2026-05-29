@@ -8,6 +8,14 @@ from aiokafka import AIOKafkaConsumer
 from app.config import Settings
 from app.repositories import parse_access_event, save_access_event
 
+try:
+    from app.observability import access_event_consumer_span
+except ImportError:
+    from contextlib import nullcontext
+
+    def access_event_consumer_span(payload, source):
+        return nullcontext()
+
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +95,51 @@ class AccessEventConsumerService:
             async for message in consumer:
                 if self._stop_event.is_set():
                     break
-                should_commit = await self._handle_message(message.value)
-                if not should_commit:
-                    raise RuntimeError("access event was not persisted; retrying without offset commit")
+                committed = await self._handle_with_retry(
+                    message.value, dict(message.headers or [])
+                )
+                if not committed:
+                    # Only reached when we are shutting down mid-retry. Leave the
+                    # offset uncommitted so the message is redelivered next start.
+                    break
                 await consumer.commit()
         finally:
             self.status.running = False
             await consumer.stop()
             logger.info("access event consumer stopped")
 
-    async def _handle_message(self, raw: bytes) -> bool:
+    async def _handle_with_retry(self, raw: bytes, headers: dict[str, bytes]) -> bool:
+        """Persist a message, retrying in place with backoff on transient failures.
+
+        Returns True once the message is handled (persisted, deduplicated, or
+        skipped as a poison message) and its offset may be committed. Returns
+        False only if shutdown is requested before the message could be handled,
+        in which case the offset is intentionally left uncommitted.
+
+        Unlike a connection-level crash-and-reconnect, this keeps the Kafka
+        connection open so that when the downstream (e.g. the database) recovers
+        the consumer resumes immediately from the failed message.
+        """
+        backoff = self.settings.kafka_consume_retry_initial_seconds
+        while not self._stop_event.is_set():
+            if await self._handle_message(raw, headers):
+                return True
+            logger.warning(
+                "access event not persisted; retrying same message in %.1fs", backoff
+            )
+            await self._sleep_or_stop(backoff)
+            backoff = min(backoff * 2, self.settings.kafka_consume_retry_max_seconds)
+        return False
+
+    async def _sleep_or_stop(self, seconds: float) -> None:
+        """Sleep for ``seconds`` but wake immediately if shutdown is requested."""
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+
+    async def _handle_message(self, raw: bytes, headers: dict[str, bytes] | None = None) -> bool:
         try:
             payload = parse_access_event(raw)
+            self._merge_trace_headers(payload, headers or {})
         except Exception as exc:
             self.status.failed += 1
             self.status.last_error = str(exc)
@@ -106,7 +147,8 @@ class AccessEventConsumerService:
             return True
 
         try:
-            inserted = await asyncio.to_thread(save_access_event, payload)
+            with access_event_consumer_span(payload, "kafka"):
+                inserted = await asyncio.to_thread(save_access_event, payload)
             self.status.processed += 1
             if inserted:
                 self.status.inserted += 1
@@ -118,3 +160,9 @@ class AccessEventConsumerService:
             self.status.last_error = str(exc)
             logger.exception("failed to persist access event")
             return False
+
+    def _merge_trace_headers(self, payload: dict, headers: dict[str, bytes]) -> None:
+        for key in ("traceparent", "tracestate"):
+            value = headers.get(key)
+            if value and not payload.get(key):
+                payload[key] = value.decode("utf-8")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import time
+from contextlib import contextmanager
 from collections.abc import Callable
+from typing import Any, Iterator
 
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -24,26 +27,34 @@ CONSUMER_RUNNING = Gauge(
     "Whether a background consumer is running.",
     ("consumer",),
 )
-CONSUMER_PROCESSED_TOTAL = Gauge(
+CONSUMER_PROCESSED_TOTAL = Counter(
     "reporting_api_consumer_processed_total",
     "Total events processed by a background consumer.",
     ("consumer",),
 )
-CONSUMER_INSERTED_TOTAL = Gauge(
+CONSUMER_INSERTED_TOTAL = Counter(
     "reporting_api_consumer_inserted_total",
     "Total new events inserted by a background consumer.",
     ("consumer",),
 )
-CONSUMER_DUPLICATES_TOTAL = Gauge(
+CONSUMER_DUPLICATES_TOTAL = Counter(
     "reporting_api_consumer_duplicates_total",
     "Total duplicate events skipped by a background consumer.",
     ("consumer",),
 )
-CONSUMER_FAILED_TOTAL = Gauge(
+CONSUMER_FAILED_TOTAL = Counter(
     "reporting_api_consumer_failed_total",
     "Total failed events observed by a background consumer.",
     ("consumer",),
 )
+
+# The consumers expose their own cumulative totals (status.processed, ...).
+# Prometheus Counters can only be incremented, so we bridge those absolute
+# values into the Counter by advancing it by the delta on each scrape. We
+# remember the last observed absolute value per (metric, consumer); if it
+# decreases (the consumer object was recreated and its in-memory total reset)
+# we treat the new value as fresh increments instead of going negative.
+_consumer_counter_state: dict[tuple[str, str], float] = {}
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
@@ -64,6 +75,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 def install_observability(app: FastAPI) -> None:
     app.add_middleware(MetricsMiddleware)
+    _install_tracing(app)
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
@@ -83,7 +95,72 @@ def _sync_consumer_metrics(app: FastAPI) -> None:
             continue
 
         CONSUMER_RUNNING.labels(name).set(1 if status.running else 0)
-        CONSUMER_PROCESSED_TOTAL.labels(name).set(status.processed)
-        CONSUMER_INSERTED_TOTAL.labels(name).set(status.inserted)
-        CONSUMER_DUPLICATES_TOTAL.labels(name).set(status.duplicates)
-        CONSUMER_FAILED_TOTAL.labels(name).set(status.failed)
+        _advance_consumer_counter(CONSUMER_PROCESSED_TOTAL, "processed", name, status.processed)
+        _advance_consumer_counter(CONSUMER_INSERTED_TOTAL, "inserted", name, status.inserted)
+        _advance_consumer_counter(CONSUMER_DUPLICATES_TOTAL, "duplicates", name, status.duplicates)
+        _advance_consumer_counter(CONSUMER_FAILED_TOTAL, "failed", name, status.failed)
+
+
+def _advance_consumer_counter(counter: Counter, key: str, consumer: str, current: float) -> None:
+    state_key = (key, consumer)
+    previous = _consumer_counter_state.get(state_key, 0.0)
+    # Touch the child so the zero-valued series is always exported (Counters
+    # are otherwise only created on first increment).
+    child = counter.labels(consumer)
+    # current < previous => the consumer restarted and reset its in-memory
+    # total, so the new absolute value represents brand-new increments.
+    delta = current if current < previous else current - previous
+    if delta > 0:
+        child.inc(delta)
+    _consumer_counter_state[state_key] = current
+
+
+def _install_tracing(app: FastAPI) -> None:
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        return
+
+    service_name = os.getenv("OTEL_SERVICE_NAME", "reporting-api")
+    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
+
+@contextmanager
+def access_event_consumer_span(payload: dict[str, Any], source: str) -> Iterator[None]:
+    try:
+        from opentelemetry import propagate, trace
+    except ImportError:
+        yield
+        return
+
+    carrier = {
+        "traceparent": str(payload.get("traceparent") or ""),
+        "tracestate": str(payload.get("tracestate") or ""),
+    }
+    context = propagate.extract(carrier)
+    tracer = trace.get_tracer("reporting-api.consumer")
+    with tracer.start_as_current_span(
+        "persist access event",
+        context=context,
+        attributes={
+            "messaging.system": source,
+            "access.request_id": str(payload.get("requestId") or ""),
+            "access.employee_id": str(payload.get("employeeId") or ""),
+            "access.gate_id": str(payload.get("gateId") or ""),
+            "access.direction": str(payload.get("direction") or ""),
+            "access.decision": str(payload.get("decision") or ""),
+        },
+    ):
+        yield

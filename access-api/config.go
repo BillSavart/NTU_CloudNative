@@ -28,6 +28,8 @@ type Config struct {
 	PublisherFlush        int
 	PublisherRetryInitial int
 	PublisherRetryMax     int
+	OtelServiceName       string
+	OtelTracesEndpoint    string
 }
 
 func LoadConfig() Config {
@@ -53,7 +55,18 @@ func LoadConfig() Config {
 		PublisherFlush:        getEnvInt("PUBLISHER_FLUSH_MS", 10),
 		PublisherRetryInitial: getEnvInt("PUBLISHER_RETRY_INITIAL_MS", 100),
 		PublisherRetryMax:     getEnvInt("PUBLISHER_RETRY_MAX_MS", 5000),
+		OtelServiceName:       getEnv("OTEL_SERVICE_NAME", "access-api"),
+		OtelTracesEndpoint:    firstNonEmpty(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func getEnv(key, fallback string) string {
