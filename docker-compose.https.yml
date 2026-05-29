@@ -23,16 +23,32 @@ services:
       - "443:443/udp"   # HTTP/3
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN in .env for HTTPS}
-      GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:-}
+      GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:?set GRAFANA_DOMAIN in .env}
+      PROMETHEUS_DOMAIN: ${PROMETHEUS_DOMAIN:?set PROMETHEUS_DOMAIN in .env}
+      PROM_USER: ${PROM_USER:?set PROM_USER in .env}
+      PROM_HASH: ${PROM_HASH:?set PROM_HASH in .env (caddy hash-password)}
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data        # persists issued certs across restarts
       - caddyconfig:/config
     depends_on:
       - frontend
+      - grafana
+      - prometheus
 
   frontend:
     # Caddy now fronts the app; drop the public :80 binding from the prod override.
+    ports: !reset []
+
+  grafana:
+    # Reached only through Caddy now. Set the public URL so login redirects work.
+    environment:
+      GF_SERVER_ROOT_URL: https://${GRAFANA_DOMAIN}
+      GF_SERVER_DOMAIN: ${GRAFANA_DOMAIN}
+    ports: !reset []
+
+  prometheus:
+    # Reached only through Caddy (basic-auth gated); drop the localhost binding.
     ports: !reset []
 
 volumes:
