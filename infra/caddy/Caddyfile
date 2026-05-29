@@ -1,0 +1,21 @@
+# Automatic HTTPS for the access-control app.
+# Caddy fetches and auto-renews Let's Encrypt certs on its own — no certbot.
+# {$DOMAIN} is read from the VM .env (see docker-compose.https.yml).
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The frontend nginx already serves the SPA and proxies /api to
+	# reporting-api, so the whole site goes to one upstream.
+	reverse_proxy frontend:80
+}
+
+# --- Optional: expose Grafana on its own subdomain over HTTPS ---
+# 1. Add an A record  grafana.<domain>  ->  VM IP
+# 2. Set GRAFANA_DOMAIN=grafana.<domain> in .env
+# 3. Uncomment the block below and redeploy
+#
+# {$GRAFANA_DOMAIN} {
+# 	encode zstd gzip
+# 	reverse_proxy grafana:3000
+# }

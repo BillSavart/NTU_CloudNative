@@ -1,0 +1,40 @@
+# HTTPS edge for the production deploy. Layer AFTER the prod override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml up -d
+#
+# scripts/deploy.sh adds this file automatically when ENABLE_HTTPS=true in .env.
+#
+# Adds a Caddy reverse proxy that terminates TLS with automatic Let's Encrypt
+# certificates and forwards to the frontend over the internal network. The
+# frontend's own public host port is removed so Caddy owns 80/443.
+#
+# Required in .env:   DOMAIN=your.domain          (+ an A record -> VM IP)
+# Recommended:        APP_COOKIE_SECURE=true
+#                     CORS_ORIGINS=https://your.domain
+# Open in firewall:   tcp:80 (ACME challenge + redirect) and tcp:443
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env for HTTPS}
+      GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:-}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data        # persists issued certs across restarts
+      - caddyconfig:/config
+    depends_on:
+      - frontend
+
+  frontend:
+    # Caddy now fronts the app; drop the public :80 binding from the prod override.
+    ports: !reset []
+
+volumes:
+  caddydata:
+  caddyconfig:

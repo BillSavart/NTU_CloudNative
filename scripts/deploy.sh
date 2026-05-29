@@ -16,7 +16,23 @@ cd "$ROOT_DIR"
 
 export IMAGE_TAG="${IMAGE_TAG:-latest}"
 
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+# Read ENABLE_HTTPS (and any other vars) from .env so the toggle works without
+# the caller exporting it. Done before the compose array is built.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . <(sed 's/\r$//' .env)
+  set +a
+fi
+
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml)
+# Add the Caddy/TLS edge when HTTPS is enabled (needs DOMAIN set in .env).
+if [ "${ENABLE_HTTPS:-false}" = "true" ]; then
+  COMPOSE_FILES+=(-f docker-compose.https.yml)
+  echo "==> HTTPS enabled (Caddy edge, DOMAIN=${DOMAIN:-<unset!>})"
+fi
+
+COMPOSE=(docker compose "${COMPOSE_FILES[@]}")
 APP_SERVICES=(access-api reporting-api frontend simulator)
 
 echo "==> Syncing repo to origin/main (compose files & bind-mounted configs)"
