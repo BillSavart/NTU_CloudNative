@@ -73,13 +73,16 @@ ensure_kafka_topic() {
   done
 }
 
+echo "Starting Kafka and preparing E2E topic..."
+"${COMPOSE[@]}" up -d kafka-1 kafka-2 kafka-3
+ensure_kafka_topic "access-events"
+
 echo "Building and starting Docker Compose stack..."
 "${COMPOSE[@]}" up -d --build
 
 wait_for_url access-api "$ACCESS_URL/healthz"
 wait_for_url reporting-api "$REPORTING_URL/api/health/"
 wait_for_url frontend "$FRONTEND_URL/"
-ensure_kafka_topic "access-events"
 
 echo "Resetting E2E test employee state..."
 curl -fsS -X POST "$ACCESS_URL/api/access/reset/$TEST_EMPLOYEE_ID" >/dev/null
