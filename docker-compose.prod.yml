@@ -1,0 +1,117 @@
+# Production override for the single-VM Docker Compose deploy (GCP n4-standard-4).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# vs. the base file this override:
+#   * pulls the four app images from GHCR (built by .github/workflows/cd.yml)
+#     instead of building them on the VM,
+#   * adds restart: unless-stopped everywhere so the stack survives reboots,
+#   * binds every internal service (DB / Redis / Kafka / Prometheus / Loki /
+#     Tempo / Alloy) to 127.0.0.1 (or removes the host port entirely) so only
+#     the frontend and Grafana are reachable from outside the VM,
+#   * runs reporting-api in production mode (debug off),
+#   * caps Kafka broker heap so the full stack fits in 16 GB.
+#
+# NOTE: the `!override` / `!reset` port tags need Docker Compose v2.24.4+.
+#       (`docker compose version`). They REPLACE the base port list instead of
+#       appending to it — without them compose would keep the public 0.0.0.0
+#       binding alongside the localhost one.
+#
+# IMAGE_PREFIX / IMAGE_TAG come from the shell env (set by scripts/deploy.sh)
+# and fall back to :latest for manual runs.
+
+services:
+  access-api:
+    image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/access-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+
+  access-lb:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:8080:8080"
+
+  reporting-api:
+    image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/reporting-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      # Served same-origin behind the frontend nginx /api proxy. Override
+      # CORS_ORIGINS / APP_COOKIE_SECURE in the VM .env if you add a domain+HTTPS.
+      APP_COOKIE_SECURE: ${APP_COOKIE_SECURE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+    ports: !override
+      - "127.0.0.1:8000:8000"
+
+  frontend:
+    image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports: !override
+      - "${FRONTEND_PUBLIC_PORT:-80}:80"
+
+  simulator:
+    image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/simulator:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports: !override
+      - "${SIMULATOR_PUBLIC_PORT:-5174}:80"
+
+  db:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:6379:6379"
+  redis-replica-1:
+    restart: unless-stopped
+  redis-replica-2:
+    restart: unless-stopped
+  redis-sentinel-1:
+    restart: unless-stopped
+    ports: !reset []
+  redis-sentinel-2:
+    restart: unless-stopped
+    ports: !reset []
+  redis-sentinel-3:
+    restart: unless-stopped
+    ports: !reset []
+
+  # Cap broker heap (default is 1 GB each = 3 GB just for Kafka) so the full
+  # 20-container stack fits on a 16 GB box. Internal-only: no host port.
+  kafka-1:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+  kafka-2:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+  kafka-3:
+    restart: unless-stopped
+    ports: !reset []
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+
+  prometheus:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    restart: unless-stopped
+    ports: !override
+      - "${GRAFANA_PUBLIC_PORT:-3000}:3000"
+
+  loki:
+    restart: unless-stopped
+    ports: !reset []
+  tempo:
+    restart: unless-stopped
+    ports: !reset []
+  alloy:
+    restart: unless-stopped
+    ports: !reset []
