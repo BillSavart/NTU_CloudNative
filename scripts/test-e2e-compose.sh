@@ -12,7 +12,7 @@ if [ ! -f .env ]; then
 fi
 
 set -a
-. ./.env
+. <(sed 's/\r$//' .env)
 set +a
 
 ACCESS_URL="http://127.0.0.1:${ACCESS_HOST_PORT:-8080}"
@@ -20,8 +20,29 @@ FRONTEND_URL="http://127.0.0.1:${FRONTEND_HOST_PORT:-5173}"
 REPORTING_URL="http://127.0.0.1:${REPORTING_HOST_PORT:-8000}"
 TEST_EMPLOYEE_ID="E2E_COMPOSE_001"
 TEST_GATE_ID="GATE_E2E"
+E2E_LOGIN_ID="${E2E_LOGIN_ID:-executive}"
+E2E_LOGIN_PASSWORD="${E2E_LOGIN_PASSWORD:-${DEMO_SEED_PASSWORD:-demo123}}"
+COOKIE_JAR="$(mktemp)"
+
+export TEMPO_OTLP_GRPC_HOST_PORT="${E2E_TEMPO_OTLP_GRPC_HOST_PORT:-24317}"
+export TEMPO_OTLP_HTTP_HOST_PORT="${E2E_TEMPO_OTLP_HTTP_HOST_PORT:-24318}"
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v py >/dev/null 2>&1; then
+    PYTHON_BIN="py"
+  else
+    echo "python3, python, or py is required to run E2E JSON assertions." >&2
+    exit 1
+  fi
+fi
 
 cleanup() {
+  rm -f "$COOKIE_JAR"
   if [ "${E2E_CLEANUP:-false}" = "true" ]; then
     "${COMPOSE[@]}" down -v --remove-orphans
   fi
@@ -84,6 +105,11 @@ wait_for_url access-api "$ACCESS_URL/healthz"
 wait_for_url reporting-api "$REPORTING_URL/api/health/"
 wait_for_url frontend "$FRONTEND_URL/"
 
+echo "Logging in to Reporting API for report access..."
+curl -fsS -c "$COOKIE_JAR" -X POST "$REPORTING_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"employeeId\":\"$E2E_LOGIN_ID\",\"password\":\"$E2E_LOGIN_PASSWORD\"}" >/dev/null
+
 echo "Resetting E2E test employee state..."
 curl -fsS -X POST "$ACCESS_URL/api/access/reset/$TEST_EMPLOYEE_ID" >/dev/null
 
@@ -95,10 +121,10 @@ swipe_response="$(
 )"
 
 request_id="$(
-  python -c 'import json,sys; print(json.load(sys.stdin)["requestId"])' <<<"$swipe_response"
+  "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["requestId"])' <<<"$swipe_response"
 )"
 
-python -c '
+"$PYTHON_BIN" -c '
 import json
 import sys
 
@@ -114,9 +140,9 @@ if not payload.get("kafkaQueued"):
 echo "Waiting for Reporting API to persist request $request_id..."
 for attempt in $(seq 1 60); do
   events_response="$(
-    curl -fsS "$REPORTING_URL/api/reports/access/events?employeeId=$TEST_EMPLOYEE_ID&limit=10"
+    curl -fsS -b "$COOKIE_JAR" "$REPORTING_URL/api/reports/access/events?employeeId=$TEST_EMPLOYEE_ID&limit=10"
   )"
-  if EVENTS_RESPONSE="$events_response" python - "$request_id" <<'PY'
+  if EVENTS_RESPONSE="$events_response" "$PYTHON_BIN" - "$request_id" <<'PY'
 import json
 import os
 import sys
