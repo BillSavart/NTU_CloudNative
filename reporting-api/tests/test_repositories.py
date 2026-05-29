@@ -279,7 +279,7 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(report["metrics"]["deniedRate"], 50.0)
         self.assertEqual(report["topDepartments"][0], {"departmentId": "OPS_A", "count": 1})
         self.assertNotIn("FAB_A", {row["departmentId"] for row in report["topDepartments"]})
-        self.assertEqual(report["hourlyActivity"], [{"hour": "17", "count": 2}])
+        self.assertEqual(report["hourlyActivity"], [{"hour": "17", "count": 2, "inCount": 1, "outCount": 1}])
         self.assertEqual(len(report["events"]), 2)
         self.assertIsInstance(report["generationLatencyMs"], float)
 

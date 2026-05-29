@@ -702,6 +702,9 @@ def get_dashboard_operational_metrics(
     expected_today = len(employees)
 
     history_from = min(from_time, to_time - timedelta(days=7))
+    history_start_date = _local_date(history_from)
+    window_start_date = _local_date(from_time)
+    window_end_date = _local_date(to_time)
     events = _dashboard_event_rows(db, current_user, department_id, history_from, to_time)
 
     today = to_time.astimezone(TAIPEI).date() if to_time.tzinfo else to_time.date()
@@ -748,14 +751,14 @@ def get_dashboard_operational_metrics(
     for (employee_id, work_date), day in daily.items():
         first_in = day["first_in"]
         last_out = day["last_out"]
-        if first_in is not None and first_in.time() > _late_threshold_time() and _local_date(from_time) <= work_date <= _local_date(to_time):
+        if first_in is not None and first_in.time() > _late_threshold_time() and window_start_date <= work_date <= window_end_date:
             department_late_counts[employee_departments.get(employee_id) or "UNASSIGNED"] += 1
             weekday_late_counts[_weekday_label(work_date)] += 1
         if (
             first_in is not None
             and last_out is not None
             and last_out - first_in > timedelta(hours=12)
-            and _local_date(from_time) <= work_date <= _local_date(to_time)
+            and history_start_date <= work_date <= window_end_date
         ):
             work_hours = round((last_out - first_in).total_seconds() / 3600, 1)
             daily_overtime_alerts.append(

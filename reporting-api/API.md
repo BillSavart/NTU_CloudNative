@@ -324,7 +324,7 @@ Response:
     "deniedRate": 1.67
   },
   "topDepartments": [{ "departmentId": "FAB_A", "count": 420 }],
-  "hourlyActivity": [{ "hour": "08", "count": 300 }],
+  "hourlyActivity": [{ "hour": "08", "count": 300, "inCount": 160, "outCount": 140 }],
   "events": [],
   "previewLimit": 500,
   "generationLatencyMs": 24.18
