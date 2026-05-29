@@ -19,9 +19,18 @@ set -a
 . ./.env
 set +a
 
+# Default to the local base+observability stack; prod helper scripts export
+# K6_COMPOSE_FILES (via scripts/lib-compose.sh) to target the running prod stack.
+if [ -n "${K6_COMPOSE_FILES:-}" ]; then
+  # shellcheck disable=SC2206
+  CLEANUP_COMPOSE=(docker compose ${K6_COMPOSE_FILES})
+else
+  CLEANUP_COMPOSE=(docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml)
+fi
+
 echo "Cleaning k6 load-test rows for employee prefix '${PREFIX}'..."
 
-docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml exec -T db \
+"${CLEANUP_COMPOSE[@]}" exec -T db \
   psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -v prefix="${PREFIX}" <<'SQL'
 WITH deleted_events AS (
   DELETE FROM access_events
@@ -45,13 +54,13 @@ SQL
 
 echo "Cleaning Redis state, dedupe, and recovery stream entries for '${PREFIX}'..."
 
-docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml exec -T redis \
+"${CLEANUP_COMPOSE[@]}" exec -T redis \
   sh -c 'export REDISCLI_AUTH="$REDIS_PASSWORD"; redis-cli --scan --pattern "access:state:'"${PREFIX}"'*" | xargs -r redis-cli DEL >/dev/null'
 
-docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml exec -T redis \
+"${CLEANUP_COMPOSE[@]}" exec -T redis \
   sh -c 'export REDISCLI_AUTH="$REDIS_PASSWORD"; redis-cli --scan --pattern "access:event-buffered:'"${PREFIX}"'*" | xargs -r redis-cli DEL >/dev/null'
 
-docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml exec -T redis \
+"${CLEANUP_COMPOSE[@]}" exec -T redis \
   sh -c 'export REDISCLI_AUTH="$REDIS_PASSWORD"; redis-cli EVAL "
 local stream = KEYS[1]
 local prefix = ARGV[1]
@@ -79,7 +88,7 @@ end
 return deleted
 " 1 access:events "'"${PREFIX}"'"'
 
-docker compose -f docker-compose.yml -f observability/docker-compose.observability.yml exec -T db \
+"${CLEANUP_COMPOSE[@]}" exec -T db \
   psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -v prefix="${PREFIX}" <<'SQL'
 SELECT
   (SELECT count(*) FROM access_events WHERE employee_id LIKE :'prefix' || '%') AS remaining_access_events,

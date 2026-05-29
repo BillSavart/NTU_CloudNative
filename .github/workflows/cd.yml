@@ -1,0 +1,115 @@
+name: CD
+
+# Runs only after the CI workflow succeeds on main, then builds the four
+# application images, pushes them to GHCR, and deploys them onto the GCP VM
+# over SSH. Infra images (Postgres / Redis / Kafka / observability) are pulled
+# straight from their upstream registries by docker compose on the VM.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    # Skip if CI failed. workflow_dispatch has no workflow_run payload, so the
+    # conclusion check is short-circuited for manual runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [access-api, reporting-api, frontend, simulator]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On workflow_run, default checkout is the branch HEAD; pin to the
+          # exact commit CI validated so image tags line up with the source.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve lowercase image name
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.event.workflow_run.head_sha || github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      # The VM is normally powered off to save cost. If it's unreachable, this
+      # is NOT a failure: the images are already in GHCR and the VM's systemd
+      # unit auto-deploys :latest on its next boot. We surface that clearly in
+      # the run summary and skip the SSH step (job stays green). A genuine
+      # deploy failure on a reachable VM still fails red via deploy.sh below.
+      - name: Check VM reachability
+        id: reach
+        run: |
+          if timeout 10 bash -c "</dev/tcp/${{ secrets.DEPLOY_HOST }}/22" 2>/dev/null; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ⏭️ Deploy skipped — VM offline"
+              echo ""
+              echo "Images were built and pushed to GHCR (\`:latest\` + \`:${IMAGE_TAG}\`)."
+              echo "The VM at \`${{ secrets.DEPLOY_HOST }}:22\` was unreachable, so no deploy ran."
+              echo ""
+              echo "It will auto-deploy \`:latest\` on the VM's next boot (systemd unit),"
+              echo "or you can re-run this workflow once the VM is up."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Deploy on the VM over SSH
+        if: steps.reach.outputs.up == 'true'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # Forward the image tag + GHCR pull creds into the remote shell so
+          # scripts/deploy.sh can log in and pull the exact built images.
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN
+          script: |
+            cd "${{ secrets.DEPLOY_PATH }}"
+            ./scripts/deploy.sh
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
+
+      - name: Record deploy in run summary
+        if: steps.reach.outputs.up == 'true'
+        run: |
+          {
+            echo "### ✅ Deployed to VM"
+            echo ""
+            echo "Commit \`${IMAGE_TAG}\` deployed and health-checked on \`${{ secrets.DEPLOY_HOST }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}

@@ -249,3 +249,5 @@ Thumbs.db
 STARTUP_GUIDE.md
 health-check.ps1
 run-all-services.ps1
+# Written by scripts/deploy.sh on the VM; records the live deployed commit.
+DEPLOYED_VERSION

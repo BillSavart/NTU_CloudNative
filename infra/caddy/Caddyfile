@@ -1,0 +1,35 @@
+# Automatic HTTPS for the access-control app + observability.
+# Caddy fetches and auto-renews Let's Encrypt certs on its own — no certbot.
+# Each {$VAR} is read from the VM .env (see docker-compose.https.yml).
+# Every host below needs its own A record pointing at the VM's static IP.
+
+# Main app (frontend nginx serves the SPA and proxies /api to reporting-api).
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy frontend:80
+}
+
+# Swipe-card demo (simulator nginx serves the page and proxies /proxy/access
+# to the access-api load balancer internally).
+{$SIMULATOR_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy simulator:80
+}
+
+# Grafana — has its own login, exposed directly.
+{$GRAFANA_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy grafana:3000
+}
+
+# Prometheus — has NO authentication of its own, so gate it at the edge with
+# HTTP basic auth. Generate PROM_HASH once with:
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+# then put PROM_USER / PROM_HASH in .env.
+{$PROMETHEUS_DOMAIN} {
+	encode zstd gzip
+	basic_auth {
+		{$PROM_USER} {$PROM_HASH}
+	}
+	reverse_proxy prometheus:9090
+}
