@@ -48,12 +48,38 @@ wait_for_url() {
   done
 }
 
+ensure_kafka_topic() {
+  local topic="$1"
+  local attempts="${2:-90}"
+
+  for attempt in $(seq 1 "$attempts"); do
+    if "${COMPOSE[@]}" exec -T kafka-1 /opt/kafka/bin/kafka-topics.sh \
+      --bootstrap-server kafka-1:9092 \
+      --create \
+      --if-not-exists \
+      --topic "$topic" \
+      --partitions 3 \
+      --replication-factor 3 >/dev/null 2>&1; then
+      echo "Kafka topic $topic is ready."
+      return 0
+    fi
+    if [ "$attempt" -eq "$attempts" ]; then
+      echo "Kafka topic $topic did not become ready." >&2
+      "${COMPOSE[@]}" ps >&2 || true
+      "${COMPOSE[@]}" logs --tail=120 kafka-1 kafka-2 kafka-3 >&2 || true
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 echo "Building and starting Docker Compose stack..."
 "${COMPOSE[@]}" up -d --build
 
 wait_for_url access-api "$ACCESS_URL/healthz"
 wait_for_url reporting-api "$REPORTING_URL/api/health/"
 wait_for_url frontend "$FRONTEND_URL/"
+ensure_kafka_topic "access-events"
 
 echo "Resetting E2E test employee state..."
 curl -fsS -X POST "$ACCESS_URL/api/access/reset/$TEST_EMPLOYEE_ID" >/dev/null
