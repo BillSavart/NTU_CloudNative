@@ -1,0 +1,2 @@
+# Development / CI-only dependencies (test coverage tooling).
+coverage==7.6.9
