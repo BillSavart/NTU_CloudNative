@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - k8s/00-namespace.yaml
+  - k8s/01-config-secret.yaml
+  - k8s/postgres.yaml
+  - k8s/redis.yaml
+  - k8s/kafka.yaml
+  - k8s/access-api-deployment.yaml
+  - k8s/access-api-service.yaml
+  - k8s/access-api-hpa.yaml
+  - k8s/reporting-api.yaml
+  - k8s/frontend.yaml
+  - k8s/simulator.yaml
+  - k8s/observability.yaml
+  - k8s/ingress.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: grafana-dashboard-json
+    namespace: access-control
+    files:
+      - dashboard.json=observability/grafana/provisioning/dashboards/json/observability-dashboard.json
+  - name: prometheus-alert-rules
+    namespace: access-control
+    files:
+      - alert_rules.yml=infra/prometheus/alert_rules.yml
+  - name: k6-scripts
+    namespace: access-control
+    files:
+      - full-stack.js=observability/k6/full-stack.js
+      - reporting-api.js=observability/k6/reporting-api.js

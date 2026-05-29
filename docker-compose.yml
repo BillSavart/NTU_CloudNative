@@ -28,6 +28,8 @@ services:
       PUBLISHER_FLUSH_MS: "10"
       PUBLISHER_RETRY_INITIAL_MS: "100"
       PUBLISHER_RETRY_MAX_MS: "5000"
+      OTEL_SERVICE_NAME: access-api
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://alloy:4318/v1/traces
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
       interval: 5s
@@ -41,6 +43,7 @@ services:
       - kafka-1
       - kafka-2
       - kafka-3
+      - alloy
 
   access-lb:
     image: nginx:1.27-alpine
@@ -82,6 +85,8 @@ services:
       REDIS_RECOVERY_CONSUMER_NAME: reporting-api-1
       REDIS_RECOVERY_BLOCK_MS: "5000"
       REDIS_RECOVERY_BATCH_SIZE: "100"
+      OTEL_SERVICE_NAME: reporting-api
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://alloy:4318/v1/traces
     ports:
       - "${REPORTING_HOST_PORT:-8000}:8000"
     depends_on:
@@ -89,6 +94,7 @@ services:
       - kafka-1
       - kafka-2
       - kafka-3
+      - alloy
 
   frontend:
     build:
@@ -135,6 +141,7 @@ services:
     depends_on:
       - prometheus
       - loki
+      - tempo
 
   loki:
     image: grafana/loki:3.3.2
@@ -145,14 +152,32 @@ services:
       - ./infra/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - lokidata:/loki
 
-  promtail:
-    image: grafana/promtail:3.3.2
+  tempo:
+    image: grafana/tempo:2.6.1
+    ports:
+      - "${TEMPO_HOST_PORT:-3200}:3200"
+      - "${TEMPO_OTLP_GRPC_HOST_PORT:-4317}:4317"
+      - "${TEMPO_OTLP_HTTP_HOST_PORT:-4318}:4318"
+    command: -config.file=/etc/tempo/tempo-config.yaml
     volumes:
-      - ./infra/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - ./infra/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempodata:/tempo
+
+  alloy:
+    image: grafana/alloy:v1.5.1
+    ports:
+      - "${ALLOY_OTLP_GRPC_HOST_PORT:-14317}:4317"
+      - "${ALLOY_OTLP_HTTP_HOST_PORT:-14318}:4318"
+    volumes:
+      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    command: -config.file=/etc/promtail/promtail-config.yaml
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
     depends_on:
       - loki
+      - tempo
 
   redis:
     image: redis:7-alpine
@@ -294,3 +319,4 @@ volumes:
   prometheusdata:
   grafanadata:
   lokidata:
+  tempodata:

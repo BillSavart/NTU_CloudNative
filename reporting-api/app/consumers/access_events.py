@@ -8,6 +8,14 @@ from aiokafka import AIOKafkaConsumer
 from app.config import Settings
 from app.repositories import parse_access_event, save_access_event
 
+try:
+    from app.observability import access_event_consumer_span
+except ImportError:
+    from contextlib import nullcontext
+
+    def access_event_consumer_span(payload, source):
+        return nullcontext()
+
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +95,7 @@ class AccessEventConsumerService:
             async for message in consumer:
                 if self._stop_event.is_set():
                     break
-                should_commit = await self._handle_message(message.value)
+                should_commit = await self._handle_message(message.value, dict(message.headers or []))
                 if not should_commit:
                     raise RuntimeError("access event was not persisted; retrying without offset commit")
                 await consumer.commit()
@@ -96,9 +104,10 @@ class AccessEventConsumerService:
             await consumer.stop()
             logger.info("access event consumer stopped")
 
-    async def _handle_message(self, raw: bytes) -> bool:
+    async def _handle_message(self, raw: bytes, headers: dict[str, bytes] | None = None) -> bool:
         try:
             payload = parse_access_event(raw)
+            self._merge_trace_headers(payload, headers or {})
         except Exception as exc:
             self.status.failed += 1
             self.status.last_error = str(exc)
@@ -106,7 +115,8 @@ class AccessEventConsumerService:
             return True
 
         try:
-            inserted = await asyncio.to_thread(save_access_event, payload)
+            with access_event_consumer_span(payload, "kafka"):
+                inserted = await asyncio.to_thread(save_access_event, payload)
             self.status.processed += 1
             if inserted:
                 self.status.inserted += 1
@@ -118,3 +128,9 @@ class AccessEventConsumerService:
             self.status.last_error = str(exc)
             logger.exception("failed to persist access event")
             return False
+
+    def _merge_trace_headers(self, payload: dict, headers: dict[str, bytes]) -> None:
+        for key in ("traceparent", "tracestate"):
+            value = headers.get(key)
+            if value and not payload.get(key):
+                payload[key] = value.decode("utf-8")

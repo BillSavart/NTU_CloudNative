@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type App struct {
@@ -141,6 +145,20 @@ func (a *App) Swipe(c *gin.Context) {
 		LatencyMs:     latencyMs,
 		Timestamp:     now,
 	}
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(c.Request.Context(), carrier)
+	event.TraceParent = carrier.Get("traceparent")
+	event.TraceState = carrier.Get("tracestate")
+
+	span := trace.SpanFromContext(c.Request.Context())
+	span.SetAttributes(
+		attribute.String("access.request_id", requestID),
+		attribute.String("access.employee_id", req.EmployeeID),
+		attribute.String("access.gate_id", req.GateID),
+		attribute.String("access.direction", req.Direction),
+		attribute.String("access.decision", decisionText),
+		attribute.String("access.reason", decision.Reason),
+	)
 
 	eventBuffered := true
 	if err := a.store.AppendEventOnce(c.Request.Context(), event); err != nil {

@@ -15,6 +15,14 @@ func main() {
 	cfg := LoadConfig()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdownTracing := SetupTracing(ctx, cfg)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("trace provider shutdown failed: %v", err)
+		}
+	}()
 
 	store, err := NewRedisStore(ctx, cfg)
 	if err != nil {
@@ -28,6 +36,7 @@ func main() {
 	app := NewApp(cfg, store, publisher)
 
 	router := gin.Default()
+	router.Use(TracingMiddleware(cfg))
 	router.GET("/ping", app.Ping)
 	router.GET("/healthz", app.Healthz)
 	router.GET("/metrics", app.Metrics)

@@ -125,13 +125,10 @@ func (p *KafkaEventPublisher) PublishBatch(ctx context.Context, events []AccessE
 		}
 
 		messages = append(messages, kafka.Message{
-			Key:   []byte(event.EmployeeID),
-			Value: payload,
-			Time:  event.Timestamp,
-			Headers: []kafka.Header{
-				{Key: "decision", Value: []byte(event.Decision)},
-				{Key: "direction", Value: []byte(event.Direction)},
-			},
+			Key:     []byte(event.EmployeeID),
+			Value:   payload,
+			Time:    event.Timestamp,
+			Headers: eventHeaders(event),
 		})
 	}
 
@@ -142,6 +139,20 @@ func (p *KafkaEventPublisher) PublishBatch(ctx context.Context, events []AccessE
 
 	p.stats.Published.Add(int64(len(events)))
 	return nil
+}
+
+func eventHeaders(event AccessEvent) []kafka.Header {
+	headers := []kafka.Header{
+		{Key: "decision", Value: []byte(event.Decision)},
+		{Key: "direction", Value: []byte(event.Direction)},
+	}
+	if event.TraceParent != "" {
+		headers = append(headers, kafka.Header{Key: "traceparent", Value: []byte(event.TraceParent)})
+	}
+	if event.TraceState != "" {
+		headers = append(headers, kafka.Header{Key: "tracestate", Value: []byte(event.TraceState)})
+	}
+	return headers
 }
 
 func (p *KafkaEventPublisher) Health(ctx context.Context) error {

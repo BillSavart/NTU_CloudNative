@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import time
+from contextlib import contextmanager
 from collections.abc import Callable
+from typing import Any, Iterator
 
 from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -64,6 +67,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 def install_observability(app: FastAPI) -> None:
     app.add_middleware(MetricsMiddleware)
+    _install_tracing(app)
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
@@ -87,3 +91,54 @@ def _sync_consumer_metrics(app: FastAPI) -> None:
         CONSUMER_INSERTED_TOTAL.labels(name).set(status.inserted)
         CONSUMER_DUPLICATES_TOTAL.labels(name).set(status.duplicates)
         CONSUMER_FAILED_TOTAL.labels(name).set(status.failed)
+
+
+def _install_tracing(app: FastAPI) -> None:
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        return
+
+    service_name = os.getenv("OTEL_SERVICE_NAME", "reporting-api")
+    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
+
+@contextmanager
+def access_event_consumer_span(payload: dict[str, Any], source: str) -> Iterator[None]:
+    try:
+        from opentelemetry import propagate, trace
+    except ImportError:
+        yield
+        return
+
+    carrier = {
+        "traceparent": str(payload.get("traceparent") or ""),
+        "tracestate": str(payload.get("tracestate") or ""),
+    }
+    context = propagate.extract(carrier)
+    tracer = trace.get_tracer("reporting-api.consumer")
+    with tracer.start_as_current_span(
+        "persist access event",
+        context=context,
+        attributes={
+            "messaging.system": source,
+            "access.request_id": str(payload.get("requestId") or ""),
+            "access.employee_id": str(payload.get("employeeId") or ""),
+            "access.gate_id": str(payload.get("gateId") or ""),
+            "access.direction": str(payload.get("direction") or ""),
+            "access.decision": str(payload.get("decision") or ""),
+        },
+    ):
+        yield
