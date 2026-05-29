@@ -9,6 +9,13 @@
 	reverse_proxy frontend:80
 }
 
+# Swipe-card demo (simulator nginx serves the page and proxies /proxy/access
+# to the access-api load balancer internally).
+{$SIMULATOR_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy simulator:80
+}
+
 # Grafana — has its own login, exposed directly.
 {$GRAFANA_DOMAIN} {
 	encode zstd gzip

@@ -23,6 +23,7 @@ services:
       - "443:443/udp"   # HTTP/3
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN in .env for HTTPS}
+      SIMULATOR_DOMAIN: ${SIMULATOR_DOMAIN:?set SIMULATOR_DOMAIN in .env}
       GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:?set GRAFANA_DOMAIN in .env}
       PROMETHEUS_DOMAIN: ${PROMETHEUS_DOMAIN:?set PROMETHEUS_DOMAIN in .env}
       PROM_USER: ${PROM_USER:?set PROM_USER in .env}
@@ -33,11 +34,16 @@ services:
       - caddyconfig:/config
     depends_on:
       - frontend
+      - simulator
       - grafana
       - prometheus
 
   frontend:
     # Caddy now fronts the app; drop the public :80 binding from the prod override.
+    ports: !reset []
+
+  simulator:
+    # Reached only through Caddy now.
     ports: !reset []
 
   grafana:
