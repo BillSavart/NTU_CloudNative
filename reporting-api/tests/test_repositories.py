@@ -248,12 +248,22 @@ class RepositoryTestCase(unittest.TestCase):
                     previous_state="OUT",
                     current_state="IN",
                     latency_ms=5,
-                    occurred_at=datetime.now(TAIPEI).replace(hour=9, minute=5, second=0, microsecond=0),
+                    occurred_at=datetime(2026, 5, 22, 9, 5, tzinfo=TAIPEI),
                 )
             )
             db.commit()
 
-            result = get_compliance_anomalies(db, self._user(db, "admin"), anomaly_type="late_arrival")
+            # Use a fixed date + explicit window. The previous datetime.now()
+            # made this flaky: get_compliance_anomalies defaults to_time=now, so
+            # when CI ran before 09:05 local time the "today 09:05" event was in
+            # the future and got filtered out (total=0).
+            result = get_compliance_anomalies(
+                db,
+                self._user(db, "admin"),
+                anomaly_type="late_arrival",
+                from_time=datetime(2026, 5, 22, 0, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 22, 23, 59, tzinfo=TAIPEI),
+            )
 
         self.assertGreaterEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["type"], "late_arrival")
