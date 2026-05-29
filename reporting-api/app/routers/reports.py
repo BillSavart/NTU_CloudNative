@@ -225,6 +225,8 @@ def attendance_daily(
 def compliance_anomalies(
     department_id: str | None = Query(default=None, alias="departmentId"),
     anomaly_type: str | None = Query(default=None, alias="type"),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
     days: int = Query(default=7, ge=1, le=31),
     limit: int = Query(default=100, ge=1, le=200),
     current_user: UserAccount | None = Depends(get_optional_current_user),
@@ -235,6 +237,8 @@ def compliance_anomalies(
         current_user=current_user,
         department_id=department_id,
         anomaly_type=anomaly_type,
+        from_time=parse_optional_datetime(from_),
+        to_time=parse_optional_datetime(to),
         days=days,
         limit=limit,
     )

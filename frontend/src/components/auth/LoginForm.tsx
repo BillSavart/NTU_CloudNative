@@ -89,78 +89,79 @@ function LoginForm() {
 
   return (
     <>
-      <form onSubmit={handleSubmit}>
-      {error ? <div className="alert alert-danger">{error}</div> : null}
-      {success ? <div className="alert alert-success">{success}</div> : null}
+      <form className="auth-form" onSubmit={handleSubmit}>
+        {error ? <div className="alert alert-danger mb-0">{error}</div> : null}
+        {success ? <div className="alert alert-success mb-0">{success}</div> : null}
 
-      <div className="mb-3">
-        <label htmlFor="employeeId" className="form-label fw-semibold">
-          登入帳號
-        </label>
-        <input
-          id="employeeId"
-          type="text"
-          className="form-control form-control-lg"
-          placeholder="例如：employee 或 fab_1_manager"
-          value={employeeId}
-          onChange={(event) => setEmployeeId(event.target.value)}
-          required
-        />
-      </div>
+        <div className="auth-field">
+          <label htmlFor="employeeId" className="form-label">
+            登入帳號
+          </label>
+          <input
+            id="employeeId"
+            type="text"
+            className="form-control form-control-lg"
+            placeholder="例如：employee 或 fab_1_manager"
+            autoComplete="username"
+            value={employeeId}
+            onChange={(event) => setEmployeeId(event.target.value)}
+            required
+          />
+        </div>
 
-      <div className="mb-4">
-        <label htmlFor="password" className="form-label fw-semibold">
-          密碼
-        </label>
-        <input
-          id="password"
-          type="password"
-          className="form-control form-control-lg"
-          placeholder="請輸入密碼"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          required
-        />
-      </div>
+        <div className="auth-field">
+          <label htmlFor="password" className="form-label">
+            密碼
+          </label>
+          <input
+            id="password"
+            type="password"
+            className="form-control form-control-lg"
+            placeholder="請輸入密碼"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+        </div>
 
-      <div className="d-grid gap-2 mb-3">
-        <button type="submit" className="btn btn-primary btn-lg fw-semibold" disabled={isSubmitting}>
+        <button type="submit" className="btn btn-primary btn-lg w-100" disabled={isSubmitting}>
           {isSubmitting ? '登入中...' : '登入系統'}
         </button>
-      </div>
 
-      <div className="d-flex justify-content-between align-items-center small">
-        <div className="form-check">
-          <input
-            className="form-check-input"
-            type="checkbox"
-            id="remember"
-            checked={rememberMe}
-            onChange={(event) => setRememberMe(event.target.checked)}
-          />
-          <label className="form-check-label" htmlFor="remember">
-            記住我
-          </label>
+        <div className="auth-actions">
+          <div className="form-check">
+            <input
+              className="form-check-input"
+              type="checkbox"
+              id="remember"
+              checked={rememberMe}
+              onChange={(event) => setRememberMe(event.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="remember">
+              記住我
+            </label>
+          </div>
+          <button
+            className="auth-link-button"
+            type="button"
+            onClick={() => {
+              setIsResetOpen((current) => !current)
+              setResetLoginId(employeeId)
+              setResetLink('')
+            }}
+          >
+            忘記密碼？
+          </button>
         </div>
-        <button
-          className="btn btn-link link-primary p-0 text-decoration-none"
-          type="button"
-          onClick={() => {
-            setIsResetOpen((current) => !current)
-            setResetLoginId(employeeId)
-            setResetLink('')
-          }}
-        >
-          忘記密碼？
-        </button>
-      </div>
 
       </form>
 
       {isResetOpen ? (
-        <form className="mt-4 border-top pt-3" onSubmit={handleResetSubmit}>
-          <div className="mb-3">
-            <label htmlFor="resetLoginId" className="form-label fw-semibold">
+        <form className="auth-reset-panel" onSubmit={handleResetSubmit}>
+          <h2>重設密碼</h2>
+          <div className="auth-field">
+            <label htmlFor="resetLoginId" className="form-label">
               登入帳號
             </label>
             <input
@@ -172,8 +173,8 @@ function LoginForm() {
               required
             />
           </div>
-          <div className="mb-3">
-            <label htmlFor="resetEmail" className="form-label fw-semibold">
+          <div className="auth-field">
+            <label htmlFor="resetEmail" className="form-label">
               Email
             </label>
             <input
@@ -190,7 +191,7 @@ function LoginForm() {
             {isResetSubmitting ? '產生中...' : '產生一次性更改密碼連結'}
           </button>
           {resetLink ? (
-            <div className="small mt-3">
+            <div className="auth-reset-link small">
               一次性連結：
               <div>
                 <a href={resetLink}>

@@ -43,9 +43,23 @@ function elapsedWeekdaysInCurrentMonth() {
   return days
 }
 
+function todayDateValue() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function todayAlertQuery(type: 'overtime_daily' | 'denied_access') {
+  const today = todayDateValue()
+  return `/alerts?type=${type}&range=today&from=${today}&to=${today}`
+}
+
 function Dashboard() {
   const [events, setEvents] = useState<AccessEvent[]>([])
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
+  const [todaySummary, setTodaySummary] = useState<DashboardSummary | null>(null)
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [attendanceItems, setAttendanceItems] = useState<AttendanceDailyItem[]>([])
   const [eventsLoading, setEventsLoading] = useState(true)
@@ -73,9 +87,11 @@ function Dashboard() {
         setEventsError(null)
         if (!eventsLoading) setEventsRefreshing(true)
 
-        const [next, nextSummary, user, attendance] = await Promise.all([
+        const today = todayDateValue()
+        const [next, nextSummary, nextTodaySummary, user, attendance] = await Promise.all([
           fetchRecentAccessEvents(10),
           fetchDashboardSummary(),
+          fetchDashboardSummary({ from: today, to: today }),
           fetchCurrentUser(),
           fetchAttendanceDaily(31),
         ])
@@ -88,6 +104,7 @@ function Dashboard() {
 
           setEvents(next)
           setSummary(nextSummary)
+          setTodaySummary(nextTodaySummary)
           setCurrentUser(user)
           setAttendanceItems(attendance.items)
           setLastUpdatedAt(new Date())
@@ -129,6 +146,7 @@ function Dashboard() {
 
   const hrMetrics = summary?.hrMetrics
   const securityMetrics = summary?.securityMetrics
+  const todayHrMetrics = todaySummary?.hrMetrics
   const topViolationPerson = securityMetrics?.topViolationPeople[0]
   const topLateDepartment = hrMetrics?.topLateDepartment
   const isEmployee = currentUser?.role === 'EMPLOYEE'
@@ -244,13 +262,13 @@ function Dashboard() {
               {topLateDepartment ? `${topLateDepartment.key} ${topLateDepartment.count}` : '-'}
             </span>
           </Link>
-          <Link className="alert-link-row" to="/alerts?type=overtime_daily">
-            <span>過勞警示名單</span>
-            <span className="danger-text">{hrMetrics?.overtimeAlertCount ?? '-'}</span>
+          <Link className="alert-link-row" to={todayAlertQuery('overtime_daily')}>
+            <span>過勞警示名單（今日）</span>
+            <span className="danger-text">{todayHrMetrics?.overtimeAlertCount ?? '-'}</span>
           </Link>
-          <Link className="alert-link-row" to="/alerts?type=denied_access">
-            <span>拒絕通行事件</span>
-            <span className="danger-text">{summary?.deniedEvents ?? '-'}</span>
+          <Link className="alert-link-row" to={todayAlertQuery('denied_access')}>
+            <span>拒絕通行事件（今日）</span>
+            <span className="danger-text">{todaySummary?.deniedEvents ?? '-'}</span>
           </Link>
           <div className="alert-link-row dashboard-static-row">
             <span>平均延遲 ms</span>

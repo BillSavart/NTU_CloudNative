@@ -244,8 +244,13 @@ export async function fetchAccessEvents(filters: AccessEventFilters = {}): Promi
   }
 }
 
-export async function fetchDashboardSummary(): Promise<DashboardSummary> {
-  const response = await fetch('/api/reports/dashboard', {
+export async function fetchDashboardSummary(filters: Pick<AccessEventFilters, 'departmentId' | 'from' | 'to'> = {}): Promise<DashboardSummary> {
+  const params = new URLSearchParams()
+  if (filters.departmentId && filters.departmentId !== 'ALL') params.set('departmentId', filters.departmentId)
+  if (filters.from) params.set('from', new Date(`${filters.from}T00:00:00`).toISOString())
+  if (filters.to) params.set('to', new Date(`${filters.to}T23:59:59`).toISOString())
+  const query = params.toString()
+  const response = await fetch(`/api/reports/dashboard${query ? `?${query}` : ''}`, {
     method: 'GET',
     credentials: 'same-origin',
   })
@@ -398,12 +403,16 @@ export async function fetchComplianceAnomalies(
   departmentId?: string,
   type?: string,
   days = 7,
+  from?: string,
+  to?: string,
 ): Promise<{ items: ComplianceAnomaly[]; total: number }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
   params.set('days', String(days))
   if (departmentId) params.set('departmentId', departmentId)
   if (type && type !== 'all') params.set('type', type)
+  if (from) params.set('from', from)
+  if (to) params.set('to', to)
 
   const response = await fetch(`/api/reports/compliance/anomalies?${params.toString()}`, {
     method: 'GET',

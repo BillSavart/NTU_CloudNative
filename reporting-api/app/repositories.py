@@ -674,7 +674,12 @@ def get_dashboard_operational_metrics(
         if first_in is not None and first_in.time() > time(8, 30) and _local_date(from_time) <= work_date <= _local_date(to_time):
             department_late_counts[employee_departments.get(employee_id) or "UNASSIGNED"] += 1
             weekday_late_counts[_weekday_label(work_date)] += 1
-        if first_in is not None and last_out is not None and last_out - first_in > timedelta(hours=12):
+        if (
+            first_in is not None
+            and last_out is not None
+            and last_out - first_in > timedelta(hours=12)
+            and _local_date(from_time) <= work_date <= _local_date(to_time)
+        ):
             work_hours = round((last_out - first_in).total_seconds() / 3600, 1)
             daily_overtime_alerts.append(
                 {
@@ -1342,14 +1347,20 @@ def get_compliance_anomalies(
     current_user: UserAccount | None = None,
     department_id: str | None = None,
     anomaly_type: str | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
     days: int = 7,
     limit: int = 100,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 200))
     days = max(1, min(days, 31))
-    since = datetime.now(TAIPEI) - timedelta(days=days)
+    now = datetime.now(TAIPEI)
+    if to_time is None:
+        to_time = now
+    if from_time is None:
+        from_time = to_time - timedelta(days=days)
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"limit": limit}
+    params: dict[str, Any] = {"limit": limit, "from_time": from_time, "to_time": to_time}
     filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
     if visible_ids is not None:
         filters.append("emp.department_id IN :visible_ids")
@@ -1371,7 +1382,8 @@ def get_compliance_anomalies(
             FROM access_events e
             JOIN employees emp ON emp.employee_id = e.employee_id
             WHERE {' AND '.join(filters)}
-              AND e.occurred_at >= :since
+              AND e.occurred_at >= :from_time
+              AND e.occurred_at <= :to_time
             GROUP BY e.employee_id, emp.display_name, emp.department_id, e.occurred_at::date
         )
         SELECT
@@ -1403,7 +1415,6 @@ def get_compliance_anomalies(
     )
     if visible_ids is not None:
         sql = sql.bindparams(bindparam("visible_ids", expanding=True))
-    params["since"] = since
     overtime_items = []
     if anomaly_type in {None, "all", "overtime_daily"}:
         overtime_rows = db.execute(sql, params).mappings().all()
@@ -1428,12 +1439,60 @@ def get_compliance_anomalies(
             db,
             current_user=current_user,
             department_id=department_id,
-            since=since,
+            from_time=from_time,
+            to_time=to_time,
             limit=limit,
         )
 
-    denied_params: dict[str, Any] = {"limit": limit, "since": since}
-    denied_filters = ["e.decision = 'DENIED'", "e.occurred_at >= :since"]
+    unpaired_sql = text(
+        f"""
+        WITH daily AS (
+            SELECT
+                e.employee_id,
+                emp.display_name,
+                emp.department_id,
+                e.occurred_at::date AS work_date,
+                min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+            FROM access_events e
+            JOIN employees emp ON emp.employee_id = e.employee_id
+            WHERE {' AND '.join(filters)}
+              AND e.occurred_at >= :from_time
+              AND e.occurred_at <= :to_time
+            GROUP BY e.employee_id, emp.display_name, emp.department_id, e.occurred_at::date
+        )
+        SELECT employee_id, display_name, department_id, work_date, first_in, last_out
+        FROM daily
+        WHERE first_in IS NULL OR last_out IS NULL
+        ORDER BY work_date DESC, coalesce(last_out, first_in) DESC
+        LIMIT :limit
+        """
+    )
+    if visible_ids is not None:
+        unpaired_sql = unpaired_sql.bindparams(bindparam("visible_ids", expanding=True))
+    unpaired_items = []
+    if anomaly_type in {None, "all", "unpaired_access"}:
+        unpaired_rows = db.execute(unpaired_sql, params).mappings().all()
+        unpaired_items = [
+            {
+                "id": (
+                    f"unpaired:{row['work_date']}:{row['employee_id']}:"
+                    f"{'IN' if row['first_in'] is None else 'OUT'}"
+                ),
+                "employeeId": row["employee_id"],
+                "displayName": row["display_name"],
+                "departmentId": row["department_id"],
+                "type": "unpaired_access",
+                "typeLabel": "未配對進出紀錄",
+                "hours": "缺 IN" if row["first_in"] is None else "缺 OUT",
+                "occurredAt": (row["last_out"] or row["first_in"] or row["work_date"]).isoformat(),
+                "note": "缺少進場刷卡" if row["first_in"] is None else "缺少離場刷卡",
+            }
+            for row in unpaired_rows
+        ]
+
+    denied_params: dict[str, Any] = {"limit": limit, "from_time": from_time, "to_time": to_time}
+    denied_filters = ["e.decision = 'DENIED'", "e.occurred_at >= :from_time", "e.occurred_at <= :to_time"]
     if visible_ids is not None:
         denied_filters.append("emp.department_id IN :visible_ids")
         denied_params["visible_ids"] = visible_ids or ["__none__"]
@@ -1479,7 +1538,7 @@ def get_compliance_anomalies(
         ]
 
     items = sorted(
-        [*overtime_items, *late_items, *denied_items],
+        [*overtime_items, *late_items, *unpaired_items, *denied_items],
         key=lambda item: item["occurredAt"],
         reverse=True,
     )[:limit]
@@ -1500,12 +1559,22 @@ def update_compliance_anomaly_remark(
         return update_denied_access_remark(db, anomaly_id, remark, current_user)
 
     parts = anomaly_id.split(":")
-    if len(parts) != 3 or parts[0] not in {"overtime", "late"}:
+    if parts[0] in {"overtime", "late"} and len(parts) == 3:
+        anomaly_kind = parts[0]
+        work_date = parts[1]
+        employee_id = parts[2]
+        target_direction = "IN" if anomaly_kind == "late" else "OUT"
+        order_direction = "ASC" if anomaly_kind == "late" else "DESC"
+    elif parts[0] == "unpaired" and len(parts) == 4 and parts[3] in {"IN", "OUT"}:
+        anomaly_kind = parts[0]
+        work_date = parts[1]
+        employee_id = parts[2]
+        missing_direction = parts[3]
+        target_direction = "OUT" if missing_direction == "IN" else "IN"
+        order_direction = "DESC"
+    else:
         raise ValueError("unsupported anomaly id")
 
-    anomaly_kind = parts[0]
-    work_date = parts[1]
-    employee_id = parts[2]
     visible_ids = _visible_department_ids(db, current_user, None)
     params: dict[str, Any] = {
         "employee_id": employee_id,
@@ -1531,7 +1600,7 @@ def update_compliance_anomaly_remark(
               AND e.gate_id LIKE '%_A'
               AND e.decision = 'GRANTED'
               AND e.direction = :target_direction
-            ORDER BY e.occurred_at { "ASC" if anomaly_kind == "late" else "DESC" }, e.id { "ASC" if anomaly_kind == "late" else "DESC" }
+            ORDER BY e.occurred_at {order_direction}, e.id {order_direction}
             LIMIT 1
         )
         UPDATE access_events e
@@ -1543,7 +1612,7 @@ def update_compliance_anomaly_remark(
     )
     if visible_ids is not None:
         sql = sql.bindparams(bindparam("visible_ids", expanding=True))
-    params["target_direction"] = "IN" if anomaly_kind == "late" else "OUT"
+    params["target_direction"] = target_direction
     row = db.execute(sql, params).mappings().first()
     if row is None:
         raise LookupError("anomaly not found")
@@ -1613,19 +1682,21 @@ def _query_late_arrival_items(
     db: Session,
     current_user: UserAccount | None,
     department_id: str | None,
-    since: datetime,
+    from_time: datetime,
+    to_time: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
     if db.bind is not None and db.bind.dialect.name == "sqlite":
-        return _query_late_arrival_items_in_python(db, current_user, department_id, since, limit)
+        return _query_late_arrival_items_in_python(db, current_user, department_id, from_time, to_time, limit)
 
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"since": since, "limit": limit}
+    params: dict[str, Any] = {"from_time": from_time, "to_time": to_time, "limit": limit}
     filters = [
         "e.gate_id LIKE '%_A'",
         "e.decision = 'GRANTED'",
         "e.direction = 'IN'",
-        "e.occurred_at >= :since",
+        "e.occurred_at >= :from_time",
+        "e.occurred_at <= :to_time",
     ]
     if visible_ids is not None:
         filters.append("emp.department_id IN :visible_ids")
@@ -1683,11 +1754,12 @@ def _query_late_arrival_items_in_python(
     db: Session,
     current_user: UserAccount | None,
     department_id: str | None,
-    since: datetime,
+    from_time: datetime,
+    to_time: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
     late_daily: dict[tuple[str, date], Any] = {}
-    for row in _dashboard_event_rows(db, current_user, department_id, since, datetime.now(TAIPEI)):
+    for row in _dashboard_event_rows(db, current_user, department_id, from_time, to_time):
         if row.decision != "GRANTED" or row.direction != "IN" or not row.gate_id.endswith("_A"):
             continue
         occurred_at = _local_datetime(row.occurred_at)

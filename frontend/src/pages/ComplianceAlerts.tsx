@@ -11,6 +11,23 @@ function formatDateTime(value: string) {
   return parsed.toLocaleString('zh-TW', { hour12: false })
 }
 
+type DateRangeMode = 'today' | 'last7' | 'custom'
+
+function toDateInputValue(value = new Date()) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function startOfDate(value: string) {
+  return `${value}T00:00:00`
+}
+
+function endOfDate(value: string) {
+  return `${value}T23:59:59`
+}
+
 function ComplianceAlerts() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [alerts, setAlerts] = useState<ComplianceAnomaly[]>([])
@@ -23,6 +40,38 @@ function ComplianceAlerts() {
   const selectedTypeParam = searchParams.get('type')
   const selectedType = selectedTypeParam && selectedTypeParam !== 'all' ? selectedTypeParam : 'denied_access'
   const keyword = searchParams.get('q') ?? ''
+  const today = toDateInputValue()
+  const rangeParam = searchParams.get('range')
+  const rangeMode: DateRangeMode = rangeParam === 'today' || rangeParam === 'custom' ? rangeParam : 'last7'
+  const customFrom = searchParams.get('from') ?? today
+  const customTo = searchParams.get('to') ?? customFrom
+
+  const dateRange = useMemo(() => {
+    if (rangeMode === 'today') {
+      return {
+        days: 1,
+        from: startOfDate(today),
+        to: endOfDate(today),
+        label: '今日',
+      }
+    }
+
+    if (rangeMode === 'custom') {
+      return {
+        days: 7,
+        from: startOfDate(customFrom),
+        to: endOfDate(customTo),
+        label: customFrom === customTo ? customFrom : `${customFrom} ~ ${customTo}`,
+      }
+    }
+
+    return {
+      days: 7,
+      from: undefined,
+      to: undefined,
+      label: '最近 7 天',
+    }
+  }, [customFrom, customTo, rangeMode, today])
 
   useEffect(() => {
     let cancelled = false
@@ -31,7 +80,7 @@ function ComplianceAlerts() {
       try {
         setLoading(true)
         setError(null)
-        const result = await fetchComplianceAnomalies(100, undefined, selectedType, 7)
+        const result = await fetchComplianceAnomalies(100, undefined, selectedType, dateRange.days, dateRange.from, dateRange.to)
         if (!cancelled) setAlerts(result.items)
       } catch (loadError) {
         if (!cancelled) {
@@ -47,7 +96,7 @@ function ComplianceAlerts() {
     return () => {
       cancelled = true
     }
-  }, [selectedType])
+  }, [dateRange.days, dateRange.from, dateRange.to, selectedType])
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((item) => {
@@ -75,6 +124,33 @@ function ComplianceAlerts() {
       next.delete('q')
     } else {
       next.set('q', value)
+    }
+    setSearchParams(next)
+  }
+
+  const handleRangeChange = (value: DateRangeMode) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('range', value)
+    if (value === 'today') {
+      next.set('from', today)
+      next.set('to', today)
+    } else if (value === 'last7') {
+      next.delete('from')
+      next.delete('to')
+    } else {
+      next.set('from', searchParams.get('from') ?? today)
+      next.set('to', searchParams.get('to') ?? searchParams.get('from') ?? today)
+    }
+    setSearchParams(next)
+  }
+
+  const handleDateChange = (key: 'from' | 'to', value: string) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('range', 'custom')
+    if (value) {
+      next.set(key, value)
+    } else {
+      next.delete(key)
     }
     setSearchParams(next)
   }
@@ -108,7 +184,7 @@ function ComplianceAlerts() {
       <section className="panel-card mb-3">
         <h2 className="h6 mb-3">篩選器</h2>
         <div className="row g-3 align-items-end">
-          <div className="col-md-4">
+          <div className="col-md-3">
             <label className="form-label" htmlFor="compliance-alert-type">異常類型</label>
             <select id="compliance-alert-type" className="form-select" value={selectedType} onChange={(event) => handleTypeChange(event.target.value)}>
               <option value="late_arrival">遲到人員</option>
@@ -117,7 +193,7 @@ function ComplianceAlerts() {
               <option value="unpaired_access">未配對進出紀錄</option>
             </select>
           </div>
-          <div className="col-md-4">
+          <div className="col-md-3">
             <label className="form-label" htmlFor="compliance-alert-keyword">員工搜尋</label>
             <input
               id="compliance-alert-keyword"
@@ -127,9 +203,42 @@ function ComplianceAlerts() {
               placeholder="輸入員工編號、姓名或部門"
             />
           </div>
-          <div className="col-md-4">
-            <div className="small text-secondary">最近 7 天，共 {filteredAlerts.length} 筆異常</div>
+          <div className="col-md-3">
+            <label className="form-label" htmlFor="compliance-alert-range">日期範圍</label>
+            <select id="compliance-alert-range" className="form-select" value={rangeMode} onChange={(event) => handleRangeChange(event.target.value as DateRangeMode)}>
+              <option value="today">今日</option>
+              <option value="last7">最近 7 天</option>
+              <option value="custom">自訂日期</option>
+            </select>
           </div>
+          <div className="col-md-3">
+            <div className="small text-secondary">目前範圍：{dateRange.label}</div>
+            <div className="small text-secondary">符合條件：{filteredAlerts.length} 筆</div>
+          </div>
+          {rangeMode === 'custom' ? (
+            <>
+              <div className="col-md-3">
+                <label className="form-label" htmlFor="compliance-alert-from">開始日期</label>
+                <input
+                  id="compliance-alert-from"
+                  type="date"
+                  className="form-control"
+                  value={customFrom}
+                  onChange={(event) => handleDateChange('from', event.target.value)}
+                />
+              </div>
+              <div className="col-md-3">
+                <label className="form-label" htmlFor="compliance-alert-to">結束日期</label>
+                <input
+                  id="compliance-alert-to"
+                  type="date"
+                  className="form-control"
+                  value={customTo}
+                  onChange={(event) => handleDateChange('to', event.target.value)}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
       </section>
 
