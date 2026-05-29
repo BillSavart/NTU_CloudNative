@@ -48,6 +48,8 @@ coverage.xml
 *.cover
 *.py.cover
 .hypothesis/
+# Go coverage profiles
+coverage.out
 .pytest_cache/
 cover/
 

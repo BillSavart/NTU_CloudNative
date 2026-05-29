@@ -32,13 +32,36 @@ jobs:
     defaults:
       run:
         working-directory: access-api
+    services:
+      # Real Redis so the decideAccessScript / appendEventOnceScript Lua tests
+      # (TEST_REDIS_ADDR-gated) actually run, covering atomicity and TTLs that
+      # the in-memory fakeStore cannot. No password: redis:7-alpine defaults to
+      # no auth, and the tests connect without one when TEST_REDIS_PASSWORD is unset.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_REDIS_ADDR: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
           cache-dependency-path: access-api/go.sum
-      - run: go test ./...
+      - run: go test ./... -covermode=atomic -coverprofile=coverage.out
+      # Print a per-function + total coverage summary as graded evidence.
+      - run: go tool cover -func=coverage.out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: access-api-coverage
+          path: access-api/coverage.out
 
   reporting-api:
     runs-on: ubuntu-latest
@@ -69,5 +92,14 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # Run the suite under coverage (TEST_DATABASE_URL routes it at PostgreSQL)
+      # and emit a report as graded evidence plus an XML artifact.
+      - run: coverage run -m unittest discover -s tests
+      - run: coverage report -m
+      - run: coverage xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reporting-api-coverage
+          path: reporting-api/coverage.xml
