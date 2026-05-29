@@ -140,6 +140,10 @@ Repo → Settings → Secrets and variables → Actions:
 | `DEPLOY_PATH` | repo path from 0-4 |
 | `DEPLOY_GHCR_TOKEN` | the `read:packages` PAT from 0-9 |
 
+> 📌 **Note for later:** if you keep the VM powered off between demos, you'll
+> install the boot auto-deploy unit in **Phase 3** — do it *after* the first
+> successful deploy (it relies on the GHCR login that Phase 1 performs).
+
 ---
 
 ## Phase 1 — merge → automatic deploy
@@ -155,6 +159,9 @@ Repo → Settings → Secrets and variables → Actions:
      exec -T reporting-api python -m app.seed
    ```
    (reporting-api auto-runs Alembic migrations on startup — no manual migrate.)
+4. **If you'll power the VM off between demos**, now install the boot
+   auto-deploy unit → see **Phase 3** (the first deploy above has logged Docker
+   into GHCR, so the boot pull will have credentials).
 
 Manual deploy any time: **Actions → CD → Run workflow**.
 
