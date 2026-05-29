@@ -1,5 +1,5 @@
 from sqlalchemy import delete, select, text
-
+import os
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import Department, Employee, UserAccount, UserDepartmentScope

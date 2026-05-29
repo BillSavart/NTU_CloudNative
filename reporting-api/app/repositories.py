@@ -1424,8 +1424,13 @@ def get_compliance_anomalies(
     if from_time is None:
         from_time = to_time - timedelta(days=days)
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"limit": limit, "from_time": from_time, "to_time": to_time}
-    filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
+    params: dict[str, Any] = {
+        **_attendance_rule_params(),
+        "limit": limit,
+        "from_time": from_time,
+        "to_time": to_time,
+    }
+    filters = ["e.gate_id LIKE :main_gate_pattern", "e.decision = 'GRANTED'"]
     if visible_ids is not None:
         filters.append("emp.department_id IN :visible_ids")
         params["visible_ids"] = visible_ids or ["__none__"]
@@ -1755,7 +1760,12 @@ def _query_late_arrival_items(
         return _query_late_arrival_items_in_python(db, current_user, department_id, from_time, to_time, limit)
 
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"from_time": from_time, "to_time": to_time, "limit": limit}
+    params: dict[str, Any] = {
+        **_attendance_rule_params(),
+        "from_time": from_time,
+        "to_time": to_time,
+        "limit": limit,
+    }
     filters = [
         "e.gate_id LIKE :main_gate_pattern",
         "e.decision = 'GRANTED'",
