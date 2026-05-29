@@ -60,7 +60,47 @@ echo "==> Starting / updating the stack"
 echo "==> Current state"
 "${COMPOSE[@]}" ps
 
+# Health-gate the deploy: a "running" container is not the same as a healthy
+# service. These two endpoints are bound to 127.0.0.1 in every mode (HTTP and
+# HTTPS), so the check is identical regardless of the Caddy edge. If either
+# never comes up, exit non-zero so CD shows a red X (a real failure) instead of
+# a misleading green.
+check_url() {
+  local name="$1" url="$2" attempts="${3:-60}"
+  for _ in $(seq 1 "$attempts"); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      echo "  ok   $name"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "  FAIL $name did not become healthy at $url" >&2
+  return 1
+}
+
+echo "==> Health checks"
+health_ok=true
+check_url "reporting-api" "http://127.0.0.1:8000/api/health/" || health_ok=false
+check_url "access-api"    "http://127.0.0.1:8080/healthz"     || health_ok=false
+if [ "$health_ok" != true ]; then
+  echo "ERROR: health checks failed; recent logs:" >&2
+  "${COMPOSE[@]}" logs --tail=80 reporting-api access-api access-lb >&2 || true
+  exit 1
+fi
+
 echo "==> Pruning dangling images"
 docker image prune -f >/dev/null
 
-echo "==> Deploy complete."
+# Record what was actually deployed so anyone can confirm the live version with:
+#   cat DEPLOYED_VERSION
+DEPLOYED_SHA="$(git rev-parse HEAD)"
+cat > DEPLOYED_VERSION <<EOF
+commit:    $DEPLOYED_SHA
+image_tag: $IMAGE_TAG
+https:     ${ENABLE_HTTPS:-false}
+deployed:  $(date -u +%Y-%m-%dT%H:%M:%SZ) (UTC)
+EOF
+echo "==> Deployed version:"
+sed 's/^/    /' DEPLOYED_VERSION
+
+echo "==> Deploy complete (healthy)."

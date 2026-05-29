@@ -1,0 +1,37 @@
+# Boot-time auto-deploy for the single-VM Docker Compose stack.
+#
+# Because the VM is normally powered off to save cost, teammates may push to
+# main while it's down (CD builds + pushes images to GHCR but skips the deploy).
+# This unit runs scripts/deploy.sh once on every boot so that simply STARTING
+# the VM brings it up to date with the latest images on GHCR.
+#
+# Install (edit User= and the two paths to match your VM, then):
+#   sudo cp infra/systemd/ntu-deploy.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ntu-deploy.service
+# Inspect after a boot:
+#   systemctl status ntu-deploy.service
+#   journalctl -u ntu-deploy.service -b        # this boot's deploy log
+#
+# Requirements:
+#   * Docker is already logged in to GHCR (the first CD run did `docker login`,
+#     creds persist in ~/.docker/config.json) OR the GHCR packages are public.
+#   * IMAGE_TAG is unset -> deploy.sh deploys :latest (the newest pushed image).
+
+[Unit]
+Description=NTU CloudNative auto-deploy on boot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=CHANGE_ME_DEPLOY_USER
+WorkingDirectory=/home/CHANGE_ME_DEPLOY_USER/NTU_CloudNative
+ExecStart=/home/CHANGE_ME_DEPLOY_USER/NTU_CloudNative/scripts/deploy.sh
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

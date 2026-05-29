@@ -178,6 +178,41 @@ $COMPOSE logs caddy | grep -i certificate   # certs obtained
 
 ---
 
+## Phase 3 — boot auto-deploy (for an on/off VM)
+
+The VM is normally powered off to save cost, so a teammate may push to `main`
+while it's down. What happens:
+
+| VM state on push | `build-push` | `deploy` | Result |
+| --- | --- | --- | --- |
+| **on** | ✅ images → GHCR | ✅ SSH deploy + health check | live, updated |
+| **off** | ✅ images → GHCR | ⏭️ skipped (clear summary, job stays green) | images ready, deploys on next boot |
+
+A genuine deploy failure on a *reachable* VM still fails **red** (deploy.sh
+health-gates the result), so green vs red stays trustworthy.
+
+### Install the boot-deploy unit (one-time)
+Makes "start the VM" == "deploy the latest image from GHCR":
+```bash
+cd ~/NTU_CloudNative
+# Edit User= and the two paths in the unit to your VM user, then:
+sed "s/CHANGE_ME_DEPLOY_USER/$USER/g" infra/systemd/ntu-deploy.service | sudo tee /etc/systemd/system/ntu-deploy.service
+sudo systemctl daemon-reload
+sudo systemctl enable ntu-deploy.service
+```
+> Needs Docker already logged in to GHCR (the first CD run did that; creds
+> persist in `~/.docker/config.json`) or the GHCR packages set to public.
+
+### Confirm what's actually live (any time)
+```bash
+cat ~/NTU_CloudNative/DEPLOYED_VERSION      # commit + image_tag + deploy timestamp
+journalctl -u ntu-deploy.service -b         # this boot's auto-deploy log
+```
+`DEPLOYED_VERSION` is rewritten on every successful, health-checked deploy —
+compare its `commit:` with the latest SHA on GitHub to confirm you're current.
+
+---
+
 ## 💰 Cost checklist
 
 The VM is ~90% of the bill, so the levers are *when it runs* and *disk/IP size*.

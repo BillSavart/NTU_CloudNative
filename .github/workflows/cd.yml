@@ -60,7 +60,33 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     steps:
+      # The VM is normally powered off to save cost. If it's unreachable, this
+      # is NOT a failure: the images are already in GHCR and the VM's systemd
+      # unit auto-deploys :latest on its next boot. We surface that clearly in
+      # the run summary and skip the SSH step (job stays green). A genuine
+      # deploy failure on a reachable VM still fails red via deploy.sh below.
+      - name: Check VM reachability
+        id: reach
+        run: |
+          if timeout 10 bash -c "</dev/tcp/${{ secrets.DEPLOY_HOST }}/22" 2>/dev/null; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ⏭️ Deploy skipped — VM offline"
+              echo ""
+              echo "Images were built and pushed to GHCR (\`:latest\` + \`:${IMAGE_TAG}\`)."
+              echo "The VM at \`${{ secrets.DEPLOY_HOST }}:22\` was unreachable, so no deploy ran."
+              echo ""
+              echo "It will auto-deploy \`:latest\` on the VM's next boot (systemd unit),"
+              echo "or you can re-run this workflow once the VM is up."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+
       - name: Deploy on the VM over SSH
+        if: steps.reach.outputs.up == 'true'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -76,3 +102,14 @@ jobs:
           IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
+
+      - name: Record deploy in run summary
+        if: steps.reach.outputs.up == 'true'
+        run: |
+          {
+            echo "### ✅ Deployed to VM"
+            echo ""
+            echo "Commit \`${IMAGE_TAG}\` deployed and health-checked on \`${{ secrets.DEPLOY_HOST }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
