@@ -127,11 +127,18 @@ export type WorkHourSummary = {
   yearlyTrend: WorkHourTrendPoint[]
 }
 
+export type HourlyActivityItem = {
+  hour: string
+  count: number
+  inCount: number
+  outCount: number
+}
+
 export type ReportCenterResponse = {
   metrics: ReportCenterMetrics
   topDepartments: Array<{ departmentId: string; count: number }>
   workHours: WorkHourSummary
-  hourlyActivity: Array<{ hour: string; count: number }>
+  hourlyActivity: HourlyActivityItem[]
   events: AccessEvent[]
   previewLimit: number
   generationLatencyMs: number
@@ -292,7 +299,19 @@ export async function fetchReportCenterData(filters: AccessEventFilters = {}): P
       quarterlyTrend: Array.isArray(workHours?.quarterlyTrend) ? workHours.quarterlyTrend : [],
       yearlyTrend: Array.isArray(workHours?.yearlyTrend) ? workHours.yearlyTrend : [],
     },
-    hourlyActivity: Array.isArray(result.hourlyActivity) ? result.hourlyActivity : [],
+    hourlyActivity: Array.isArray(result.hourlyActivity)
+      ? result.hourlyActivity.map((item) => {
+          const row = item as Partial<HourlyActivityItem>
+          const count = Number(row.count ?? 0)
+          const hasDirectionCounts = row.inCount !== undefined || row.outCount !== undefined
+          return {
+            hour: String(row.hour ?? ''),
+            count,
+            inCount: hasDirectionCounts ? Number(row.inCount ?? 0) : count,
+            outCount: hasDirectionCounts ? Number(row.outCount ?? 0) : 0,
+          }
+        })
+      : [],
     events: Array.isArray(result.events) ? result.events : [],
     previewLimit: Number(result.previewLimit ?? filters.limit ?? 0),
     generationLatencyMs: Number(result.generationLatencyMs ?? 0),

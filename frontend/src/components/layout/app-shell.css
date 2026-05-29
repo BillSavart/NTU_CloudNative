@@ -1,9 +1,11 @@
 .attendance-shell {
+  height: 100vh;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   background: var(--color-bg);
   color: var(--color-text);
+  overflow: hidden;
 }
 
 .attendance-sidebar {
@@ -12,8 +14,10 @@
   padding: 18px 12px;
   display: flex;
   flex-direction: column;
+  height: 100vh;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .attendance-brand {
@@ -91,8 +95,11 @@
 
 .attendance-main {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 .attendance-header {
@@ -133,7 +140,10 @@
 }
 
 .attendance-content {
+  min-height: 0;
   min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px 28px;
 }
 
@@ -540,6 +550,95 @@
   margin-top: 12px;
 }
 
+.report-hourly-chart {
+  display: grid;
+  gap: 8px;
+}
+
+.report-hourly-chart > .report-hour {
+  display: none;
+}
+
+.report-hourly-legend {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: flex-end;
+}
+
+.report-hourly-legend span {
+  align-items: center;
+  color: var(--color-muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.report-hourly-legend i {
+  display: inline-block;
+  height: 8px;
+  width: 18px;
+}
+
+.report-hourly-axis {
+  border-bottom: 1px solid var(--color-border-soft);
+  height: 24px;
+  margin-left: 64px;
+  margin-right: 64px;
+  position: relative;
+}
+
+.report-hourly-axis span {
+  color: var(--color-muted);
+  font-size: 11px;
+  position: absolute;
+  top: 3px;
+  transform: translateX(-50%);
+}
+
+.report-hourly-list {
+  display: grid;
+  gap: 9px;
+}
+
+.report-hourly-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 52px minmax(0, 1fr) 52px;
+}
+
+.report-hourly-label,
+.report-hourly-row strong {
+  color: var(--color-heading);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.report-hourly-row strong {
+  text-align: right;
+}
+
+.report-hourly-track {
+  background: #edf2f7;
+  display: flex;
+  height: 13px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.report-hourly-segment {
+  height: 100%;
+}
+
+.report-hourly-in {
+  background: var(--color-primary);
+}
+
+.report-hourly-out {
+  background: var(--color-success);
+}
+
 .report-hour-grid {
   align-items: end;
   display: grid;
@@ -807,12 +906,19 @@
 @media (max-width: 992px) {
   .attendance-shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .attendance-sidebar {
     border-right: none;
     border-bottom: 1px solid var(--color-border);
-    min-height: auto;
+    height: auto;
+    min-height: 0;
+  }
+
+  .attendance-main {
+    height: auto;
+    min-height: 0;
   }
 
   .kpi-grid {
@@ -904,6 +1010,16 @@
 
   .report-hour-grid {
     grid-template-columns: repeat(6, minmax(28px, 1fr));
+  }
+
+  .report-hourly-axis {
+    margin-left: 54px;
+    margin-right: 46px;
+  }
+
+  .report-hourly-row {
+    gap: 8px;
+    grid-template-columns: 46px minmax(0, 1fr) 38px;
   }
 
   .auth-card {

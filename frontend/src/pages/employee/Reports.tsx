@@ -4,6 +4,7 @@ import { fetchCurrentUser, type CurrentUser } from '../../services/auth'
 import {
   type AccessEvent,
   type DepartmentNode,
+  type HourlyActivityItem,
   type WorkHourSummary,
   type WorkHourTrendPoint,
   fetchAccessEvents,
@@ -24,7 +25,7 @@ type ReportMetrics = {
   avgLatencyMs: number | null
   deniedRate: number
   topDepartments: Array<{ departmentId: string; count: number }>
-  hourlyActivity: Array<{ hour: string; count: number }>
+  hourlyActivity: HourlyActivityItem[]
 }
 
 type DepartmentOption = {
@@ -70,7 +71,7 @@ function flattenDepartments(nodes: DepartmentNode[], depth = 0): DepartmentOptio
 
 function summarizeEvents(events: AccessEvent[]): ReportMetrics {
   const departmentCounts = new Map<string, number>()
-  const hourlyCounts = new Map<string, number>()
+  const hourlyCounts = new Map<string, HourlyActivityItem>()
   let granted = 0
   let denied = 0
   let inCount = 0
@@ -93,7 +94,11 @@ function summarizeEvents(events: AccessEvent[]): ReportMetrics {
 
     const timestamp = new Date(event.timestamp)
     const hour = Number.isNaN(timestamp.getTime()) ? '--' : String(timestamp.getHours()).padStart(2, '0')
-    hourlyCounts.set(hour, (hourlyCounts.get(hour) ?? 0) + 1)
+    const hourlyBucket = hourlyCounts.get(hour) ?? { hour, count: 0, inCount: 0, outCount: 0 }
+    hourlyBucket.count += 1
+    if (event.direction === 'IN') hourlyBucket.inCount += 1
+    if (event.direction === 'OUT') hourlyBucket.outCount += 1
+    hourlyCounts.set(hour, hourlyBucket)
   }
 
   return {
@@ -108,9 +113,7 @@ function summarizeEvents(events: AccessEvent[]): ReportMetrics {
       .map(([departmentId, count]) => ({ departmentId, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 6),
-    hourlyActivity: [...hourlyCounts.entries()]
-      .map(([hour, count]) => ({ hour, count }))
-      .sort((a, b) => a.hour.localeCompare(b.hour)),
+    hourlyActivity: [...hourlyCounts.values()].sort((a, b) => a.hour.localeCompare(b.hour)),
   }
 }
 
@@ -196,6 +199,103 @@ function barRows(items: Array<{ label: string; value: number }>) {
     .join('')
 }
 
+function niceTickStep(rawStep: number) {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1
+
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep))
+  const fraction = rawStep / magnitude
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10
+  return niceFraction * magnitude
+}
+
+function buildCountAxis(maxValue: number, tickCount = 4) {
+  const step = niceTickStep(maxValue / tickCount)
+  const max = Math.max(step, Math.ceil(maxValue / step) * step)
+  const ticks = Array.from({ length: Math.floor(max / step) + 1 }, (_, index) => index * step)
+  return { max, ticks }
+}
+
+function formatCount(value: number) {
+  return Math.round(value).toLocaleString()
+}
+
+function stackedHourRows(items: HourlyActivityItem[]) {
+  if (items.length === 0) {
+    return '<div class="empty">沒有時段活動資料</div>'
+  }
+
+  const axis = buildCountAxis(Math.max(1, ...items.map((item) => item.count)))
+  const axisLabels = axis.ticks
+    .map((tick) => `<span style="left:${(tick / axis.max) * 100}%">${htmlEscape(formatCount(tick))}</span>`)
+    .join('')
+  const rows = items
+    .map((item) => {
+      const inWidth = (item.inCount / axis.max) * 100
+      const outWidth = (item.outCount / axis.max) * 100
+      return `
+        <div class="hour-row">
+          <span class="hour-label">${htmlEscape(`${item.hour}:00`)}</span>
+          <div class="hour-track">
+            <div class="hour-segment hour-in" style="width:${inWidth}%"></div>
+            <div class="hour-segment hour-out" style="width:${outWidth}%"></div>
+          </div>
+          <strong>${htmlEscape(formatCount(item.count))}</strong>
+        </div>
+      `
+    })
+    .join('')
+
+  return `
+    <div class="hour-legend"><span><i class="hour-in"></i>IN</span><span><i class="hour-out"></i>OUT</span></div>
+    <div class="hour-axis">${axisLabels}</div>
+    <div class="hour-rows">${rows}</div>
+  `
+}
+
+function lineTrendChart(items: WorkHourTrendPoint[]) {
+  if (items.length === 0) {
+    return '<div class="trend-empty">沒有工時趨勢資料</div>'
+  }
+
+  const width = 640
+  const height = 174
+  const padding = { top: 28, right: 32, bottom: 44, left: 40 }
+  const innerWidth = width - padding.left - padding.right
+  const innerHeight = height - padding.top - padding.bottom
+  const maxHours = Math.max(1, ...items.map((item) => item.averageHours))
+  const points = items.map((item, index) => {
+    const x = padding.left + (items.length <= 1 ? innerWidth / 2 : (index / (items.length - 1)) * innerWidth)
+    const y = padding.top + innerHeight - (item.averageHours / maxHours) * innerHeight
+    return { ...item, x, y }
+  })
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
+  const gridLines = [0, 0.5, 1]
+    .map((ratio) => {
+      const y = padding.top + innerHeight - ratio * innerHeight
+      return `<line class="trend-grid-line" x1="${padding.left}" x2="${width - padding.right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`
+    })
+    .join('')
+  const pointMarks = points
+    .map(
+      (point) => `
+        <g>
+          <circle class="trend-point" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4" />
+          <text class="trend-value" x="${point.x.toFixed(1)}" y="${Math.max(14, point.y - 10).toFixed(1)}">${htmlEscape(formatHours(point.averageHours))}</text>
+          <text class="trend-label" x="${point.x.toFixed(1)}" y="${height - 16}">${htmlEscape(point.label)}</text>
+        </g>
+      `,
+    )
+    .join('')
+
+  return `
+    <svg class="trend-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="work hour trend">
+      ${gridLines}
+      ${points.length > 1 ? `<path class="trend-path" d="${path}" />` : ''}
+      ${pointMarks}
+    </svg>
+  `
+}
+
 function formatDeniedRate(rate: number, denied: number) {
   const percentage = rate * 100
   if (denied > 0 && percentage > 0 && percentage < 0.1) {
@@ -272,6 +372,24 @@ function buildVisualReport(
       .bar-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 92px 1fr 52px; margin: 8px 0; }
       .bar-track { background: #edf2f7; border-radius: 999px; height: 10px; overflow: hidden; }
       .bar-fill { background: #1d6f8f; height: 100%; }
+      .hour-legend { display: flex; gap: 14px; justify-content: flex-end; margin-bottom: 8px; }
+      .hour-legend span { align-items: center; color: #5f6b7a; display: inline-flex; font-size: 11px; gap: 5px; }
+      .hour-legend i { display: inline-block; height: 8px; width: 18px; }
+      .hour-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 72px 1fr 58px; margin: 8px 0; }
+      .hour-label, .hour-row strong { color: #172033; font-size: 12px; }
+      .hour-track { background: #edf2f7; display: flex; height: 12px; overflow: hidden; }
+      .hour-segment { height: 100%; }
+      .hour-in { background: #1d4f73; }
+      .hour-out { background: #17663a; }
+      .hour-axis { border-bottom: 1px solid #d8dee6; height: 22px; margin-left: 82px; margin-right: 68px; position: relative; }
+      .hour-axis span { color: #5f6b7a; font-size: 10px; position: absolute; top: 2px; transform: translateX(-50%); }
+      .trend-line-chart { display: block; height: 174px; width: 100%; }
+      .trend-grid-line { stroke: #d8dee6; stroke-width: 1; }
+      .trend-path { fill: none; stroke: #1d4f73; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+      .trend-point { fill: #ffffff; stroke: #1d4f73; stroke-width: 2; }
+      .trend-label { fill: #5f6b7a; font-size: 10px; text-anchor: middle; }
+      .trend-value { fill: #0f2742; font-size: 11px; font-weight: 700; text-anchor: middle; }
+      .trend-empty { color: #5f6b7a; font-size: 12px; padding: 18px; text-align: center; }
       table { border-collapse: collapse; font-size: 10px; width: 100%; }
       th, td { border: 1px solid #cfd6df; padding: 6px; text-align: left; vertical-align: top; }
       th { background: #edf2f7; color: #253044; }
@@ -294,18 +412,18 @@ function buildVisualReport(
       ${metricLine('平均工時', formatHours(workHours?.averageHours))}
     </div>
     <h2>月工時趨勢</h2>
-    <div class="chart">${barRows((workHours?.monthlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    <div class="chart">${lineTrendChart(workHours?.monthlyTrend ?? [])}</div>
     <h2>季工時趨勢</h2>
-    <div class="chart">${barRows((workHours?.quarterlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    <div class="chart">${lineTrendChart(workHours?.quarterlyTrend ?? [])}</div>
     <h2>年工時趨勢</h2>
-    <div class="chart">${barRows((workHours?.yearlyTrend ?? []).map((item) => ({ label: item.label, value: Number(item.averageHours.toFixed(1)) })))}</div>
+    <div class="chart">${lineTrendChart(workHours?.yearlyTrend ?? [])}</div>
     ${
       includeDepartmentDistribution
         ? `<h2>部門事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
         : ''
     }
     <h2>時段活動量</h2>
-    <div class="chart">${barRows(metrics.hourlyActivity.map((item) => ({ label: `${item.hour}:00`, value: item.count })))}</div>
+    <div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>
     <h2>事件明細預覽</h2>
     <table>
       <thead>
@@ -416,6 +534,7 @@ function Reports() {
     return { ...item, x, y }
   })
   const trendPath = trendPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
+  const hourlyAxis = buildCountAxis(maxHourlyCount)
 
   const downloadReport = async () => {
     setIsDownloading(true)
@@ -623,15 +742,33 @@ function Reports() {
           <h2 className="h6 m-0">時段活動量</h2>
           <span className="small text-secondary">台北時間</span>
         </div>
-        <div className="report-hour-grid">
+        <div className="report-hourly-chart">
           {metrics.hourlyActivity.length > 0 ? (
-            metrics.hourlyActivity.map((item) => (
-              <div className="report-hour" key={item.hour} title={`${item.hour}:00 ${item.count.toLocaleString()} 筆`}>
-                <div className="report-hour-bar" style={{ height: `${Math.max(8, (item.count / maxHourlyCount) * 100)}%` }} />
-                <span>{item.hour}</span>
-                <strong>{item.count.toLocaleString()} 筆</strong>
+            <>
+              <div className="report-hourly-legend" aria-label="IN OUT 圖例">
+                <span><i className="report-hourly-in" />IN</span>
+                <span><i className="report-hourly-out" />OUT</span>
               </div>
-            ))
+              <div className="report-hourly-axis" aria-hidden="true">
+                {hourlyAxis.ticks.map((tick) => (
+                  <span key={tick} style={{ left: `${(tick / hourlyAxis.max) * 100}%` }}>
+                    {formatCount(tick)}
+                  </span>
+                ))}
+              </div>
+              <div className="report-hourly-list">
+                {metrics.hourlyActivity.map((item) => (
+                  <div className="report-hourly-row" key={item.hour} title={`${item.hour}:00 IN ${item.inCount.toLocaleString()} / OUT ${item.outCount.toLocaleString()} / total ${item.count.toLocaleString()}`}>
+                    <span className="report-hourly-label">{item.hour}:00</span>
+                    <div className="report-hourly-track">
+                      <div className="report-hourly-segment report-hourly-in" style={{ width: `${(item.inCount / hourlyAxis.max) * 100}%` }} />
+                      <div className="report-hourly-segment report-hourly-out" style={{ width: `${(item.outCount / hourlyAxis.max) * 100}%` }} />
+                    </div>
+                    <strong>{item.count.toLocaleString()}</strong>
+                  </div>
+                ))}
+              </div>
+            </>
           ) : (
             <div className="text-secondary small">目前沒有符合條件的刷卡時段。</div>
           )}

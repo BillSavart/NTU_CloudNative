@@ -297,10 +297,17 @@ def get_report_center(
     latency_values = [row.latency_ms for row in rows if row.latency_ms is not None]
     department_counts: Counter[str] = Counter()
     hourly_counts: Counter[str] = Counter()
+    hourly_in_counts: Counter[str] = Counter()
+    hourly_out_counts: Counter[str] = Counter()
 
     for row in rows:
         department_counts[row.department_id or "UNKNOWN"] += 1
-        hourly_counts[f"{_local_datetime(row.occurred_at).hour:02d}"] += 1
+        hour = f"{_local_datetime(row.occurred_at).hour:02d}"
+        hourly_counts[hour] += 1
+        if row.direction == "IN":
+            hourly_in_counts[hour] += 1
+        if row.direction == "OUT":
+            hourly_out_counts[hour] += 1
 
     excluded_department_ids = _report_center_excluded_department_ids(current_user)
     visible_top_departments = [
@@ -338,7 +345,12 @@ def get_report_center(
         "topDepartments": top_departments,
         "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
         "hourlyActivity": [
-            {"hour": hour, "count": count}
+            {
+                "hour": hour,
+                "count": count,
+                "inCount": hourly_in_counts[hour],
+                "outCount": hourly_out_counts[hour],
+            }
             for hour, count in sorted(hourly_counts.items())
         ],
         "events": preview["items"],
@@ -395,6 +407,8 @@ def _get_report_center_sql(
         select(
             func.to_char(func.date_trunc("hour", scoped.c.occurred_at), "HH24").label("hour"),
             func.count().label("count"),
+            func.count().filter(scoped.c.direction == "IN").label("in_count"),
+            func.count().filter(scoped.c.direction == "OUT").label("out_count"),
         )
         .select_from(scoped)
         .group_by("hour")
@@ -427,7 +441,12 @@ def _get_report_center_sql(
         "topDepartments": top_departments,
         "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
         "hourlyActivity": [
-            {"hour": row["hour"], "count": int(row["count"])}
+            {
+                "hour": row["hour"],
+                "count": int(row["count"]),
+                "inCount": int(row["in_count"] or 0),
+                "outCount": int(row["out_count"] or 0),
+            }
             for row in hourly_rows
         ],
         "events": preview["items"],
