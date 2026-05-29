@@ -24,7 +24,13 @@ Bind-mounted config comes from the git checkout on the VM — that's why
 | --- | --- |
 | `docker-compose.yml` | base (local dev: builds images, exposes all ports) |
 | `docker-compose.prod.yml` | prod override: GHCR images, `restart: unless-stopped`, internal services bound to `127.0.0.1`, debug off, Kafka heap capped |
+| `observability/docker-compose.observability.yml` | exporters (redis/postgres/kafka) + remote-write Prometheus + the profile-gated `k6` service. Always included by `deploy.sh` so Grafana dashboards and k6 work on the VM. |
 | `docker-compose.https.yml` | Caddy TLS edge; removes public ports from frontend/simulator/grafana/prometheus so Caddy is the only entry. Added automatically when `ENABLE_HTTPS=true`. |
+
+`scripts/lib-compose.sh` is the single source of truth for this file list —
+`deploy.sh` and every `*_prod.sh` helper source it, so they all act on the same
+running stack. Ad-hoc commands on the VM: `. scripts/lib-compose.sh` then use
+`"${COMPOSE[@]}" …`.
 
 Public surface once deployed (only Caddy holds host ports — 80/443):
 
@@ -152,13 +158,22 @@ Repo → Settings → Secrets and variables → Actions:
 2. **Actions** tab: CI runs, then CD (`build-push` → `deploy`) runs on success.
    `deploy.sh` sees `ENABLE_HTTPS=true` and brings up the Caddy edge; Caddy then
    fetches the four Let's Encrypt certs automatically.
-3. Seed demo users/data once:
+3. Seed demo users + load data once (data persists in volumes — only needed
+   the first time):
    ```bash
    cd ~/NTU_CloudNative
-   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml \
-     exec -T reporting-api python -m app.seed
+   . scripts/lib-compose.sh                       # loads the prod compose file list
+   "${COMPOSE[@]}" exec -T reporting-api python -m app.seed   # demo login accounts
+
+   ./scripts/fake_data_prod.sh                    # 90k employees + a year of attendance
+   ./scripts/patch_data_prod.sh                   # extra denied / executive events
    ```
-   (reporting-api auto-runs Alembic migrations on startup — no manual migrate.)
+   - reporting-api auto-runs Alembic migrations on startup — no manual migrate.
+   - **Do NOT run `scripts/setup.sh` on the VM** — it `TRUNCATE`s the reporting
+     tables (it's a local reset helper).
+   - `fake_data_prod.sh` at the full 90k×365 is heavy on a 4 vCPU box; for a
+     snappier demo trim it, e.g.
+     `FAKE_OPERATING_DAYS=90 FAKE_ATTENDANCE_EMPLOYEES=20000 ./scripts/fake_data_prod.sh`.
 4. **If you'll power the VM off between demos**, now install the boot
    auto-deploy unit → see **Phase 3** (the first deploy above has logged Docker
    into GHCR, so the boot pull will have credentials).
@@ -171,9 +186,9 @@ Manual deploy any time: **Actions → CD → Run workflow**.
 
 ```bash
 cd ~/NTU_CloudNative
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml"
-$COMPOSE ps                       # all running
-$COMPOSE logs caddy | grep -i certificate   # certs obtained
+. scripts/lib-compose.sh
+"${COMPOSE[@]}" ps                              # all running
+"${COMPOSE[@]}" logs caddy | grep -i certificate   # certs obtained
 ```
 - `https://tsmc-dpac.systems` — app (padlock)
 - `https://sim.tsmc-dpac.systems` — swipe demo
@@ -217,6 +232,34 @@ journalctl -u ntu-deploy.service -b         # this boot's auto-deploy log
 ```
 `DEPLOYED_VERSION` is rewritten on every successful, health-checked deploy —
 compare its `commit:` with the latest SHA on GitHub to confirm you're current.
+
+---
+
+## Phase 4 — load tests (k6) on the VM
+
+The observability layer is already running (exporters + remote-write Prometheus
++ Grafana dashboards). The `k6` service is profile-gated, so it only runs when
+you invoke it. Use the prod helpers — they target the running stack and clean up
+their own test rows:
+
+```bash
+cd ~/NTU_CloudNative
+./scripts/k6_prod.sh                                   # full-stack load test
+K6_SCRIPT=/scripts/reporting-api.js ./scripts/k6_prod.sh   # reporting-only
+K6_VUS=50 K6_STEADY=5m K6_TEST_ID=fs-50 ./scripts/k6_prod.sh
+./scripts/k6_chaos_prod.sh                             # resilience/chaos test
+```
+
+Watch results in Grafana (`https://grafana.tsmc-dpac.systems`); pick the run's
+`k6_testid` and a time range covering the run.
+
+> ⚠️ Do **not** run the local `scripts/run-k6-*.sh` on the VM — they use the
+> base compose file list and would reconverge your prod services. Use the
+> `*_prod.sh` variants.
+> ⚠️ k6 shares the box with the live stack, so latencies will be higher than a
+> dedicated load-gen would show — expected on a single 4 vCPU VM.
+> ⚠️ `k6_chaos_prod.sh` deliberately stops reporting-api / a Kafka broker for
+> ~20-25 s — run it only when demonstrating resilience.
 
 ---
 
