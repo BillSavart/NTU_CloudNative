@@ -88,9 +88,12 @@ Fake data 會保留主門 `gate_{fab}_A` 作為上下班紀錄，同時在 08:00
    請將 `.env` 內的 `POSTGRES_PASSWORD`、`REDIS_PASSWORD` 與 `GRAFANA_ADMIN_PASSWORD` 改為你自己的密碼。
 3. 在背景啟動服務：
    ```bash
-   docker-compose up -d
+   docker compose up -d --remove-orphans
    ```
    *這將會啟動 PostgreSQL（Port 5432，資料庫 `access_control`）、Redis 主節點/複本/Sentinel、Kafka 3 節點叢集。*
+
+   > ⚠️ **請固定用 `docker compose up -d`（建議加 `--remove-orphans`）來啟動，不要用 Docker Desktop 的「Start」按鈕。**
+   > Start 走的是 `compose start`，只會無腦重啟既有容器、不會跟 `docker-compose.yml` 對帳。若 compose 裡曾移除過某服務（例如先前的 promtail 已改用 Grafana Alloy），其殘留的 orphan 容器會被一起重啟並掛載已不存在的設定檔，導致啟動失敗。`--remove-orphans` 會清掉這類殘留容器。
 
 ### 環境變數檔案說明（重要）
 - 專案根目錄 `.env`：提供給 Docker Compose（啟動 PostgreSQL 容器時使用）。
