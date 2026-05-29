@@ -27,26 +27,34 @@ CONSUMER_RUNNING = Gauge(
     "Whether a background consumer is running.",
     ("consumer",),
 )
-CONSUMER_PROCESSED_TOTAL = Gauge(
+CONSUMER_PROCESSED_TOTAL = Counter(
     "reporting_api_consumer_processed_total",
     "Total events processed by a background consumer.",
     ("consumer",),
 )
-CONSUMER_INSERTED_TOTAL = Gauge(
+CONSUMER_INSERTED_TOTAL = Counter(
     "reporting_api_consumer_inserted_total",
     "Total new events inserted by a background consumer.",
     ("consumer",),
 )
-CONSUMER_DUPLICATES_TOTAL = Gauge(
+CONSUMER_DUPLICATES_TOTAL = Counter(
     "reporting_api_consumer_duplicates_total",
     "Total duplicate events skipped by a background consumer.",
     ("consumer",),
 )
-CONSUMER_FAILED_TOTAL = Gauge(
+CONSUMER_FAILED_TOTAL = Counter(
     "reporting_api_consumer_failed_total",
     "Total failed events observed by a background consumer.",
     ("consumer",),
 )
+
+# The consumers expose their own cumulative totals (status.processed, ...).
+# Prometheus Counters can only be incremented, so we bridge those absolute
+# values into the Counter by advancing it by the delta on each scrape. We
+# remember the last observed absolute value per (metric, consumer); if it
+# decreases (the consumer object was recreated and its in-memory total reset)
+# we treat the new value as fresh increments instead of going negative.
+_consumer_counter_state: dict[tuple[str, str], float] = {}
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):
@@ -87,10 +95,24 @@ def _sync_consumer_metrics(app: FastAPI) -> None:
             continue
 
         CONSUMER_RUNNING.labels(name).set(1 if status.running else 0)
-        CONSUMER_PROCESSED_TOTAL.labels(name).set(status.processed)
-        CONSUMER_INSERTED_TOTAL.labels(name).set(status.inserted)
-        CONSUMER_DUPLICATES_TOTAL.labels(name).set(status.duplicates)
-        CONSUMER_FAILED_TOTAL.labels(name).set(status.failed)
+        _advance_consumer_counter(CONSUMER_PROCESSED_TOTAL, "processed", name, status.processed)
+        _advance_consumer_counter(CONSUMER_INSERTED_TOTAL, "inserted", name, status.inserted)
+        _advance_consumer_counter(CONSUMER_DUPLICATES_TOTAL, "duplicates", name, status.duplicates)
+        _advance_consumer_counter(CONSUMER_FAILED_TOTAL, "failed", name, status.failed)
+
+
+def _advance_consumer_counter(counter: Counter, key: str, consumer: str, current: float) -> None:
+    state_key = (key, consumer)
+    previous = _consumer_counter_state.get(state_key, 0.0)
+    # Touch the child so the zero-valued series is always exported (Counters
+    # are otherwise only created on first increment).
+    child = counter.labels(consumer)
+    # current < previous => the consumer restarted and reset its in-memory
+    # total, so the new absolute value represents brand-new increments.
+    delta = current if current < previous else current - previous
+    if delta > 0:
+        child.inc(delta)
+    _consumer_counter_state[state_key] = current
 
 
 def _install_tracing(app: FastAPI) -> None:

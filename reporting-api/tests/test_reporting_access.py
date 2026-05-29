@@ -1,19 +1,19 @@
 import unittest
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import AccessEvent, Base, Department, Employee, UserAccount, UserDepartmentScope
+from app.models import AccessEvent, Department, Employee, UserAccount, UserDepartmentScope
 from app.permissions import get_visible_department_ids
 from app.repositories import get_employee_states, query_access_events
 from app.security import create_session_token, hash_password, parse_session_token, verify_password
+from tests.support import create_test_engine
 
 
 class ReportingAccessTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine)
+        engine = create_test_engine()
         self.SessionLocal = sessionmaker(bind=engine)
         with self.SessionLocal() as db:
             self._seed(db)

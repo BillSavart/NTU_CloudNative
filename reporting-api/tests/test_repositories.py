@@ -4,10 +4,11 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import AccessEvent, Base, Department, Employee, UserAccount, UserDepartmentScope
+from app.models import AccessEvent, Department, Employee, UserAccount, UserDepartmentScope
+from tests.support import create_test_engine
 from app.repositories import (
     get_access_summary,
     get_dashboard,
@@ -28,8 +29,7 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 
 class RepositoryTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        engine = create_engine("sqlite+pysqlite:///:memory:")
-        Base.metadata.create_all(engine)
+        engine = create_test_engine()
         self.SessionLocal = sessionmaker(bind=engine)
         with self.SessionLocal() as db:
             self._seed(db)
@@ -112,7 +112,7 @@ class RepositoryTestCase(unittest.TestCase):
             )
             db.commit()
 
-            summary = get_access_summary(db)
+            summary = get_access_summary(db, self._user(db, "admin"))
 
         self.assertEqual(summary["knownEmployees"], 4)
         self.assertEqual(summary["employeesInside"], 2)
@@ -138,7 +138,7 @@ class RepositoryTestCase(unittest.TestCase):
     def test_dashboard_combines_summary_anomalies_and_timeseries(self) -> None:
         with self.SessionLocal() as db:
             with patch("app.repositories.get_timeseries", return_value=[{"bucket": "demo"}]):
-                dashboard = get_dashboard(db)
+                dashboard = get_dashboard(db, self._user(db, "admin"))
 
         self.assertEqual(dashboard["totalEvents"], 3)
         self.assertEqual(dashboard["hrMetrics"]["expectedToday"], 3)
@@ -220,6 +220,7 @@ class RepositoryTestCase(unittest.TestCase):
 
             metrics = get_dashboard_operational_metrics(
                 db,
+                self._user(db, "admin"),
                 from_time=datetime(2026, 5, 22, 0, 0, tzinfo=TAIPEI),
                 to_time=datetime(2026, 5, 22, 23, 59, tzinfo=TAIPEI),
             )
@@ -252,7 +253,7 @@ class RepositoryTestCase(unittest.TestCase):
             )
             db.commit()
 
-            result = get_compliance_anomalies(db, anomaly_type="late_arrival")
+            result = get_compliance_anomalies(db, self._user(db, "admin"), anomaly_type="late_arrival")
 
         self.assertGreaterEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["type"], "late_arrival")

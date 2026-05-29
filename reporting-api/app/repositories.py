@@ -1,6 +1,8 @@
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -8,10 +10,62 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import bindparam, case, func, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AccessEvent, Department, Employee, UserAccount
 from app.permissions import get_descendant_department_ids, get_visible_department_ids
 from app.serializers import serialize_access_event, serialize_department_tree
+
+
+def _main_gate_pattern() -> str:
+    """SQL LIKE pattern identifying main-entrance gates (configurable)."""
+    return get_settings().attendance_main_gate_pattern
+
+
+def _late_threshold_time() -> time:
+    """Daily late-arrival cutoff as a ``time`` (configurable)."""
+    return get_settings().attendance_late_threshold_time
+
+
+def _overtime_hours() -> float:
+    """Worked-hours threshold above which a day counts as overtime (configurable)."""
+    return get_settings().attendance_overtime_hours
+
+
+def _overtime_label() -> str:
+    """Human-readable overtime label reflecting the configured threshold."""
+    return f"超過 {_overtime_hours():g} 小時"
+
+
+@lru_cache(maxsize=8)
+def _compile_like(pattern: str) -> "re.Pattern[str]":
+    """Translate a SQL LIKE pattern (``%`` = any, ``_`` = single char) to a regex."""
+    parts = ["^"]
+    for ch in pattern:
+        if ch == "%":
+            parts.append(".*")
+        elif ch == "_":
+            parts.append(".")
+        else:
+            parts.append(re.escape(ch))
+    parts.append("$")
+    return re.compile("".join(parts))
+
+
+def _gate_matches_main(gate_id: str | None) -> bool:
+    """Python equivalent of ``gate_id LIKE :main_gate_pattern`` for SQLite paths."""
+    if gate_id is None:
+        return False
+    return bool(_compile_like(_main_gate_pattern()).match(gate_id))
+
+
+def _attendance_rule_params() -> dict[str, Any]:
+    """Bind parameters injecting the attendance business rules into raw SQL."""
+    return {
+        "main_gate_pattern": _main_gate_pattern(),
+        "late_threshold": _late_threshold_time().isoformat(),
+        "overtime_hours": _overtime_hours(),
+    }
 
 
 WORK_HOUR_SUMMARY_CACHE_TTL_SECONDS = 600
@@ -429,9 +483,13 @@ def _get_work_hour_summary_sql(
 ) -> dict[str, Any]:
     history_from = to_time - timedelta(days=370)
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"history_from": history_from, "to_time": to_time}
+    params: dict[str, Any] = {
+        "history_from": history_from,
+        "to_time": to_time,
+        "main_gate_pattern": _main_gate_pattern(),
+    }
     filters = [
-        "e.gate_id LIKE '%_A'",
+        "e.gate_id LIKE :main_gate_pattern",
         "e.decision = 'GRANTED'",
         "e.occurred_at >= :history_from",
         "e.occurred_at <= :to_time",
@@ -555,7 +613,7 @@ def _get_work_hour_summary_in_python(
     daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
 
     for row in rows:
-        if row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+        if row.decision != "GRANTED" or not _gate_matches_main(row.gate_id):
             continue
         occurred_at = _local_datetime(row.occurred_at)
         key = (row.employee_id, occurred_at.date())
@@ -671,10 +729,10 @@ def get_dashboard_operational_metrics(
     for (employee_id, work_date), day in daily.items():
         first_in = day["first_in"]
         last_out = day["last_out"]
-        if first_in is not None and first_in.time() > time(8, 30) and _local_date(from_time) <= work_date <= _local_date(to_time):
+        if first_in is not None and first_in.time() > _late_threshold_time() and _local_date(from_time) <= work_date <= _local_date(to_time):
             department_late_counts[employee_departments.get(employee_id) or "UNASSIGNED"] += 1
             weekday_late_counts[_weekday_label(work_date)] += 1
-        if first_in is not None and last_out is not None and last_out - first_in > timedelta(hours=12):
+        if first_in is not None and last_out is not None and last_out - first_in > timedelta(hours=_overtime_hours()):
             work_hours = round((last_out - first_in).total_seconds() / 3600, 1)
             daily_overtime_alerts.append(
                 {
@@ -856,7 +914,7 @@ def get_department_analytics(
                 FROM access_events e
                 JOIN employees emp ON emp.employee_id = e.employee_id
                 WHERE emp.department_id IN :leaf_ids
-                  AND e.gate_id LIKE '%_A'
+                  AND e.gate_id LIKE :main_gate_pattern
                   AND e.decision = 'GRANTED'
                   AND e.occurred_at >= :since
                 GROUP BY e.employee_id, emp.department_id, e.occurred_at::date
@@ -867,14 +925,14 @@ def get_department_analytics(
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
-                      AND first_in::time <= time '08:30:00'
-                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= 12
+                      AND first_in::time <= cast(:late_threshold AS time)
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= :overtime_hours
                 ) AS normal_records,
-                count(*) FILTER (WHERE first_in::time > time '08:30:00') AS late_records,
+                count(*) FILTER (WHERE first_in::time > cast(:late_threshold AS time)) AS late_records,
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
-                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
                 ) AS overtime_records
             FROM daily
             GROUP BY department_id
@@ -882,7 +940,10 @@ def get_department_analytics(
         ).bindparams(bindparam("leaf_ids", expanding=True))
         daily_rows = {
             row["department_id"]: row
-            for row in db.execute(daily_sql, {"leaf_ids": leaf_ids, "since": since}).mappings().all()
+            for row in db.execute(
+                daily_sql,
+                {"leaf_ids": leaf_ids, "since": since, **_attendance_rule_params()},
+            ).mappings().all()
         }
 
     rows = []
@@ -926,7 +987,7 @@ def _department_daily_rows_in_python(
     leaf_set = set(leaf_ids)
     daily: dict[tuple[str, str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
     for row in _dashboard_event_rows(db, current_user, None, since, now):
-        if row.department_id not in leaf_set or row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+        if row.department_id not in leaf_set or row.decision != "GRANTED" or not _gate_matches_main(row.gate_id):
             continue
         occurred_at = _local_datetime(row.occurred_at)
         key = (row.department_id, row.employee_id, occurred_at.date())
@@ -947,13 +1008,13 @@ def _department_daily_rows_in_python(
         first_in = day["first_in"]
         last_out = day["last_out"]
         rows[department_id]["daily_records"] += 1
-        if first_in is not None and first_in.time() > time(8, 30):
+        if first_in is not None and first_in.time() > _late_threshold_time():
             rows[department_id]["late_records"] += 1
         if first_in is not None and last_out is not None:
             work_hours = (last_out - first_in).total_seconds() / 3600
-            if work_hours > 12:
+            if work_hours > _overtime_hours():
                 rows[department_id]["overtime_records"] += 1
-            elif first_in.time() <= time(8, 30):
+            elif first_in.time() <= _late_threshold_time():
                 rows[department_id]["normal_records"] += 1
     return rows
 
@@ -1090,7 +1151,7 @@ def _monthly_employee_metrics(
                 max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
             FROM access_events e
             WHERE e.employee_id IN :employee_ids
-              AND e.gate_id LIKE '%_A'
+              AND e.gate_id LIKE :main_gate_pattern
               AND e.decision = 'GRANTED'
               AND e.occurred_at >= :month_start
               AND e.occurred_at <= :now
@@ -1107,11 +1168,11 @@ def _monthly_employee_metrics(
                         ELSE 0
                     END
                 ), 0) AS work_hours,
-                count(*) FILTER (WHERE first_in::time > time '08:30:00') AS late_count,
+                count(*) FILTER (WHERE first_in::time > cast(:late_threshold AS time)) AS late_count,
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
-                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
                 ) AS overtime_count
             FROM daily
             GROUP BY employee_id
@@ -1139,7 +1200,10 @@ def _monthly_employee_metrics(
         ORDER BY emp.department_id, emp.employee_id
         """
     ).bindparams(bindparam("employee_ids", expanding=True))
-    rows = db.execute(sql, {"employee_ids": employee_ids, "month_start": month_start, "now": now}).mappings().all()
+    rows = db.execute(
+        sql,
+        {"employee_ids": employee_ids, "month_start": month_start, "now": now, **_attendance_rule_params()},
+    ).mappings().all()
     return {
         row["employee_id"]: _format_employee_metric_row(
             float(row["work_hours"]),
@@ -1169,7 +1233,7 @@ def _monthly_employee_metrics_in_python(
         if row.decision == "DENIED":
             denied_counts[row.employee_id] += 1
             continue
-        if row.decision != "GRANTED" or not row.gate_id.endswith("_A"):
+        if row.decision != "GRANTED" or not _gate_matches_main(row.gate_id):
             continue
         occurred_at = _local_datetime(row.occurred_at)
         key = (row.employee_id, occurred_at.date())
@@ -1190,12 +1254,12 @@ def _monthly_employee_metrics_in_python(
         last_out = day["last_out"]
         if first_in is not None:
             rollup[employee_id]["attendance_days"] += 1
-            if first_in.time() > time(8, 30):
+            if first_in.time() > _late_threshold_time():
                 rollup[employee_id]["late_count"] += 1
         if first_in is not None and last_out is not None:
             work_hours = (last_out - first_in).total_seconds() / 3600
             rollup[employee_id]["work_hours"] += work_hours
-            if work_hours > 12:
+            if work_hours > _overtime_hours():
                 rollup[employee_id]["overtime_count"] += 1
 
     return {
@@ -1266,8 +1330,8 @@ def get_attendance_daily(
         return {"items": [], "total": 0, "limit": limit}
 
     since = datetime.now(TAIPEI) - timedelta(days=limit)
-    params: dict[str, Any] = {"limit": limit, "since": since}
-    filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
+    params: dict[str, Any] = {"limit": limit, "since": since, **_attendance_rule_params()}
+    filters = ["e.gate_id LIKE :main_gate_pattern", "e.decision = 'GRANTED'"]
     filters.append("e.occurred_at >= :since")
     if visible_ids is not None:
         filters.append("emp.department_id IN :visible_ids")
@@ -1306,8 +1370,8 @@ def get_attendance_daily(
             CASE
                 WHEN first_in IS NULL THEN '缺少上班刷卡'
                 WHEN last_out IS NULL THEN '缺少下班刷卡'
-                WHEN first_in::time > time '08:30:00' THEN '遲到'
-                WHEN extract(epoch FROM (last_out - first_in)) / 3600.0 > 12 THEN '超過 12 小時'
+                WHEN first_in::time > cast(:late_threshold AS time) THEN '遲到'
+                WHEN extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours THEN '{_overtime_label()}'
                 ELSE '正常'
             END AS status
         FROM daily
@@ -1349,8 +1413,8 @@ def get_compliance_anomalies(
     days = max(1, min(days, 31))
     since = datetime.now(TAIPEI) - timedelta(days=days)
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"limit": limit}
-    filters = ["e.gate_id LIKE '%_A'", "e.decision = 'GRANTED'"]
+    params: dict[str, Any] = {"limit": limit, **_attendance_rule_params()}
+    filters = ["e.gate_id LIKE :main_gate_pattern", "e.decision = 'GRANTED'"]
     if visible_ids is not None:
         filters.append("emp.department_id IN :visible_ids")
         params["visible_ids"] = visible_ids or ["__none__"]
@@ -1385,7 +1449,7 @@ def get_compliance_anomalies(
                 SELECT ae.remark
                 FROM access_events ae
                 WHERE ae.employee_id = daily.employee_id
-                  AND ae.gate_id LIKE '%_A'
+                  AND ae.gate_id LIKE :main_gate_pattern
                   AND ae.decision = 'GRANTED'
                   AND ae.direction = 'OUT'
                   AND ae.occurred_at::date = daily.work_date
@@ -1396,7 +1460,7 @@ def get_compliance_anomalies(
         FROM daily
         WHERE first_in IS NOT NULL
           AND last_out IS NOT NULL
-          AND extract(epoch FROM (last_out - first_in)) / 3600.0 > 12
+          AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
         ORDER BY work_date DESC, work_hours DESC
         LIMIT :limit
         """
@@ -1414,7 +1478,7 @@ def get_compliance_anomalies(
                 "displayName": row["display_name"],
                 "departmentId": row["department_id"],
                 "type": "overtime_daily",
-                "typeLabel": "超過 12 小時",
+                "typeLabel": _overtime_label(),
                 "hours": f"{float(row['work_hours']):.1f}h",
                 "occurredAt": row["last_out"].isoformat() if row["last_out"] else row["work_date"].isoformat(),
                 "note": row["note"] or "待主管確認",
@@ -1511,6 +1575,7 @@ def update_compliance_anomaly_remark(
         "employee_id": employee_id,
         "work_date": work_date,
         "remark": remark.strip() or None,
+        "main_gate_pattern": _main_gate_pattern(),
     }
     filters = ["e.employee_id = :employee_id", "e.occurred_at::date = CAST(:work_date AS date)"]
 
@@ -1528,7 +1593,7 @@ def update_compliance_anomaly_remark(
             FROM access_events e
             JOIN employees emp ON emp.employee_id = e.employee_id
             WHERE {' AND '.join(filters)}
-              AND e.gate_id LIKE '%_A'
+              AND e.gate_id LIKE :main_gate_pattern
               AND e.decision = 'GRANTED'
               AND e.direction = :target_direction
             ORDER BY e.occurred_at { "ASC" if anomaly_kind == "late" else "DESC" }, e.id { "ASC" if anomaly_kind == "late" else "DESC" }
@@ -1620,9 +1685,9 @@ def _query_late_arrival_items(
         return _query_late_arrival_items_in_python(db, current_user, department_id, since, limit)
 
     visible_ids = _visible_department_ids(db, current_user, department_id)
-    params: dict[str, Any] = {"since": since, "limit": limit}
+    params: dict[str, Any] = {"since": since, "limit": limit, **_attendance_rule_params()}
     filters = [
-        "e.gate_id LIKE '%_A'",
+        "e.gate_id LIKE :main_gate_pattern",
         "e.decision = 'GRANTED'",
         "e.direction = 'IN'",
         "e.occurred_at >= :since",
@@ -1655,7 +1720,7 @@ def _query_late_arrival_items(
         SELECT request_id, employee_id, display_name, department_id, remark, occurred_at
         FROM ranked
         WHERE rn = 1
-          AND occurred_at::time > time '08:30:00'
+          AND occurred_at::time > cast(:late_threshold AS time)
         ORDER BY occurred_at DESC
         LIMIT :limit
         """
@@ -1688,14 +1753,14 @@ def _query_late_arrival_items_in_python(
 ) -> list[dict[str, Any]]:
     late_daily: dict[tuple[str, date], Any] = {}
     for row in _dashboard_event_rows(db, current_user, department_id, since, datetime.now(TAIPEI)):
-        if row.decision != "GRANTED" or row.direction != "IN" or not row.gate_id.endswith("_A"):
+        if row.decision != "GRANTED" or row.direction != "IN" or not _gate_matches_main(row.gate_id):
             continue
         occurred_at = _local_datetime(row.occurred_at)
         key = (row.employee_id, occurred_at.date())
         if key not in late_daily or occurred_at < _local_datetime(late_daily[key].occurred_at):
             late_daily[key] = row
     late_rows = sorted(
-        [row for row in late_daily.values() if _local_datetime(row.occurred_at).time() > time(8, 30)],
+        [row for row in late_daily.values() if _local_datetime(row.occurred_at).time() > _late_threshold_time()],
         key=lambda row: _local_datetime(row.occurred_at),
         reverse=True,
     )[:limit]
