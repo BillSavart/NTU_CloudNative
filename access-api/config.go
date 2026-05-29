@@ -14,7 +14,9 @@ type Config struct {
 	RedisPassword         string
 	RedisDB               int
 	StateKeyPrefix        string
+	StateTTLSeconds       int
 	EventStreamKey        string
+	EventStreamMaxLen     int64
 	EventDedupeKeyPrefix  string
 	EventDedupeTTLSeconds int
 	KafkaBrokers          []string
@@ -37,7 +39,9 @@ func LoadConfig() Config {
 		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
 		RedisDB:               getEnvInt("REDIS_DB", 0),
 		StateKeyPrefix:        getEnv("STATE_KEY_PREFIX", "access:state:"),
+		StateTTLSeconds:       getEnvInt("STATE_TTL_SECONDS", 172800),
 		EventStreamKey:        getEnv("EVENT_STREAM_KEY", "access:events"),
+		EventStreamMaxLen:     getEnvInt64("EVENT_STREAM_MAXLEN", 1000000),
 		EventDedupeKeyPrefix:  getEnv("EVENT_DEDUPE_KEY_PREFIX", "access:event-buffered:"),
 		EventDedupeTTLSeconds: getEnvInt("EVENT_DEDUPE_TTL_SECONDS", 86400),
 		KafkaBrokers:          getEnvCSV("KAFKA_BROKERS", "localhost:19092,localhost:29092,localhost:39092"),
@@ -67,6 +71,19 @@ func getEnvInt(key string, fallback int) int {
 	}
 
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return fallback
 	}

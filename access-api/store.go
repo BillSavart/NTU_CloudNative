@@ -13,10 +13,19 @@ import (
 const decideAccessScript = `
 local current = redis.call("GET", KEYS[1])
 local direction = ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+local function setState(value)
+	if ttl and ttl > 0 then
+		redis.call("SET", KEYS[1], value, "EX", ttl)
+	else
+		redis.call("SET", KEYS[1], value)
+	end
+end
 
 if not current then
 	if direction == "IN" then
-		redis.call("SET", KEYS[1], "IN")
+		setState("IN")
 		return {1, "UNKNOWN", "IN", "ACCESS_ALLOWED"}
 	end
 	return {0, "UNKNOWN", "UNKNOWN", "NO_ENTRY_RECORD"}
@@ -27,12 +36,12 @@ if current == direction then
 end
 
 if current == "IN" and direction == "OUT" then
-	redis.call("SET", KEYS[1], "OUT")
+	setState("OUT")
 	return {1, current, "OUT", "ACCESS_ALLOWED"}
 end
 
 if current == "OUT" and direction == "IN" then
-	redis.call("SET", KEYS[1], "IN")
+	setState("IN")
 	return {1, current, "IN", "ACCESS_ALLOWED"}
 end
 
@@ -45,17 +54,32 @@ if not dedupeSet then
 	return 0
 end
 
-redis.call("XADD", KEYS[2], "*",
-	"requestId", ARGV[1],
-	"employeeId", ARGV[2],
-	"gateId", ARGV[3],
-	"direction", ARGV[4],
-	"decision", ARGV[5],
-	"reason", ARGV[6],
-	"previousState", ARGV[7],
-	"currentState", ARGV[8],
-	"latencyMs", ARGV[9],
-	"timestamp", ARGV[11])
+local maxlen = tonumber(ARGV[12])
+if maxlen and maxlen > 0 then
+	redis.call("XADD", KEYS[2], "MAXLEN", "~", maxlen, "*",
+		"requestId", ARGV[1],
+		"employeeId", ARGV[2],
+		"gateId", ARGV[3],
+		"direction", ARGV[4],
+		"decision", ARGV[5],
+		"reason", ARGV[6],
+		"previousState", ARGV[7],
+		"currentState", ARGV[8],
+		"latencyMs", ARGV[9],
+		"timestamp", ARGV[11])
+else
+	redis.call("XADD", KEYS[2], "*",
+		"requestId", ARGV[1],
+		"employeeId", ARGV[2],
+		"gateId", ARGV[3],
+		"direction", ARGV[4],
+		"decision", ARGV[5],
+		"reason", ARGV[6],
+		"previousState", ARGV[7],
+		"currentState", ARGV[8],
+		"latencyMs", ARGV[9],
+		"timestamp", ARGV[11])
+end
 return 1
 `
 
@@ -130,7 +154,7 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 
 func (s *RedisStore) DecideAccess(ctx context.Context, employeeID, direction string) (AccessDecision, error) {
 	key := s.stateKey(employeeID)
-	result, err := s.client.Eval(ctx, decideAccessScript, []string{key}, direction).Result()
+	result, err := s.client.Eval(ctx, decideAccessScript, []string{key}, direction, s.cfg.StateTTLSeconds).Result()
 	if err != nil {
 		return AccessDecision{}, err
 	}
@@ -171,6 +195,8 @@ func (s *RedisStore) ResetState(ctx context.Context, employeeID string) error {
 func (s *RedisStore) AppendEvent(ctx context.Context, event AccessEvent) error {
 	return s.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: s.cfg.EventStreamKey,
+		MaxLen: s.cfg.EventStreamMaxLen,
+		Approx: true,
 		Values: map[string]interface{}{
 			"requestId":     event.RequestID,
 			"employeeId":    event.EmployeeID,
@@ -208,6 +234,7 @@ func (s *RedisStore) AppendEventOnce(ctx context.Context, event AccessEvent) err
 		event.LatencyMs,
 		ttlSeconds,
 		event.Timestamp.Format(time.RFC3339Nano),
+		s.cfg.EventStreamMaxLen,
 	).Err()
 }
 

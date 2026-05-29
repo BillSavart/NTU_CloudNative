@@ -753,10 +753,11 @@ def query_access_events(
     if reason:
         query = query.where(AccessEvent.reason == reason)
 
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     events = db.scalars(query.order_by(AccessEvent.occurred_at.desc()).limit(limit).offset(offset)).all()
     return {
         "items": [serialize_access_event(event) for event in events],
-        "total": offset + len(events),
+        "total": total,
         "limit": limit,
         "offset": offset,
     }
@@ -1820,7 +1821,9 @@ def _visible_department_ids(db: Session, current_user: UserAccount | None, depar
         requested_ids = {department_id, *get_descendant_department_ids(db, department_id)}
 
     if current_user is None:
-        return sorted(requested_ids) if requested_ids is not None else None
+        # Anonymous requests must never see data. Returning an empty list
+        # (not None) filters every scoped query down to zero rows.
+        return []
 
     visible_ids = get_visible_department_ids(db, current_user)
     if requested_ids is not None:
