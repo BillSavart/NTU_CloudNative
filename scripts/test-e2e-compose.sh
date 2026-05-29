@@ -105,6 +105,9 @@ wait_for_url access-api "$ACCESS_URL/healthz"
 wait_for_url reporting-api "$REPORTING_URL/api/health/"
 wait_for_url frontend "$FRONTEND_URL/"
 
+echo "Seeding Reporting API demo users for E2E login..."
+"${COMPOSE[@]}" exec -T reporting-api python -m app.seed >/dev/null
+
 echo "Logging in to Reporting API for report access..."
 curl -fsS -c "$COOKIE_JAR" -X POST "$REPORTING_URL/api/auth/login" \
   -H "Content-Type: application/json" \
