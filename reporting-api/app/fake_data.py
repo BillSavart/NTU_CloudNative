@@ -92,12 +92,13 @@ def parse_bool(name: str, default: bool) -> bool:
 
 
 def build_work_days(operating_days: int, include_weekends: bool) -> list[date]:
+    # A 24/7 fab runs every calendar day. We always return every day; whether a
+    # given employee works a given day (e.g. office staff skip weekends, shift
+    # operators rotate days off) is decided per-employee inside the SQL. The
+    # include_weekends flag is kept for backwards-compat but no longer filters.
     today = datetime.now(TAIPEI).date()
     start = today - timedelta(days=max(operating_days - 1, 0))
-    days = [start + timedelta(days=offset) for offset in range((today - start).days + 1)]
-    if include_weekends:
-        return days
-    return [day for day in days if day.weekday() < 5]
+    return [start + timedelta(days=offset) for offset in range((today - start).days + 1)]
 
 
 def seed_ordinary_employees(db, count: int) -> None:
@@ -136,6 +137,24 @@ def seed_attendance_events(
     max_moves_per_day: int,
     seeded_until: datetime,
 ) -> None:
+    # 24/7 semiconductor-fab shift model. Each employee gets a stable shift
+    # "bucket" from a hash of their id, so the population is split across shifts
+    # that together cover the clock and keep the fab staffed at all hours:
+    #
+    #   bucket   share  shift          start   length   notes
+    #   0-39     40%    day operator   07:30   12h      out ~19:30
+    #   40-64    25%    office/eng     09:00    9h(+OT) weekdays only, frequent OT
+    #   65-79    15%    night operator 19:30   12h      out ~07:30 NEXT day (overnight presence)
+    #   80-89    10%    graveyard      00:00    8h      out ~08:00 (covers 00:00-08:00)
+    #   90-99    10%    swing/late     15:00    8.5h    out ~23:30
+    #
+    # Per-day jitter on start (+/-15m), duration (-30..+120m) and occasional big
+    # overtime (+90..240m) spreads work hours so they are NOT all identical.
+    # Whether someone works a given day is also randomised (operators ~78%/day
+    # all week; office ~93% on weekdays) so daily headcount varies realistically.
+    #
+    # "Currently inside" falls out naturally: events after seeded_until (now) are
+    # pruned, so anyone mid-shift has their check-OUT removed and shows as IN.
     for day_index, work_day in enumerate(work_days, start=1):
         db.execute(
             text(
@@ -150,161 +169,90 @@ def seed_attendance_events(
                     ORDER BY employee_id
                     LIMIT :employee_count
                 ),
-                hashes AS (
+                attrs AS (
                     SELECT
                         employee_id,
                         fab_no,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'in'), 1, 8))::bit(32)::bigint) AS in_hash,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'out'), 1, 8))::bit(32)::bigint) AS out_hash
+                        (abs(('x' || substr(md5(employee_id), 1, 8))::bit(32)::bigint) % 100) AS bucket,
+                        abs(('x' || substr(md5(:work_date || employee_id || 'day'), 1, 8))::bit(32)::bigint) AS day_hash,
+                        abs(('x' || substr(md5(:work_date || employee_id || 'move'), 1, 8))::bit(32)::bigint) AS move_hash,
+                        EXTRACT(ISODOW FROM CAST(:work_date AS date))::int AS isodow
                     FROM target_employees
+                ),
+                plan AS (
+                    SELECT
+                        employee_id, fab_no, bucket, day_hash, move_hash,
+                        CASE
+                            WHEN bucket < 40 THEN 450    -- day operator   07:30
+                            WHEN bucket < 65 THEN 540    -- office         09:00
+                            WHEN bucket < 80 THEN 1170   -- night operator 19:30
+                            WHEN bucket < 90 THEN 0      -- graveyard      00:00
+                            ELSE 900                     -- swing          15:00
+                        END AS base_start_min,
+                        CASE
+                            WHEN bucket < 40 THEN 720    -- 12h
+                            WHEN bucket < 65 THEN 540    -- 9h office
+                            WHEN bucket < 80 THEN 720    -- 12h
+                            WHEN bucket < 90 THEN 480    -- 8h
+                            ELSE 510                     -- 8.5h swing
+                        END AS base_dur_min,
+                        ((day_hash % 31) - 15) AS start_jitter_min,
+                        (((day_hash / 7) % 151) - 30) AS dur_jitter_min,
+                        CASE WHEN (day_hash / 3) % 100 < 8 THEN (90 + (day_hash % 151)) ELSE 0 END AS ot_min,
+                        CASE
+                            WHEN bucket >= 40 AND bucket < 65
+                                THEN (isodow <= 5 AND (day_hash % 100) < 93)   -- office: weekdays, ~93%
+                            ELSE ((day_hash % 100) < 78)                       -- operators: any day, ~78%
+                        END AS works_today
+                    FROM attrs
+                ),
+                sessions AS (
+                    SELECT
+                        employee_id,
+                        fab_no,
+                        move_hash,
+                        (CAST(:work_date AS date)
+                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0))) AS checkin_at,
+                        (CAST(:work_date AS date)
+                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0)
+                                                   + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))) AS checkout_at
+                    FROM plan
+                    WHERE works_today
                 ),
                 checkins AS (
                     SELECT
                         concat('fake', chr(58), :work_date, chr(58), employee_id, chr(58), 'in') AS request_id,
                         employee_id,
                         'gate_' || fab_no || '_A' AS gate_id,
-                        'IN' AS direction,
-                        'GRANTED' AS decision,
-                        'ACCESS_ALLOWED' AS reason,
-                        'OUT' AS previous_state,
-                        'IN' AS current_state,
-                        3 + (in_hash % 12)::int AS latency_ms,
-                        CASE
-                            WHEN in_hash % 100 < 4 THEN
-                                (CAST(:work_date AS date) + time '08:31')
-                                + ((in_hash % 45) * interval '1 minute')
-                                + (((in_hash / 17) % 60) * interval '1 second')
-                            ELSE
-                                (CAST(:work_date AS date) + time '08:00')
-                                + ((in_hash % 31) * interval '1 minute')
-                                + (((in_hash / 17) % 60) * interval '1 second')
-                        END AS occurred_at
-                    FROM hashes
+                        'IN' AS direction, 'GRANTED' AS decision, 'ACCESS_ALLOWED' AS reason,
+                        'OUT' AS previous_state, 'IN' AS current_state,
+                        3 + (move_hash % 12)::int AS latency_ms,
+                        checkin_at AS occurred_at
+                    FROM sessions
                 ),
                 checkouts AS (
                     SELECT
                         concat('fake', chr(58), :work_date, chr(58), employee_id, chr(58), 'out') AS request_id,
                         employee_id,
                         'gate_' || fab_no || '_A' AS gate_id,
-                        'OUT' AS direction,
-                        'GRANTED' AS decision,
-                        'ACCESS_ALLOWED' AS reason,
-                        'IN' AS previous_state,
-                        'OUT' AS current_state,
-                        3 + (out_hash % 12)::int AS latency_ms,
-                        CASE
-                            WHEN out_hash % 1000 < 8 THEN
-                                (CAST(:work_date AS date) + time '20:30')
-                                + ((out_hash % 209) * interval '1 minute')
-                                + (((out_hash / 23) % 60) * interval '1 second')
-                            ELSE
-                                (CAST(:work_date AS date) + time '17:00')
-                                + ((out_hash % 120) * interval '1 minute')
-                                + (((out_hash / 23) % 60) * interval '1 second')
-                        END AS occurred_at
-                    FROM hashes
-                )
-                INSERT INTO access_events (
-                    request_id,
-                    employee_id,
-                    gate_id,
-                    direction,
-                    decision,
-                    reason,
-                    previous_state,
-                    current_state,
-                    latency_ms,
-                    remark,
-                    occurred_at
-                )
-                SELECT request_id, employee_id, gate_id, direction, decision, reason,
-                       previous_state, current_state, latency_ms, NULL, occurred_at
-                FROM checkins
-                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
-                UNION ALL
-                SELECT request_id, employee_id, gate_id, direction, decision, reason,
-                       previous_state, current_state, latency_ms, NULL, occurred_at
-                FROM checkouts
-                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
-                ON CONFLICT (request_id) DO NOTHING
-                """
-            ),
-            {
-                "work_date": work_day.isoformat(),
-                "employee_count": employee_count,
-                "seeded_until": seeded_until.isoformat(),
-            },
-        )
-        db.execute(
-            text(
-                """
-                WITH target_employees AS (
-                    SELECT
-                        employee_id,
-                        COALESCE((regexp_match(department_id, '([0-9]+)$'))[1], '1') AS fab_no
-                    FROM employees
-                    WHERE department_id IS NOT NULL
-                      AND department_id <> 'TSMC'
-                    ORDER BY employee_id
-                    LIMIT :employee_count
-                ),
-                hashes AS (
-                    SELECT
-                        employee_id,
-                        fab_no,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'in'), 1, 8))::bit(32)::bigint) AS in_hash,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'out'), 1, 8))::bit(32)::bigint) AS out_hash,
-                        abs(('x' || substr(md5(:work_date || employee_id || 'move'), 1, 8))::bit(32)::bigint) AS move_hash
-                    FROM target_employees
-                ),
-                attendance_bounds AS (
-                    SELECT
-                        employee_id,
-                        fab_no,
-                        move_hash,
-                        CASE
-                            WHEN in_hash % 100 < 4 THEN
-                                (CAST(:work_date AS date) + time '08:31')
-                                + ((in_hash % 45) * interval '1 minute')
-                                + (((in_hash / 17) % 60) * interval '1 second')
-                            ELSE
-                                (CAST(:work_date AS date) + time '08:00')
-                                + ((in_hash % 31) * interval '1 minute')
-                                + (((in_hash / 17) % 60) * interval '1 second')
-                        END AS checkin_at,
-                        CASE
-                            WHEN out_hash % 1000 < 8 THEN
-                                (CAST(:work_date AS date) + time '20:30')
-                                + ((out_hash % 209) * interval '1 minute')
-                                + (((out_hash / 23) % 60) * interval '1 second')
-                            ELSE
-                                (CAST(:work_date AS date) + time '17:00')
-                                + ((out_hash % 120) * interval '1 minute')
-                                + (((out_hash / 23) % 60) * interval '1 second')
-                        END AS checkout_at
-                    FROM hashes
+                        'OUT' AS direction, 'GRANTED' AS decision, 'ACCESS_ALLOWED' AS reason,
+                        'IN' AS previous_state, 'OUT' AS current_state,
+                        3 + ((move_hash / 5) % 12)::int AS latency_ms,
+                        checkout_at AS occurred_at
+                    FROM sessions
                 ),
                 movers AS (
                     SELECT
-                        employee_id,
-                        fab_no,
-                        move_hash,
-                        checkin_at,
-                        checkout_at,
+                        employee_id, fab_no, move_hash, checkin_at, checkout_at,
                         1 + (move_hash % :max_moves_per_day)::int AS move_count
-                    FROM attendance_bounds
+                    FROM sessions
                     WHERE move_hash % 100 < :movement_pct
                       AND checkout_at > checkin_at + interval '1 hour'
                 ),
                 move_slots AS (
                     SELECT
-                        movers.employee_id,
-                        movers.fab_no,
-                        movers.move_hash,
-                        movers.checkin_at,
-                        movers.checkout_at,
-                        movers.move_count,
-                        slot_no,
+                        movers.employee_id, movers.fab_no, movers.checkin_at,
+                        movers.checkout_at, movers.move_count, slot_no,
                         abs(('x' || substr(md5(:work_date || movers.employee_id || 'slot' || slot_no), 1, 8))::bit(32)::bigint) AS slot_hash
                     FROM movers
                     CROSS JOIN LATERAL generate_series(1, movers.move_count) AS slot_no
@@ -314,62 +262,48 @@ def seed_attendance_events(
                         concat('fake', chr(58), :work_date, chr(58), employee_id, chr(58), 'move-out-', slot_no) AS request_id,
                         employee_id,
                         'gate_' || fab_no || '_' || chr(66 + (slot_hash % 4)::int) AS gate_id,
-                        'OUT' AS direction,
-                        'GRANTED' AS decision,
-                        'ACCESS_ALLOWED' AS reason,
-                        'IN' AS previous_state,
-                        'OUT' AS current_state,
+                        'OUT' AS direction, 'GRANTED' AS decision, 'ACCESS_ALLOWED' AS reason,
+                        'IN' AS previous_state, 'OUT' AS current_state,
                         4 + (slot_hash % 10)::int AS latency_ms,
                         checkin_at
-                            + (
-                                floor(
-                                    extract(epoch FROM (checkout_at - checkin_at))
-                                    * slot_no::double precision
-                                    / (move_count + 1)
-                                ) * interval '1 second'
-                            )
+                            + make_interval(secs => floor(
+                                  extract(epoch FROM (checkout_at - checkin_at))
+                                  * slot_no::double precision / (move_count + 1))::int)
                             - interval '15 minutes'
-                            + ((slot_hash % 600) * interval '1 second') AS occurred_at,
-                        slot_no,
+                            + make_interval(secs => (slot_hash % 600)::int) AS occurred_at,
                         slot_hash
                     FROM move_slots
                 ),
                 move_in AS (
                     SELECT
-                        concat('fake', chr(58), :work_date, chr(58), employee_id, chr(58), 'move-in-', slot_no) AS request_id,
-                        employee_id,
-                        gate_id,
-                        'IN' AS direction,
-                        'GRANTED' AS decision,
-                        'ACCESS_ALLOWED' AS reason,
-                        'OUT' AS previous_state,
-                        'IN' AS current_state,
+                        replace(request_id, 'move-out-', 'move-in-') AS request_id,
+                        employee_id, gate_id,
+                        'IN' AS direction, 'GRANTED' AS decision, 'ACCESS_ALLOWED' AS reason,
+                        'OUT' AS previous_state, 'IN' AS current_state,
                         latency_ms,
-                        occurred_at
-                            + (300 + ((slot_hash / 29) % 1200)) * interval '1 second' AS occurred_at
+                        occurred_at + make_interval(secs => (300 + ((slot_hash / 29) % 1200))::int) AS occurred_at
                     FROM move_out
+                ),
+                all_events AS (
+                    SELECT request_id, employee_id, gate_id, direction, decision, reason,
+                           previous_state, current_state, latency_ms, occurred_at FROM checkins
+                    UNION ALL
+                    SELECT request_id, employee_id, gate_id, direction, decision, reason,
+                           previous_state, current_state, latency_ms, occurred_at FROM checkouts
+                    UNION ALL
+                    SELECT request_id, employee_id, gate_id, direction, decision, reason,
+                           previous_state, current_state, latency_ms, occurred_at FROM move_out
+                    UNION ALL
+                    SELECT request_id, employee_id, gate_id, direction, decision, reason,
+                           previous_state, current_state, latency_ms, occurred_at FROM move_in
                 )
                 INSERT INTO access_events (
-                    request_id,
-                    employee_id,
-                    gate_id,
-                    direction,
-                    decision,
-                    reason,
-                    previous_state,
-                    current_state,
-                    latency_ms,
-                    remark,
-                    occurred_at
+                    request_id, employee_id, gate_id, direction, decision, reason,
+                    previous_state, current_state, latency_ms, remark, occurred_at
                 )
                 SELECT request_id, employee_id, gate_id, direction, decision, reason,
                        previous_state, current_state, latency_ms, NULL, occurred_at
-                FROM move_out
-                WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
-                UNION ALL
-                SELECT request_id, employee_id, gate_id, direction, decision, reason,
-                       previous_state, current_state, latency_ms, NULL, occurred_at
-                FROM move_in
+                FROM all_events
                 WHERE occurred_at <= CAST(:seeded_until AS timestamptz)
                 ON CONFLICT (request_id) DO NOTHING
                 """
