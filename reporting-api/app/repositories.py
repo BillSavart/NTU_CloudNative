@@ -1019,7 +1019,6 @@ def get_department_analytics(
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
                       AND NOT {_late_sql('first_in')}
-                      AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= :overtime_hours
                 ) AS normal_records,
                 count(*) FILTER (WHERE first_in IS NOT NULL AND {_late_sql('first_in')}) AS late_records,
                 count(*) FILTER (
@@ -1107,7 +1106,9 @@ def _department_daily_rows_in_python(
             work_hours = (last_out - first_in).total_seconds() / 3600
             if work_hours > _overtime_hours():
                 rows[department_id]["overtime_records"] += 1
-            elif not _is_late_time(first_in.time()):
+            # Overtime still counts as normal attendance as long as the person
+            # arrived on time with a complete in/out (overtime is a separate flag).
+            if not _is_late_time(first_in.time()):
                 rows[department_id]["normal_records"] += 1
     return rows
 
