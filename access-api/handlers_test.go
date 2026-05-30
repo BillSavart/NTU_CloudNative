@@ -19,9 +19,13 @@ type fakeStore struct {
 	mu              sync.Mutex
 	states          map[string]string
 	events          []AccessEvent
+	listEvents      []EventDTO
 	failPing        bool
 	failDecide      bool
+	failGetState    bool
+	failResetState  bool
 	failAppendEvent bool
+	failListEvents  bool
 }
 
 func newFakeStore() *fakeStore {
@@ -61,6 +65,9 @@ func (s *fakeStore) DecideAccess(ctx context.Context, employeeID, direction stri
 }
 
 func (s *fakeStore) GetState(ctx context.Context, employeeID string) (string, bool, error) {
+	if s.failGetState {
+		return "", false, errors.New("state unavailable")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -72,6 +79,9 @@ func (s *fakeStore) GetState(ctx context.Context, employeeID string) (string, bo
 }
 
 func (s *fakeStore) ResetState(ctx context.Context, employeeID string) error {
+	if s.failResetState {
+		return errors.New("reset unavailable")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -91,7 +101,13 @@ func (s *fakeStore) AppendEventOnce(ctx context.Context, event AccessEvent) erro
 }
 
 func (s *fakeStore) ListEvents(ctx context.Context, limit int64) ([]EventDTO, error) {
-	return []EventDTO{}, nil
+	if s.failListEvents {
+		return nil, errors.New("stream unavailable")
+	}
+	if int(limit) < len(s.listEvents) {
+		return s.listEvents[:limit], nil
+	}
+	return s.listEvents, nil
 }
 
 type fakePublisher struct {
@@ -145,7 +161,9 @@ func setupTestRouter(store *fakeStore, publisher *fakePublisher) *gin.Engine {
 	router.GET("/metrics", app.Metrics)
 	api := router.Group("/api/access")
 	api.POST("/swipe", app.Swipe)
+	api.GET("/state/:employeeId", app.GetState)
 	api.POST("/reset/:employeeId", app.ResetState)
+	api.GET("/events", app.ListEvents)
 	return router
 }
 
@@ -247,6 +265,110 @@ func TestSwipePublisherFailureDoesNotFailDecision(t *testing.T) {
 	}
 	if response.KafkaQueued {
 		t.Fatalf("KafkaQueued = true, want false when publisher returns an error")
+	}
+}
+
+func TestSwipeBufferFailureStillReturnsDecision(t *testing.T) {
+	store := newFakeStore()
+	store.failAppendEvent = true
+	router := setupTestRouter(store, &fakePublisher{})
+
+	rec, response := postSwipe(t, router, `{"employeeId":"E1","gateId":"GATE_1","direction":"IN"}`)
+	if rec.Code != http.StatusOK || response.Decision != DecisionGranted {
+		t.Fatalf("buffer failure response = status %d %+v", rec.Code, response)
+	}
+	if response.EventBuffered {
+		t.Fatalf("EventBuffered = true, want false when Redis buffering fails")
+	}
+}
+
+func TestHealthzReportsStoreAndPublisherFailures(t *testing.T) {
+	t.Run("store unavailable", func(t *testing.T) {
+		store := newFakeStore()
+		store.failPing = true
+		router := setupTestRouter(store, &fakePublisher{})
+
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "redis") {
+			t.Fatalf("healthz store failure = status %d body %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("publisher unavailable", func(t *testing.T) {
+		router := setupTestRouter(newFakeStore(), &fakePublisher{healthErr: errors.New("kafka down")})
+
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "kafka down") {
+			t.Fatalf("healthz publisher failure = status %d body %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestStateResetAndEventsEndpoints(t *testing.T) {
+	store := newFakeStore()
+	store.states["E1"] = DirectionIn
+	store.listEvents = []EventDTO{
+		{ID: "1-0", Fields: map[string]string{"requestId": "REQ-1"}},
+		{ID: "2-0", Fields: map[string]string{"requestId": "REQ-2"}},
+	}
+	router := setupTestRouter(store, &fakePublisher{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/access/state/E1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), DirectionIn) {
+		t.Fatalf("get state = status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/access/reset/E1", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || store.states["E1"] != "" {
+		t.Fatalf("reset state = status %d state %q", rec.Code, store.states["E1"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/access/events?limit=1", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "REQ-1") || strings.Contains(rec.Body.String(), "REQ-2") {
+		t.Fatalf("list events limit = status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStateResetAndEventsFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		setup func(*fakeStore)
+	}{
+		{name: "get state", path: "/api/access/state/E1", setup: func(s *fakeStore) { s.failGetState = true }},
+		{name: "reset state", path: "/api/access/reset/E1", setup: func(s *fakeStore) { s.failResetState = true }},
+		{name: "list events", path: "/api/access/events", setup: func(s *fakeStore) { s.failListEvents = true }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			tt.setup(store)
+			router := setupTestRouter(store, &fakePublisher{})
+
+			method := http.MethodGet
+			if strings.Contains(tt.path, "reset") {
+				method = http.MethodPost
+			}
+			req := httptest.NewRequest(method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("%s failure status = %d, want %d", tt.name, rec.Code, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 
