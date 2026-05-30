@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
@@ -110,6 +111,14 @@ def _attendance_rule_params() -> dict[str, Any]:
 
 WORK_HOUR_SUMMARY_CACHE_TTL_SECONDS = 600
 _work_hour_summary_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+
+# Short-lived cache for the (expensive, company-wide) default dashboard. The
+# executive/all-departments rollup over the full dataset is heavy on a single
+# node; caching the default "live" call by scope for a few seconds keeps the
+# home overview responsive without changing any query. Set
+# DASHBOARD_CACHE_TTL_SECONDS=0 to disable.
+DASHBOARD_CACHE_TTL_SECONDS = float(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "60"))
+_dashboard_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 
 REQUIRED_EVENT_FIELDS = {
     "requestId",
@@ -273,6 +282,22 @@ def get_dashboard(
     department_id: str | None = None,
 ) -> dict[str, Any]:
     started_at = perf_counter()
+    # Serve the default "live" dashboard from a short TTL cache, keyed by the
+    # caller's visible scope (so executive/all-departments — the slow one — is
+    # only computed occasionally). Explicit time windows are never cached.
+    use_cache = from_time is None and to_time is None and DASHBOARD_CACHE_TTL_SECONDS > 0
+    cache_key = None
+    if use_cache:
+        visible_ids = _visible_department_ids(db, current_user, department_id)
+        scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
+        cache_key = (
+            current_user.user_id if current_user is not None else "anonymous",
+            department_id or "ALL",
+            scope_key,
+        )
+        cached = _dashboard_cache.get(cache_key)
+        if cached is not None and (perf_counter() - cached[0]) < DASHBOARD_CACHE_TTL_SECONDS:
+            return cached[1]
     if from_time is None and to_time is None:
         latest_event_at = db.scalar(
             select(func.max(_scoped_event_select(db, current_user, department_id, None, None).subquery().c.occurred_at))
@@ -294,13 +319,16 @@ def get_dashboard(
     )
     anomalies = list_anomalies(db, current_user, from_time, to_time, department_id, limit=10, offset=0)["items"]
     timeseries = get_timeseries(db, current_user, from_time, to_time, department_id)
-    return {
+    result = {
         **summary,
         **operational_metrics,
         "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
         "anomalies": anomalies,
         "timeseries": timeseries,
     }
+    if cache_key is not None:
+        _dashboard_cache[cache_key] = (perf_counter(), result)
+    return result
 
 
 def get_report_center(
