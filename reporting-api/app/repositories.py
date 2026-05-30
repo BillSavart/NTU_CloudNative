@@ -119,6 +119,9 @@ _work_hour_summary_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = 
 # DASHBOARD_CACHE_TTL_SECONDS=0 to disable.
 DASHBOARD_CACHE_TTL_SECONDS = float(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "60"))
 _dashboard_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+# Same idea for the report center (default, no-window call), which is also heavy
+# company-wide. Shares the dashboard TTL.
+_report_center_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 
 REQUIRED_EVENT_FIELDS = {
     "requestId",
@@ -341,12 +344,28 @@ def get_report_center(
 ) -> dict[str, Any]:
     started_at = perf_counter()
     limit = max(1, min(limit, 1000))
+    # Cache the default (no-window) report center by scope, like the dashboard,
+    # so the heavy company-wide rollup stays responsive after the first load.
+    use_cache = from_time is None and to_time is None and DASHBOARD_CACHE_TTL_SECONDS > 0
+    cache_key = None
+    if use_cache:
+        visible_ids = _visible_department_ids(db, current_user, department_id)
+        scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
+        cache_key = (
+            current_user.user_id if current_user is not None else "anonymous",
+            department_id or "ALL",
+            scope_key,
+            limit,
+        )
+        cached = _report_center_cache.get(cache_key)
+        if cached is not None and (perf_counter() - cached[0]) < DASHBOARD_CACHE_TTL_SECONDS:
+            return cached[1]
     if from_time is None:
         from_time = datetime.now(TAIPEI) - timedelta(days=7)
     if to_time is None:
         to_time = datetime.now(TAIPEI)
     if db.bind is not None and db.bind.dialect.name != "sqlite":
-        return _get_report_center_sql(
+        result = _get_report_center_sql(
             db,
             current_user=current_user,
             from_time=from_time,
@@ -355,6 +374,9 @@ def get_report_center(
             limit=limit,
             started_at=started_at,
         )
+        if cache_key is not None:
+            _report_center_cache[cache_key] = (perf_counter(), result)
+        return result
 
     rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
     total_events = len(rows)
