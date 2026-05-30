@@ -177,8 +177,8 @@ function Dashboard() {
             {isEmployee
               ? `${monthlyAttendance.attendedDays}/${monthlyAttendance.expectedDays} 當月已出勤`
               : hrMetrics
-                ? `${hrMetrics.attendedToday}/${hrMetrics.expectedToday} 今日已進廠`
-                : '今日應到 / 實到'}
+                ? `${hrMetrics.attendedToday}/${hrMetrics.expectedToday} 目前在廠`
+                : '在廠 / 全部'}
           </div>
         </div>
         <div className="kpi-card">
