@@ -6,6 +6,7 @@ import { fetchCurrentUser, logout, type CurrentUser } from '../../services/auth'
 type AppShellProps = {
   title: string
   subtitle?: string
+  headerAction?: ReactNode
   children: ReactNode
 }
 
@@ -17,7 +18,7 @@ const navItems = [
   { to: '/employee/reports', label: '報表中心' },
 ]
 
-function AppShell({ title, subtitle, children }: AppShellProps) {
+function AppShell({ title, subtitle, headerAction, children }: AppShellProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const [now, setNow] = useState(new Date())
@@ -86,11 +87,12 @@ function AppShell({ title, subtitle, children }: AppShellProps) {
 
       <div className="attendance-main">
         <header className="attendance-header">
-          <div>
+          <div className="attendance-header-title-block">
             <h1 className="attendance-title">{title}</h1>
             {subtitle ? <p className="attendance-subtitle">{subtitle}</p> : null}
           </div>
           <div className="attendance-header-meta">
+            {headerAction}
             <div className="attendance-header-datetime">{datetimeText}</div>
           </div>
         </header>

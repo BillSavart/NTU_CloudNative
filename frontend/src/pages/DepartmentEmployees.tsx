@@ -81,13 +81,15 @@ function DepartmentEmployees() {
     : '檢視部門員工的即時狀態、本月工時與異常紀錄'
 
   return (
-    <AppShell title="員工名單" subtitle={subtitle}>
-      <div className="page-toolbar">
+    <AppShell
+      title="員工名單"
+      subtitle={subtitle}
+      headerAction={
         <Link className="secondary-action-link" to="/analytics">
           返回部門分析
         </Link>
-      </div>
-
+      }
+    >
       <section className="kpi-grid">
         <div className="kpi-card">
           <div className="kpi-label">部門員工</div>
