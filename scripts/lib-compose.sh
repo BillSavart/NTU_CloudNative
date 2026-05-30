@@ -32,5 +32,13 @@ if [ "${ENABLE_HTTPS:-false}" = "true" ]; then
   COMPOSE_FILES+=(-f docker-compose.https.yml)
 fi
 
+# When ENABLE_LIVE_SWIPES=true, enable the "live" compose profile globally so
+# every `up -d` (deploy + boot) keeps the live-swiper running — it then survives
+# reboots and redeploys (restart: unless-stopped) and keeps generating swipes
+# continuously until you set this back to false.
+if [ "${ENABLE_LIVE_SWIPES:-false}" = "true" ]; then
+  export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}live"
+fi
+
 COMPOSE=(docker compose "${COMPOSE_FILES[@]}")
 export K6_COMPOSE_FILES="${COMPOSE_FILES[*]}"
