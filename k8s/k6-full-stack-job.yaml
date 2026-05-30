@@ -31,7 +31,10 @@ spec:
             - name: LOGIN_ID
               value: rd_1_manager
             - name: LOGIN_PASSWORD
-              value: demo123
+              valueFrom:
+                secretKeyRef:
+                  name: access-control-secrets
+                  key: DEMO_SEED_PASSWORD
             - name: VUS
               value: "20"
             - name: RAMP_UP
