@@ -263,6 +263,39 @@ Watch results in Grafana (`https://grafana.tsmc-dpac.systems`); pick the run's
 
 ---
 
+## Phase 5 — live swipe activity (for a "living" demo)
+
+`fake_data` is historical + a current snapshot; it does not emit new events
+after loading. To make the dashboards show people entering/leaving *while you
+present*, run the opt-in live generator. It POSTs real swipes to the Access API
+for a sample of seeded employees (toggling IN/OUT so anti-passback holds), so
+events flow Access → Redis → Kafka → Reporting → frontend in real time.
+
+```bash
+cd ~/NTU_CloudNative
+./scripts/live_swipes_prod.sh                 # start (~60 swipes/min, background)
+LIVE_SWIPES_PER_MIN=180 ./scripts/live_swipes_prod.sh   # busier
+./scripts/live_swipes_prod.sh stop            # stop when done
+# watch it:
+. scripts/lib-compose.sh && "${COMPOSE[@]}" logs -f live-swiper
+```
+
+- Needs seed + fake data already loaded. Uses the reporting-api image, so it
+  only exists after a deploy that built it.
+- It's **profile-gated**: a normal deploy / VM reboot does **not** start it, and
+  a redeploy may stop it — just re-run the start command before demoing.
+- Live swipes are real events (not `fake:`-prefixed) and accumulate in the DB;
+  that's intended — it's what keeps "currently inside" and recent activity
+  moving during the demo.
+
+> **Local dev (watch it on your laptop):** with the base stack up
+> (`docker compose up -d --build`) and data loaded, run the generator as a
+> one-off against the local Access LB:
+> `docker compose run --rm -e ACCESS_BASE_URL=http://access-lb:8080 -e LIVE_SWIPES_PER_MIN=180 reporting-api python -m app.live_swipes`
+> then open the frontend and watch events stream in.
+
+---
+
 ## 💰 Cost checklist
 
 The VM is ~90% of the bill, so the levers are *when it runs* and *disk/IP size*.
