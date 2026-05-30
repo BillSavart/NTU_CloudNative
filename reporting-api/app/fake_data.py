@@ -162,7 +162,8 @@ def seed_attendance_events(
                 WITH target_employees AS (
                     SELECT
                         employee_id,
-                        COALESCE((regexp_match(department_id, '([0-9]+)$'))[1], '1') AS fab_no
+                        COALESCE((regexp_match(department_id, '([0-9]+)$'))[1], '1') AS fab_no,
+                        split_part(department_id, '_', 1) AS unit
                     FROM employees
                     WHERE department_id IS NOT NULL
                       AND department_id <> 'TSMC'
@@ -173,6 +174,10 @@ def seed_attendance_events(
                     SELECT
                         employee_id,
                         fab_no,
+                        -- RD / IT are office/engineering (regular daytime hours).
+                        -- PE / EE run 24h rotating shifts. Anything else defaults
+                        -- to shift coverage so the fab is never unstaffed.
+                        (unit IN ('RD', 'IT')) AS is_office,
                         (abs(('x' || substr(md5(employee_id), 1, 8))::bit(32)::bigint) % 100) AS bucket,
                         abs(('x' || substr(md5(:work_date || employee_id || 'day'), 1, 8))::bit(32)::bigint) AS day_hash,
                         abs(('x' || substr(md5(:work_date || employee_id || 'move'), 1, 8))::bit(32)::bigint) AS move_hash,
@@ -181,28 +186,30 @@ def seed_attendance_events(
                 ),
                 plan AS (
                     SELECT
-                        employee_id, fab_no, bucket, day_hash, move_hash,
+                        employee_id, fab_no, is_office, bucket, day_hash, move_hash,
+                        -- Office (RD/IT): single 09:00 day shift.
+                        -- Shift units (PE/EE): split across day / night / graveyard / swing.
                         CASE
-                            WHEN bucket < 40 THEN 450    -- day operator   07:30
-                            WHEN bucket < 65 THEN 540    -- office         09:00
-                            WHEN bucket < 80 THEN 1170   -- night operator 19:30
-                            WHEN bucket < 90 THEN 0      -- graveyard      00:00
-                            ELSE 900                     -- swing          15:00
+                            WHEN is_office       THEN 540   -- office          09:00
+                            WHEN bucket < 50     THEN 450   -- day operator    07:30
+                            WHEN bucket < 72     THEN 1170  -- night operator  19:30
+                            WHEN bucket < 86     THEN 0     -- graveyard       00:00
+                            ELSE 900                        -- swing           15:00
                         END AS base_start_min,
                         CASE
-                            WHEN bucket < 40 THEN 720    -- 12h
-                            WHEN bucket < 65 THEN 540    -- 9h office
-                            WHEN bucket < 80 THEN 720    -- 12h
-                            WHEN bucket < 90 THEN 480    -- 8h
-                            ELSE 510                     -- 8.5h swing
+                            WHEN is_office       THEN 540   -- 9h office (+OT below)
+                            WHEN bucket < 50     THEN 720   -- 12h day
+                            WHEN bucket < 72     THEN 720   -- 12h night
+                            WHEN bucket < 86     THEN 480   -- 8h graveyard
+                            ELSE 510                        -- 8.5h swing
                         END AS base_dur_min,
                         ((day_hash % 31) - 15) AS start_jitter_min,
                         (((day_hash / 7) % 151) - 30) AS dur_jitter_min,
                         CASE WHEN (day_hash / 3) % 100 < 8 THEN (90 + (day_hash % 151)) ELSE 0 END AS ot_min,
                         CASE
-                            WHEN bucket >= 40 AND bucket < 65
+                            WHEN is_office
                                 THEN (isodow <= 5 AND (day_hash % 100) < 93)   -- office: weekdays, ~93%
-                            ELSE ((day_hash % 100) < 78)                       -- operators: any day, ~78%
+                            ELSE ((day_hash % 100) < 78)                       -- shift: any day incl. weekends, ~78%
                         END AS works_today
                     FROM attrs
                 ),
@@ -212,10 +219,10 @@ def seed_attendance_events(
                         fab_no,
                         move_hash,
                         (CAST(:work_date AS date)
-                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0))) AS checkin_at,
+                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0)::int)) AS checkin_at,
                         (CAST(:work_date AS date)
-                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0)
-                                                   + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))) AS checkout_at
+                            + make_interval(mins => (GREATEST(base_start_min + start_jitter_min, 0)
+                                                   + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))::int)) AS checkout_at
                     FROM plan
                     WHERE works_today
                 ),
