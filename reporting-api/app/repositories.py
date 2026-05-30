@@ -308,6 +308,7 @@ def get_report_center(
     current_user: UserAccount | None = None,
     from_time: datetime | None = None,
     to_time: datetime | None = None,
+    employee_id: str | None = None,
     department_id: str | None = None,
     limit: int = 500,
 ) -> dict[str, Any]:
@@ -323,12 +324,15 @@ def get_report_center(
             current_user=current_user,
             from_time=from_time,
             to_time=to_time,
+            employee_id=employee_id,
             department_id=department_id,
             limit=limit,
             started_at=started_at,
         )
 
     rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
+    if employee_id:
+        rows = [row for row in rows if row.employee_id == employee_id]
     total_events = len(rows)
     granted_events = sum(1 for row in rows if row.decision == "GRANTED")
     denied_events = sum(1 for row in rows if row.decision == "DENIED")
@@ -365,6 +369,7 @@ def get_report_center(
     preview = query_access_events(
         db,
         current_user=current_user,
+        employee_id=employee_id,
         department_id=department_id,
         from_time=from_time,
         to_time=to_time,
@@ -404,11 +409,15 @@ def _get_report_center_sql(
     current_user: UserAccount | None,
     from_time: datetime,
     to_time: datetime,
+    employee_id: str | None,
     department_id: str | None,
     limit: int,
     started_at: float,
 ) -> dict[str, Any]:
-    scoped = _scoped_event_select(db, current_user, department_id, from_time, to_time).subquery()
+    scoped_query = _scoped_event_select(db, current_user, department_id, from_time, to_time)
+    if employee_id:
+        scoped_query = scoped_query.where(AccessEvent.employee_id == employee_id)
+    scoped = scoped_query.subquery()
     metric_row = db.execute(
         select(
             func.count().label("total_events"),
@@ -458,6 +467,7 @@ def _get_report_center_sql(
     preview = query_access_events(
         db,
         current_user=current_user,
+        employee_id=employee_id,
         department_id=department_id,
         from_time=from_time,
         to_time=to_time,
