@@ -188,7 +188,7 @@ class RepositoryTestCase(unittest.TestCase):
                         previous_state="OUT",
                         current_state="IN",
                         latency_ms=5,
-                        occurred_at=datetime(2026, 5, 22, 9, 5, tzinfo=TAIPEI),
+                        occurred_at=datetime(2026, 5, 22, 9, 20, tzinfo=TAIPEI),
                     ),
                     AccessEvent(
                         request_id="req-emp-late-out-2",
@@ -229,7 +229,7 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(metrics["hrMetrics"]["topLateDepartment"], {"key": "OPS_A", "count": 1})
         self.assertEqual(metrics["hrMetrics"]["overtimeAlertCount"], 2)
         self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["employeeId"], "EMP001")
-        self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["workHours"], 13.2)
+        self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["workHours"], 13.0)
         self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["date"], "2026-05-22")
         self.assertEqual(metrics["securityMetrics"]["antiPassbackViolations"], 1)
         self.assertEqual(metrics["securityMetrics"]["topViolationPeople"][0]["employeeId"], "EMP001")
@@ -248,7 +248,7 @@ class RepositoryTestCase(unittest.TestCase):
                     previous_state="OUT",
                     current_state="IN",
                     latency_ms=5,
-                    occurred_at=datetime(2026, 5, 22, 9, 5, tzinfo=TAIPEI),
+                    occurred_at=datetime(2026, 5, 22, 9, 20, tzinfo=TAIPEI),
                 )
             )
             db.commit()
