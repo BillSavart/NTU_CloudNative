@@ -5,7 +5,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-COPY . .
+COPY index.html ./
+COPY tsconfig*.json ./
+COPY vite.config.ts ./
+COPY public ./public
+COPY src ./src
 RUN npm run build
 
 FROM nginx:1.27-alpine

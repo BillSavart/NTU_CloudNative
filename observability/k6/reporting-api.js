@@ -11,7 +11,7 @@ function requiredEnv(name) {
 
 const baseUrl = requiredEnv('BASE_URL')
 const loginId = __ENV.LOGIN_ID || 'rd_1_manager'
-const password = __ENV.LOGIN_PASSWORD || 'demo123'
+const password = requiredEnv('LOGIN_PASSWORD')
 const thinkTimeSeconds = Number(__ENV.THINK_TIME_SECONDS || '1')
 const p95ThresholdMs = Number(__ENV.P95_THRESHOLD_MS || '15000')
 

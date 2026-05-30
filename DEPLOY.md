@@ -263,6 +263,52 @@ Watch results in Grafana (`https://grafana.tsmc-dpac.systems`); pick the run's
 
 ---
 
+## Phase 5 — live swipe activity (for a "living" demo)
+
+`fake_data` is historical + a current snapshot; it does not emit new events
+after loading. To make the dashboards show people entering/leaving *while you
+present*, run the opt-in live generator. It POSTs real swipes to the Access API
+for a sample of seeded employees (toggling IN/OUT so anti-passback holds), so
+events flow Access → Redis → Kafka → Reporting → frontend in real time.
+
+**Option 1 — keep it running continuously until the demo (recommended).** Set in
+the VM `.env` and redeploy once; it then runs as part of the standing stack and
+survives reboots/redeploys (`restart: unless-stopped`):
+```bash
+# in .env
+ENABLE_LIVE_SWIPES=true
+LIVE_SWIPES_PER_MIN=60        # raise for busier traffic
+# then trigger a deploy (or on the VM: ./scripts/deploy.sh)
+```
+Turn it off later by setting `ENABLE_LIVE_SWIPES=false` and redeploying (or
+`./scripts/live_swipes_prod.sh stop`).
+
+**Option 2 — start/stop manually (ad-hoc).**
+```bash
+cd ~/NTU_CloudNative
+./scripts/live_swipes_prod.sh                 # start (~60 swipes/min, background)
+LIVE_SWIPES_PER_MIN=180 ./scripts/live_swipes_prod.sh   # busier
+./scripts/live_swipes_prod.sh stop            # stop when done
+# watch it:
+. scripts/lib-compose.sh && "${COMPOSE[@]}" logs -f live-swiper
+```
+
+- Needs seed + fake data already loaded. Uses the reporting-api image, so it
+  only exists after a deploy that built it.
+- With `ENABLE_LIVE_SWIPES=true` it's part of every deploy/boot; with Option 2
+  (manual) a redeploy/reboot may stop it — re-run the start command.
+- Live swipes are real events (not `fake:`-prefixed) and accumulate in the DB
+  (~0.1–0.2 GB/day at 60–240/min); that's intended — it's what keeps "currently
+  inside" and recent activity moving during the demo.
+
+> **Local dev (watch it on your laptop):** with the base stack up
+> (`docker compose up -d --build`) and data loaded, run the generator as a
+> one-off against the local Access LB:
+> `docker compose run --rm -e ACCESS_BASE_URL=http://access-lb:8080 -e LIVE_SWIPES_PER_MIN=180 reporting-api python -m app.live_swipes`
+> then open the frontend and watch events stream in.
+
+---
+
 ## 💰 Cost checklist
 
 The VM is ~90% of the bill, so the levers are *when it runs* and *disk/IP size*.
@@ -272,8 +318,12 @@ The VM is ~90% of the bill, so the levers are *when it runs* and *disk/IP size*.
    `gcloud compute instances stop <VM> --zone <zone>` (data volumes survive).
 2. **Static IP is required for the domain/HTTPS.** It bills a little while the VM
    is stopped, but DNS + certs need a stable IP — accept this small cost.
-3. **Keep the Hyperdisk small** (n4 needs Hyperdisk Balanced; ~50 GB at baseline
-   IOPS is plenty — don't over-provision IOPS/MBps).
+3. **Size the Hyperdisk for your dataset.** `access_events` is ~470 bytes/row
+   incl. indexes. Full 90k employees × 365 days ≈ 66M rows ≈ **~31 GB** (plus
+   images/OS/observability ~12–15 GB), so a full year needs **~100 GB** — 50 GB
+   only fits ~120 days. To grow (online, no data loss): Console → Disks → edit
+   size, then on the VM `sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1`
+   (check device with `lsblk`; many GCP images auto-grow the root fs on reboot).
 4. **Disable the Google Cloud Ops Agent / Cloud Logging** — you already run
    Prometheus/Grafana/Loki; double-shipping logs is metered for no benefit.
 5. **Run k6 load tests on the VM (internal), never against the public domain** —
