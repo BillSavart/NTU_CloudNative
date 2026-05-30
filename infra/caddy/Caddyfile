@@ -6,7 +6,12 @@
 # Main app (frontend nginx serves the SPA and proxies /api to reporting-api).
 {$DOMAIN} {
 	encode zstd gzip
-	reverse_proxy frontend:80
+	reverse_proxy frontend:80 {
+		# Allow heavy executive reports up to 180s before timing out.
+		transport http {
+			read_timeout 180s
+		}
+	}
 }
 
 # Swipe-card demo (simulator nginx serves the page and proxies /proxy/access
