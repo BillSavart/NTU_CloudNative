@@ -30,6 +30,28 @@ services:
     ports: !override
       - "127.0.0.1:8080:8080"
 
+  # Opt-in live swipe generator for demos: drives real swipes through the Access
+  # API so the dashboards show continuous entering/leaving. Profile-gated, so a
+  # normal `up -d` does NOT start it. Start with:
+  #   docker compose <files> --profile live up -d live-swiper   (or scripts/live_swipes_prod.sh)
+  live-swiper:
+    image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/reporting-api:${IMAGE_TAG:-latest}
+    profiles: ["live"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.live_swipes"]
+    environment:
+      ACCESS_BASE_URL: http://access-lb:8080
+      LIVE_SWIPES_PER_MIN: ${LIVE_SWIPES_PER_MIN:-60}
+      LIVE_EMPLOYEE_SAMPLE: ${LIVE_EMPLOYEE_SAMPLE:-3000}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    depends_on:
+      - access-lb
+      - db
+
   reporting-api:
     image: ${IMAGE_PREFIX:-ghcr.io/billsavart/ntu_cloudnative}/reporting-api:${IMAGE_TAG:-latest}
     restart: unless-stopped

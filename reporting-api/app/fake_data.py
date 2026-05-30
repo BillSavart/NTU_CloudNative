@@ -223,11 +223,14 @@ def seed_attendance_events(
                         -- checkin includes the occasional late tail; checkout is based on the
                         -- on-time start so a late arrival just yields a shorter day (realistic).
                         (CAST(:work_date AS date)
-                            + make_interval(mins => (GREATEST(base_start_min + start_jitter_min, 0)
-                                                   + late_extra_min)::int)) AS checkin_at,
+                            + make_interval(
+                                mins => (GREATEST(base_start_min + start_jitter_min, 0) + late_extra_min)::int,
+                                secs => (day_hash % 60)::int)) AS checkin_at,
                         (CAST(:work_date AS date)
-                            + make_interval(mins => (GREATEST(base_start_min + start_jitter_min, 0)
-                                                   + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))::int)) AS checkout_at
+                            + make_interval(
+                                mins => (GREATEST(base_start_min + start_jitter_min, 0)
+                                       + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))::int,
+                                secs => ((day_hash / 13) % 60)::int)) AS checkout_at
                     FROM plan
                     WHERE works_today
                 ),
