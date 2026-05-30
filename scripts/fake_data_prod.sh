@@ -18,7 +18,10 @@ cd "$ROOT_DIR"
 . scripts/lib-compose.sh
 
 echo "Writing fake company data into PostgreSQL (this can take a while on a 4 vCPU box)..."
-"${COMPOSE[@]}" exec -T \
+# One-off `run` container (not `exec` into the live reporting-api): a redeploy /
+# CD push recreates the service container and would kill an `exec` mid-load, but
+# leaves this independent run container alone.
+"${COMPOSE[@]}" run --rm -T \
   -e FAKE_EMPLOYEE_COUNT="${FAKE_EMPLOYEE_COUNT:-90000}" \
   -e FAKE_OPERATING_DAYS="${FAKE_OPERATING_DAYS:-365}" \
   -e FAKE_ATTENDANCE_EMPLOYEES="${FAKE_ATTENDANCE_EMPLOYEES:-90000}" \

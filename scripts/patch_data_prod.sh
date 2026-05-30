@@ -13,7 +13,8 @@ cd "$ROOT_DIR"
 . scripts/lib-compose.sh
 
 echo "Patching fake data in PostgreSQL..."
-"${COMPOSE[@]}" exec -T \
+# One-off `run` container so a redeploy mid-run can't kill it (see fake_data_prod.sh).
+"${COMPOSE[@]}" run --rm -T \
   -e PATCH_DENIED_EVENTS="${PATCH_DENIED_EVENTS:-12000}" \
   reporting-api python -m app.patch_fake_data
 
