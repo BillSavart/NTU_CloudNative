@@ -142,8 +142,8 @@ class RepositoryTestCase(unittest.TestCase):
 
         self.assertEqual(dashboard["totalEvents"], 3)
         self.assertEqual(dashboard["hrMetrics"]["expectedToday"], 3)
-        self.assertEqual(dashboard["hrMetrics"]["attendedToday"], 1)
-        self.assertEqual(dashboard["hrMetrics"]["attendanceRate"], 33.3)
+        self.assertEqual(dashboard["hrMetrics"]["attendedToday"], 2)
+        self.assertEqual(dashboard["hrMetrics"]["attendanceRate"], 66.7)
         self.assertEqual(dashboard["securityMetrics"]["antiPassbackViolations"], 1)
         self.assertEqual(dashboard["trafficMetrics"]["peakGateHour"]["gateId"], "GATE_01")
         self.assertIsInstance(dashboard["generationLatencyMs"], float)
@@ -225,7 +225,7 @@ class RepositoryTestCase(unittest.TestCase):
                 to_time=datetime(2026, 5, 22, 23, 59, tzinfo=TAIPEI),
             )
 
-        self.assertEqual(metrics["hrMetrics"]["attendedToday"], 1)
+        self.assertEqual(metrics["hrMetrics"]["attendedToday"], 2)
         self.assertEqual(metrics["hrMetrics"]["topLateDepartment"], {"key": "OPS_A", "count": 1})
         self.assertEqual(metrics["hrMetrics"]["overtimeAlertCount"], 2)
         self.assertEqual(metrics["hrMetrics"]["overtimeAlerts"][0]["employeeId"], "EMP001")

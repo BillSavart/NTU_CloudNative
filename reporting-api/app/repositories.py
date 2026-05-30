@@ -747,13 +747,11 @@ def get_dashboard_operational_metrics(
     window_end_date = _local_date(to_time)
     events = _dashboard_event_rows(db, current_user, department_id, history_from, to_time)
 
-    today = to_time.astimezone(TAIPEI).date() if to_time.tzinfo else to_time.date()
-    attended_today = {
-        event.employee_id
-        for event in events
-        if _local_date(event.occurred_at) == today and event.decision == "GRANTED" and event.direction == "IN"
-    }
-    attendance_rate = (len(attended_today) / expected_today * 100) if expected_today else None
+    # Real-time attendance = how many known employees are currently INSIDE the
+    # fab (their last known state) vs. everyone. This is meaningful for 24h
+    # shifts, unlike "entered at some point today" which under/over-counts.
+    employees_inside = sum(1 for employee in employees if employee.last_known_state == "IN")
+    attendance_rate = (employees_inside / expected_today * 100) if expected_today else None
 
     daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
     department_late_counts: Counter[str] = Counter()
@@ -831,7 +829,7 @@ def get_dashboard_operational_metrics(
     return {
         "hrMetrics": {
             "expectedToday": expected_today,
-            "attendedToday": len(attended_today),
+            "attendedToday": employees_inside,
             "attendanceRate": round(attendance_rate, 1) if attendance_rate is not None else None,
             "topLateDepartment": _counter_top_item(department_late_counts),
             "topLateWeekday": _counter_top_item(weekday_late_counts),
