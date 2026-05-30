@@ -206,6 +206,8 @@ def seed_attendance_events(
                         ((day_hash % 31) - 15) AS start_jitter_min,
                         (((day_hash / 7) % 151) - 30) AS dur_jitter_min,
                         CASE WHEN (day_hash / 3) % 100 < 8 THEN (90 + (day_hash % 151)) ELSE 0 END AS ot_min,
+                        -- ~6% of person-days arrive 20-89 min past shift start => realistic "late" tail
+                        CASE WHEN (day_hash / 11) % 100 < 6 THEN (20 + (day_hash % 70)) ELSE 0 END AS late_extra_min,
                         CASE
                             WHEN is_office
                                 THEN (isodow <= 5 AND (day_hash % 100) < 93)   -- office: weekdays, ~93%
@@ -218,8 +220,11 @@ def seed_attendance_events(
                         employee_id,
                         fab_no,
                         move_hash,
+                        -- checkin includes the occasional late tail; checkout is based on the
+                        -- on-time start so a late arrival just yields a shorter day (realistic).
                         (CAST(:work_date AS date)
-                            + make_interval(mins => GREATEST(base_start_min + start_jitter_min, 0)::int)) AS checkin_at,
+                            + make_interval(mins => (GREATEST(base_start_min + start_jitter_min, 0)
+                                                   + late_extra_min)::int)) AS checkin_at,
                         (CAST(:work_date AS date)
                             + make_interval(mins => (GREATEST(base_start_min + start_jitter_min, 0)
                                                    + GREATEST(base_dur_min + dur_jitter_min + ot_min, 120))::int)) AS checkout_at

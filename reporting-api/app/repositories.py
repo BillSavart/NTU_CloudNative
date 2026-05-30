@@ -27,6 +27,46 @@ def _late_threshold_time() -> time:
     return get_settings().attendance_late_threshold_time
 
 
+# Shift-aware lateness for a 24/7 fab. A single company-wide cutoff cannot work
+# when RD/IT run an office day shift while PE/EE rotate around the clock, so
+# "late" is judged against the start of the shift an arrival belongs to plus a
+# ~15-minute grace. Windows below bucket an arrival time-of-day to its shift:
+#   night     19:30 (arrive 17:15-23:00) -> late if > 19:45
+#   graveyard 00:00 (arrive 23:00-03:45) -> late if > 00:15 (before midnight = early)
+#   day       07:30 (arrive 03:45-08:15) -> late if > 07:45
+#   office    09:00 (arrive 08:15-12:00) -> late if > 09:15
+#   swing     15:00 (arrive 12:00-17:15) -> late if > 15:15
+def _is_late_time(t: time) -> bool:
+    """Python form of the shift-aware late rule (used on SQLite paths)."""
+    if time(17, 15) <= t < time(23, 0):
+        return t > time(19, 45)
+    if t >= time(23, 0):
+        return False
+    if t < time(3, 45):
+        return t > time(0, 15)
+    if t < time(8, 15):
+        return t > time(7, 45)
+    if t < time(12, 0):
+        return t > time(9, 15)
+    return t > time(15, 15)
+
+
+def _late_sql(col: str) -> str:
+    """SQL boolean for the shift-aware late rule on ``col`` (a timestamp).
+    Mirrors :func:`_is_late_time`."""
+    t = f"({col})::time"
+    return (
+        "(CASE"
+        f" WHEN {t} >= time '17:15' AND {t} < time '23:00' THEN {t} > time '19:45'"
+        f" WHEN {t} >= time '23:00' THEN false"
+        f" WHEN {t} < time '03:45' THEN {t} > time '00:15'"
+        f" WHEN {t} < time '08:15' THEN {t} > time '07:45'"
+        f" WHEN {t} < time '12:00' THEN {t} > time '09:15'"
+        f" ELSE {t} > time '15:15'"
+        " END)"
+    )
+
+
 def _overtime_hours() -> float:
     """Worked-hours threshold above which a day counts as overtime (configurable)."""
     return get_settings().attendance_overtime_hours
@@ -751,7 +791,7 @@ def get_dashboard_operational_metrics(
     for (employee_id, work_date), day in daily.items():
         first_in = day["first_in"]
         last_out = day["last_out"]
-        if first_in is not None and first_in.time() > _late_threshold_time() and window_start_date <= work_date <= window_end_date:
+        if first_in is not None and _is_late_time(first_in.time()) and window_start_date <= work_date <= window_end_date:
             department_late_counts[employee_departments.get(employee_id) or "UNASSIGNED"] += 1
             weekday_late_counts[_weekday_label(work_date)] += 1
         if (
@@ -930,7 +970,7 @@ def get_department_analytics(
         daily_rows = _department_daily_rows_in_python(db, current_user, leaf_ids, since)
     else:
         daily_sql = text(
-            """
+            f"""
             WITH daily AS (
                 SELECT
                     e.employee_id,
@@ -952,10 +992,10 @@ def get_department_analytics(
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
-                      AND first_in::time <= cast(:late_threshold AS time)
+                      AND NOT {_late_sql('first_in')}
                       AND extract(epoch FROM (last_out - first_in)) / 3600.0 <= :overtime_hours
                 ) AS normal_records,
-                count(*) FILTER (WHERE first_in::time > cast(:late_threshold AS time)) AS late_records,
+                count(*) FILTER (WHERE first_in IS NOT NULL AND {_late_sql('first_in')}) AS late_records,
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
@@ -1035,13 +1075,13 @@ def _department_daily_rows_in_python(
         first_in = day["first_in"]
         last_out = day["last_out"]
         rows[department_id]["daily_records"] += 1
-        if first_in is not None and first_in.time() > _late_threshold_time():
+        if first_in is not None and _is_late_time(first_in.time()):
             rows[department_id]["late_records"] += 1
         if first_in is not None and last_out is not None:
             work_hours = (last_out - first_in).total_seconds() / 3600
             if work_hours > _overtime_hours():
                 rows[department_id]["overtime_records"] += 1
-            elif first_in.time() <= _late_threshold_time():
+            elif not _is_late_time(first_in.time()):
                 rows[department_id]["normal_records"] += 1
     return rows
 
@@ -1169,7 +1209,7 @@ def _monthly_employee_metrics(
         return _monthly_employee_metrics_in_python(db, current_user, department_id, employee_ids, month_start, now)
 
     sql = text(
-        """
+        f"""
         WITH daily AS (
             SELECT
                 e.employee_id,
@@ -1195,7 +1235,7 @@ def _monthly_employee_metrics(
                         ELSE 0
                     END
                 ), 0) AS work_hours,
-                count(*) FILTER (WHERE first_in::time > cast(:late_threshold AS time)) AS late_count,
+                count(*) FILTER (WHERE first_in IS NOT NULL AND {_late_sql('first_in')}) AS late_count,
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
@@ -1281,7 +1321,7 @@ def _monthly_employee_metrics_in_python(
         last_out = day["last_out"]
         if first_in is not None:
             rollup[employee_id]["attendance_days"] += 1
-            if first_in.time() > _late_threshold_time():
+            if _is_late_time(first_in.time()):
                 rollup[employee_id]["late_count"] += 1
         if first_in is not None and last_out is not None:
             work_hours = (last_out - first_in).total_seconds() / 3600
@@ -1397,7 +1437,7 @@ def get_attendance_daily(
             CASE
                 WHEN first_in IS NULL THEN '缺少上班刷卡'
                 WHEN last_out IS NULL THEN '缺少下班刷卡'
-                WHEN first_in::time > cast(:late_threshold AS time) THEN '遲到'
+                WHEN {_late_sql('first_in')} THEN '遲到'
                 WHEN extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours THEN '{_overtime_label()}'
                 ELSE '正常'
             END AS status
@@ -1823,7 +1863,7 @@ def _query_late_arrival_items(
         SELECT request_id, employee_id, display_name, department_id, remark, occurred_at
         FROM ranked
         WHERE rn = 1
-          AND occurred_at::time > cast(:late_threshold AS time)
+          AND {_late_sql('occurred_at')}
         ORDER BY occurred_at DESC
         LIMIT :limit
         """
@@ -1864,7 +1904,7 @@ def _query_late_arrival_items_in_python(
         if key not in late_daily or occurred_at < _local_datetime(late_daily[key].occurred_at):
             late_daily[key] = row
     late_rows = sorted(
-        [row for row in late_daily.values() if _local_datetime(row.occurred_at).time() > _late_threshold_time()],
+        [row for row in late_daily.values() if _is_late_time(_local_datetime(row.occurred_at).time())],
         key=lambda row: _local_datetime(row.occurred_at),
         reverse=True,
     )[:limit]
