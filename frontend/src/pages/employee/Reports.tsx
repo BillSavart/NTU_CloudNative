@@ -113,10 +113,12 @@ function localTimeText(value?: string | null) {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })
 }
 
-// The live preview is capped to a recent window so the page stays fast; older
-// data is pulled only on explicit download. Keep this in sync with the backend
-// report-center cache, which now caches windowed calls.
+// The live preview defaults to a small window so the cold load stays cheap, but
+// the picker can be widened up to LIVE_VIEW_MONTHS. Older data is pulled only on
+// explicit download. Keep this in sync with the backend report-center cache,
+// which caches windowed calls.
 const LIVE_VIEW_MONTHS = 3
+const LIVE_VIEW_DEFAULT_DAYS = 7
 
 function monthsAgoDate(months: number) {
   const date = new Date()
@@ -124,12 +126,20 @@ function monthsAgoDate(months: number) {
   return localDateInputValue(date)
 }
 
+function daysAgoDate(days: number) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return localDateInputValue(date)
+}
+
+// Earliest date the on-page preview may reach (the picker's lower bound).
 function earliestLiveDate() {
   return monthsAgoDate(LIVE_VIEW_MONTHS)
 }
 
+// Default preview window on first load — small, so the cold fetch is light.
 function defaultFromDate() {
-  return earliestLiveDate()
+  return daysAgoDate(LIVE_VIEW_DEFAULT_DAYS)
 }
 
 function csvEscape(value: string | number | null | undefined) {
