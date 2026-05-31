@@ -223,6 +223,8 @@
 
 .table-responsive {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 
 .table-clean th,
@@ -1050,6 +1052,37 @@
   .report-bar-row {
     grid-template-columns: 64px minmax(0, 1fr) 54px;
   }
+
+  /* Comfortable tap targets and iOS-safe inputs on touch / narrow screens. */
+  .attendance-nav-item,
+  .attendance-logout-button {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  .attendance-content .btn {
+    min-height: 44px;
+  }
+
+  /* 16px keeps iOS Safari from zooming the page in on focus. */
+  .attendance-content .form-control,
+  .attendance-content .form-select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  /* Give the horizontally-scrolling tables a clear, rounded boundary so the
+     scroll reads as intentional rather than a layout overflow. */
+  .table-responsive {
+    border: 1px solid var(--color-border-soft);
+    border-radius: 10px;
+  }
+
+  .table-clean th,
+  .table-clean td {
+    padding: 10px 12px;
+  }
 }
 
 @media (max-width: 576px) {
@@ -1132,5 +1165,38 @@
   .auth-actions {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  /* Tighter, lighter tables so more columns fit before the scroll kicks in. */
+  .table-clean {
+    min-width: 560px;
+    font-size: 13px;
+  }
+
+  .table-clean th,
+  .table-clean td {
+    padding: 9px 10px;
+  }
+
+  /* Section title + its inline control stack instead of squeezing side by side. */
+  .report-section-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Roomier spacing between the report show/hide checkboxes for easier tapping. */
+  .report-section-options {
+    gap: 12px 16px;
+  }
+
+  .report-section-options label,
+  .report-section-options-subgroup label {
+    min-height: 32px;
+  }
+
+  /* Slightly tighter cards reclaim horizontal room on small phones. */
+  .kpi-card,
+  .panel-card {
+    padding: 14px;
   }
 }
