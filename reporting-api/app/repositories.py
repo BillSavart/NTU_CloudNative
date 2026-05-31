@@ -119,9 +119,15 @@ _work_hour_summary_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = 
 # DASHBOARD_CACHE_TTL_SECONDS=0 to disable.
 DASHBOARD_CACHE_TTL_SECONDS = float(os.getenv("DASHBOARD_CACHE_TTL_SECONDS", "60"))
 _dashboard_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
-# Same idea for the report center (default, no-window call), which is also heavy
-# company-wide. Shares the dashboard TTL.
+# Same idea for the report center. The page now defaults to a recent (≈3 month)
+# window and only pulls older data on explicit download, so caching windowed
+# calls — keyed by scope + window — keeps the live preview responsive across
+# reloads within the TTL. Day-granular from/to values mean the default window is
+# a stable key that different requests share. The cache is size-bounded so the
+# occasional wide download window can't grow it without limit. Shares the
+# dashboard TTL.
 _report_center_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+_REPORT_CENTER_CACHE_MAX = 128
 
 REQUIRED_EVENT_FIELDS = {
     "requestId",
@@ -334,6 +340,19 @@ def get_dashboard(
     return result
 
 
+def _store_report_center_cache(cache_key: tuple[Any, ...], result: dict[str, Any]) -> None:
+    """Cache a report-center result, evicting the oldest entry when full.
+
+    Windowed calls (incl. wide download ranges) all land here, so the cache is
+    size-bounded: once it exceeds _REPORT_CENTER_CACHE_MAX we drop the entry
+    with the oldest timestamp before inserting the new one.
+    """
+    if len(_report_center_cache) >= _REPORT_CENTER_CACHE_MAX and cache_key not in _report_center_cache:
+        oldest_key = min(_report_center_cache, key=lambda key: _report_center_cache[key][0])
+        del _report_center_cache[oldest_key]
+    _report_center_cache[cache_key] = (perf_counter(), result)
+
+
 def get_report_center(
     db: Session,
     current_user: UserAccount | None = None,
@@ -345,9 +364,10 @@ def get_report_center(
 ) -> dict[str, Any]:
     started_at = perf_counter()
     limit = max(1, min(limit, 1000))
-    # Cache the default (no-window) report center by scope, like the dashboard,
-    # so the heavy company-wide rollup stays responsive after the first load.
-    use_cache = from_time is None and to_time is None and DASHBOARD_CACHE_TTL_SECONDS > 0
+    # Cache by scope *and* window so the recent-window live preview (and any
+    # repeated download window) stays responsive after the first load. The
+    # window is part of the key, so explicit ranges no longer bypass the cache.
+    use_cache = DASHBOARD_CACHE_TTL_SECONDS > 0
     cache_key = None
     if use_cache:
         visible_ids = _visible_department_ids(db, current_user, department_id)
@@ -356,6 +376,9 @@ def get_report_center(
             current_user.user_id if current_user is not None else "anonymous",
             department_id or "ALL",
             scope_key,
+            employee_id or "ALL",
+            from_time.isoformat() if from_time is not None else "DEFAULT",
+            to_time.isoformat() if to_time is not None else "DEFAULT",
             limit,
         )
         cached = _report_center_cache.get(cache_key)
@@ -377,7 +400,7 @@ def get_report_center(
             started_at=started_at,
         )
         if cache_key is not None:
-            _report_center_cache[cache_key] = (perf_counter(), result)
+            _store_report_center_cache(cache_key, result)
         return result
 
     rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
@@ -427,7 +450,7 @@ def get_report_center(
         offset=0,
     )
 
-    return {
+    result = {
         "metrics": {
             "totalEvents": total_events,
             "grantedEvents": granted_events,
@@ -452,6 +475,9 @@ def get_report_center(
         "previewLimit": limit,
         "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
     }
+    if cache_key is not None:
+        _store_report_center_cache(cache_key, result)
+    return result
 
 
 def _get_report_center_sql(

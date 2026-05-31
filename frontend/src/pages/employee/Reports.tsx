@@ -113,10 +113,23 @@ function localTimeText(value?: string | null) {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })
 }
 
-function defaultFromDate() {
+// The live preview is capped to a recent window so the page stays fast; older
+// data is pulled only on explicit download. Keep this in sync with the backend
+// report-center cache, which now caches windowed calls.
+const LIVE_VIEW_MONTHS = 3
+
+function monthsAgoDate(months: number) {
   const date = new Date()
-  date.setDate(date.getDate() - 7)
+  date.setMonth(date.getMonth() - months)
   return localDateInputValue(date)
+}
+
+function earliestLiveDate() {
+  return monthsAgoDate(LIVE_VIEW_MONTHS)
+}
+
+function defaultFromDate() {
+  return earliestLiveDate()
 }
 
 function csvEscape(value: string | number | null | undefined) {
@@ -739,6 +752,8 @@ function buildVisualReport(
 function Reports() {
   const [from, setFrom] = useState(defaultFromDate)
   const [to, setTo] = useState(() => localDateInputValue(new Date()))
+  const [downloadHistorical, setDownloadHistorical] = useState(false)
+  const [downloadFrom, setDownloadFrom] = useState(defaultFromDate)
   const [targetMode, setTargetMode] = useState<ReportTargetMode>('department')
   const [departmentId, setDepartmentId] = useState('ALL')
   const [employeeSearch, setEmployeeSearch] = useState('')
@@ -774,6 +789,13 @@ function Reports() {
   const [message, setMessage] = useState<string | null>(null)
   const activeEmployeeId = targetMode === 'employee' && selectedEmployeeId.trim() ? selectedEmployeeId.trim() : undefined
   const activeDepartmentId = targetMode === 'department' ? departmentId : 'ALL'
+  const todayValue = localDateInputValue(new Date())
+  const liveMinDate = earliestLiveDate()
+  // The on-page preview window is always clamped to the last LIVE_VIEW_MONTHS so
+  // the live fetch (and its cache key) stay bounded. Downloads can reach further
+  // back via the historical override below.
+  const liveFrom = from < liveMinDate ? liveMinDate : from
+  const downloadFromEffective = downloadHistorical ? downloadFrom : liveFrom
 
   useEffect(() => {
     let cancelled = false
@@ -782,7 +804,7 @@ function Reports() {
 
     Promise.all([
       fetchReportCenterData({
-        from,
+        from: liveFrom,
         to,
         departmentId: activeDepartmentId,
         employeeId: activeEmployeeId,
@@ -812,7 +834,7 @@ function Reports() {
     return () => {
       cancelled = true
     }
-  }, [activeDepartmentId, activeEmployeeId, from, to])
+  }, [activeDepartmentId, activeEmployeeId, liveFrom, to])
 
   const metrics = useMemo<ReportMetrics>(() => {
     if (!reportData) {
@@ -952,15 +974,18 @@ function Reports() {
 
     try {
       const deptPart = activeEmployeeId ? `employee-${activeEmployeeId}` : activeDepartmentId === 'ALL' ? 'all' : activeDepartmentId.toLowerCase()
+      // Downloads may reach further back than the on-screen preview when the
+      // historical override is enabled; otherwise they match the live window.
+      const rangeFrom = downloadFromEffective
 
       if (downloadContent === 'raw') {
-        const eventsForCsv = await fetchAccessEventsForCsv(from, to, activeDepartmentId, activeEmployeeId)
+        const eventsForCsv = await fetchAccessEventsForCsv(rangeFrom, to, activeDepartmentId, activeEmployeeId)
         const csv = toCsv(eventsForCsv)
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
         const url = URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
-        link.download = `access-events-${deptPart}-${from}-to-${to}.csv`
+        link.download = `access-events-${deptPart}-${rangeFrom}-to-${to}.csv`
         document.body.appendChild(link)
         link.click()
         link.remove()
@@ -970,7 +995,7 @@ function Reports() {
       }
 
       const result = await fetchReportCenterData({
-        from,
+        from: rangeFrom,
         to,
         departmentId: activeDepartmentId,
         employeeId: activeEmployeeId,
@@ -995,7 +1020,7 @@ function Reports() {
         result.workHours,
         buildAttendanceDetails(result.events),
         buildHrMetrics(buildAttendanceDetails(result.events)),
-        from,
+        rangeFrom,
         to,
         activeDepartmentId,
         targetLabel,
@@ -1037,11 +1062,36 @@ function Reports() {
         <div className="row g-3 align-items-end mt-1">
           <div className="col-md-3">
             <label className="form-label" htmlFor="report-from-date">起始日期</label>
-            <input id="report-from-date" className="form-control" type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+            <input id="report-from-date" className="form-control" type="date" min={liveMinDate} max={to} value={from} onChange={(event) => setFrom(event.target.value < liveMinDate ? liveMinDate : event.target.value)} />
           </div>
           <div className="col-md-3">
             <label className="form-label" htmlFor="report-to-date">結束日期</label>
-            <input id="report-to-date" className="form-control" type="date" value={to} onChange={(event) => setTo(event.target.value)} />
+            <input id="report-to-date" className="form-control" type="date" min={liveMinDate} max={todayValue} value={to} onChange={(event) => setTo(event.target.value)} />
+          </div>
+          <div className="col-12">
+            <div className="form-check">
+              <input
+                id="report-download-historical"
+                className="form-check-input"
+                type="checkbox"
+                checked={downloadHistorical}
+                onChange={(event) => setDownloadHistorical(event.target.checked)}
+              />
+              <label className="form-check-label" htmlFor="report-download-historical">
+                下載更早資料（超過近三個月）
+              </label>
+            </div>
+            {downloadHistorical ? (
+              <div className="row g-3 align-items-end mt-1">
+                <div className="col-md-3">
+                  <label className="form-label" htmlFor="report-download-from">下載起始日期</label>
+                  <input id="report-download-from" className="form-control" type="date" max={to} value={downloadFrom} onChange={(event) => setDownloadFrom(event.target.value)} />
+                </div>
+              </div>
+            ) : null}
+            <div className="small text-secondary mt-1">
+              頁面預覽僅顯示近三個月，載入較快；如需更早的資料，請勾選「下載更早資料」設定起始日期後按「下載報表」。
+            </div>
           </div>
           {!isEmployee ? (
             <div className="col-md-3">
