@@ -751,12 +751,14 @@ function buildVisualReport(
   sectionOptions: ReportSectionOptions,
   attendanceOptions: AttendanceDetailOptions,
   generationLatencyMs?: number,
+  attendanceTrend?: DailyAttendanceTrendPoint[] | null,
 ) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
   const targetPart = targetLabel && targetLabel !== deptPart ? ` | 報表對象：${htmlEscape(targetLabel)}` : ''
   const generationLatencyText = typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)}ms` : '-'
-  const dailyAttendanceTrend = buildDailyAttendanceTrend(attendanceDetails)
+  // Use the server's window-wide trend when provided; otherwise derive locally.
+  const dailyAttendanceTrend = attendanceTrend ?? buildDailyAttendanceTrend(attendanceDetails)
 
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -1019,7 +1021,13 @@ function Reports() {
     }
   }, [events, reportData])
   const attendanceDetails = useMemo(() => buildAttendanceDetails(events), [events])
-  const dailyAttendanceTrend = useMemo(() => buildDailyAttendanceTrend(attendanceDetails), [attendanceDetails])
+  // Prefer the server-side aggregates (computed over the whole window) so the
+  // headcount / stay-hours / trend aren't skewed by the capped event preview.
+  // Fall back to deriving from events only when an older backend omits them.
+  const dailyAttendanceTrend = useMemo(
+    () => reportData?.attendanceTrend ?? buildDailyAttendanceTrend(attendanceDetails),
+    [reportData, attendanceDetails],
+  )
   const eventEmployeeOptions = useMemo(() => buildEmployeeOptions(events), [events])
   const visibleEmployeeOptions = useMemo(() => {
     const merged = new Map<string, EmployeeOption>()
@@ -1029,7 +1037,10 @@ function Reports() {
     }
     return [...merged.values()].sort((a, b) => a.employeeId.localeCompare(b.employeeId))
   }, [employeeOptions, eventEmployeeOptions])
-  const hrMetrics = useMemo(() => buildHrMetrics(attendanceDetails), [attendanceDetails])
+  const hrMetrics = useMemo(
+    () => reportData?.attendanceSummary ?? buildHrMetrics(attendanceDetails),
+    [reportData, attendanceDetails],
+  )
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
   const isEmployee = currentUser?.role === 'EMPLOYEE'
@@ -1248,7 +1259,7 @@ function Reports() {
         reportMetrics,
         result.workHours,
         buildAttendanceDetails(result.events),
-        buildHrMetrics(buildAttendanceDetails(result.events)),
+        result.attendanceSummary ?? buildHrMetrics(buildAttendanceDetails(result.events)),
         rangeFrom,
         to,
         activeDepartmentId,
@@ -1257,6 +1268,7 @@ function Reports() {
         reportSectionOptions,
         attendanceDetailOptions,
         result.generationLatencyMs,
+        result.attendanceTrend,
       )
       const reportUrl = URL.createObjectURL(new Blob([reportHtml], { type: 'text/html;charset=utf-8' }))
       const link = document.createElement('a')

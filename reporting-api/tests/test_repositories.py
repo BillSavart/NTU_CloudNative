@@ -346,6 +346,63 @@ class RepositoryTestCase(unittest.TestCase):
                 )
             self.assertLessEqual(len(repositories._report_center_cache), 3)
 
+    def test_report_center_attendance_spans_window_not_capped_preview(self) -> None:
+        repositories._report_center_cache.clear()
+        with self.SessionLocal() as db:
+            admin = self._user(db, "admin")
+            # A second day with a complete in/out pair for EMP001 (9 work hours).
+            db.add_all(
+                [
+                    AccessEvent(
+                        request_id="d2-in",
+                        employee_id="EMP001",
+                        gate_id="GATE_01",
+                        direction="IN",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="OUT",
+                        current_state="IN",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 21, 9, 0, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="d2-out",
+                        employee_id="EMP001",
+                        gate_id="GATE_01",
+                        direction="OUT",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="IN",
+                        current_state="OUT",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 21, 18, 0, tzinfo=TAIPEI),
+                    ),
+                ]
+            )
+            db.commit()
+            report = get_report_center(
+                db,
+                current_user=admin,
+                from_time=datetime(2026, 5, 19, 0, 0, tzinfo=TAIPEI),
+                to_time=datetime(2026, 5, 22, 0, 0, tzinfo=TAIPEI),
+                limit=1,
+            )
+
+        summary = report["attendanceSummary"]
+        # The event preview is capped at 1, but the aggregates still cover the
+        # whole window — proving they are not derived from the truncated preview.
+        self.assertEqual(len(report["events"]), 1)
+        # Attended (has a GRANTED IN): EMP002 on 5/20, EMP001 on 5/21.
+        # MGR001 only has an OUT, EMP001's 5/20 swipe was DENIED -> neither attends.
+        self.assertEqual(summary["periodAttendanceCount"], 2)
+        # Daily headcount trend has a point per day, not just the latest.
+        self.assertEqual(
+            report["attendanceTrend"],
+            [{"label": "2026-05-20", "count": 1}, {"label": "2026-05-21", "count": 1}],
+        )
+        # Only EMP001's 5/21 day is a complete in/out pair: 9 hours.
+        self.assertEqual(summary["averageStayHours"], 9.0)
+
     def _payload(
         self,
         request_id: str,

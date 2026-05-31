@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from time import perf_counter
+from collections.abc import Iterable
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -353,6 +354,129 @@ def _store_report_center_cache(cache_key: tuple[Any, ...], result: dict[str, Any
     _report_center_cache[cache_key] = (perf_counter(), result)
 
 
+def _compute_report_center_attendance(rows: Iterable[Any]) -> dict[str, Any]:
+    """Aggregate per-employee-per-day attendance over a whole window.
+
+    These figures (headcount, average stay hours, anomaly days, the department
+    stay ranking and the daily headcount trend) used to be derived on the client
+    from the capped event preview, so on a busy site they only reflected the most
+    recent ~500 swipes (≈ today). Computing them here over every scoped event in
+    the window makes them accurate. The logic mirrors the frontend's
+    buildAttendanceDetails / buildHrMetrics / buildDailyAttendanceTrend exactly:
+    first_in = earliest GRANTED IN, last_out = latest GRANTED OUT (any gate),
+    DENIED events count as anomalies, grouped by Taipei-local date.
+    """
+    groups: dict[tuple[str, date], dict[str, Any]] = {}
+    for row in rows:
+        employee_id = row.employee_id
+        if not employee_id:
+            continue
+        day = _local_date(row.occurred_at)
+        group = groups.get((employee_id, day))
+        if group is None:
+            group = {
+                "employee_id": employee_id,
+                "date": day,
+                "department_id": row.department_id or "-",
+                "first_in": None,
+                "last_out": None,
+                "denied": 0,
+            }
+            groups[(employee_id, day)] = group
+        if row.department_id:
+            group["department_id"] = row.department_id
+        if row.decision == "GRANTED" and row.direction == "IN":
+            if group["first_in"] is None or row.occurred_at < group["first_in"]:
+                group["first_in"] = row.occurred_at
+        elif row.decision == "GRANTED" and row.direction == "OUT":
+            if group["last_out"] is None or row.occurred_at > group["last_out"]:
+                group["last_out"] = row.occurred_at
+        elif row.decision == "DENIED":
+            group["denied"] += 1
+
+    total_rows = 0
+    attended_rows = 0
+    normal_rows = 0
+    anomaly_days = 0
+    stay_hours: list[float] = []
+    attendees: set[str] = set()
+    trend: dict[date, set[str]] = defaultdict(set)
+    departments: dict[str, dict[str, Any]] = {}
+
+    for group in groups.values():
+        total_rows += 1
+        first_in = group["first_in"]
+        last_out = group["last_out"]
+        denied = group["denied"]
+        attended = first_in is not None
+        normal = first_in is not None and last_out is not None and denied == 0
+        anomaly = denied > 0 or first_in is None or last_out is None
+        work_hours = None
+        if first_in is not None and last_out is not None and last_out > first_in:
+            work_hours = (last_out - first_in).total_seconds() / 3600.0
+
+        if attended:
+            attended_rows += 1
+            attendees.add(group["employee_id"])
+            trend[group["date"]].add(group["employee_id"])
+        if normal:
+            normal_rows += 1
+        if anomaly:
+            anomaly_days += 1
+
+        dept = departments.setdefault(
+            group["department_id"],
+            {"total_hours": 0.0, "work_days": 0, "employees": set(), "total_rows": 0, "normal_rows": 0},
+        )
+        dept["total_rows"] += 1
+        if normal:
+            dept["normal_rows"] += 1
+        if work_hours is not None:
+            stay_hours.append(work_hours)
+            dept["total_hours"] += work_hours
+            dept["work_days"] += 1
+            dept["employees"].add(group["employee_id"])
+
+    summary = {
+        "periodAttendanceCount": len(attendees),
+        "averageStayHours": round(sum(stay_hours) / len(stay_hours), 2) if stay_hours else None,
+        "attendanceRate": round(attended_rows / total_rows * 100, 2) if total_rows else None,
+        "normalAttendanceRate": round(normal_rows / total_rows * 100, 2) if total_rows else None,
+        "anomalyDays": anomaly_days,
+        "departmentStayStats": sorted(
+            (
+                {
+                    "departmentId": dept_id,
+                    "totalHours": round(stat["total_hours"], 2),
+                    "averageHours": round(stat["total_hours"] / stat["work_days"], 2) if stat["work_days"] else None,
+                    "workDays": stat["work_days"],
+                    "employeeCount": len(stat["employees"]),
+                    "normalAttendanceRate": round(stat["normal_rows"] / stat["total_rows"] * 100, 2) if stat["total_rows"] else None,
+                }
+                for dept_id, stat in departments.items()
+            ),
+            key=lambda item: item["totalHours"],
+            reverse=True,
+        ),
+    }
+    trend_points = [{"label": day.isoformat(), "count": len(employees)} for day, employees in sorted(trend.items())]
+    return {"summary": summary, "trend": trend_points}
+
+
+def _report_center_attendance_for_window(
+    db: Session,
+    current_user: UserAccount | None,
+    from_time: datetime,
+    to_time: datetime,
+    employee_id: str | None,
+    department_id: str | None,
+) -> dict[str, Any]:
+    rows = _dashboard_event_rows(db, current_user, department_id, from_time, to_time)
+    if employee_id:
+        rows = [row for row in rows if row.employee_id == employee_id]
+    return _compute_report_center_attendance(rows)
+
+
 def get_report_center(
     db: Session,
     current_user: UserAccount | None = None,
@@ -399,6 +523,11 @@ def get_report_center(
             limit=limit,
             started_at=started_at,
         )
+        attendance = _report_center_attendance_for_window(
+            db, current_user, from_time, to_time, employee_id, department_id
+        )
+        result["attendanceSummary"] = attendance["summary"]
+        result["attendanceTrend"] = attendance["trend"]
         if cache_key is not None:
             _store_report_center_cache(cache_key, result)
         return result
@@ -475,6 +604,9 @@ def get_report_center(
         "previewLimit": limit,
         "generationLatencyMs": round((perf_counter() - started_at) * 1000, 2),
     }
+    attendance = _compute_report_center_attendance(rows)
+    result["attendanceSummary"] = attendance["summary"]
+    result["attendanceTrend"] = attendance["trend"]
     if cache_key is not None:
         _store_report_center_cache(cache_key, result)
     return result
