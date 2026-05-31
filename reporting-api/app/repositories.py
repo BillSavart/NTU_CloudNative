@@ -1137,6 +1137,7 @@ def query_access_events(
         query = query.where(
             or_(
                 AccessEvent.employee_id.ilike(q_pat),
+                AccessEvent.gate_id.ilike(q_pat),
                 AccessEvent.employee_id.in_(
                     select(Employee.employee_id).where(Employee.display_name.ilike(q_pat))
                 ),

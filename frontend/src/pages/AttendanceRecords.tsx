@@ -76,6 +76,7 @@ function AttendanceRecords() {
   const [direction, setDirection] = useState<'IN' | 'OUT' | 'ALL'>('ALL')
   const [decision, setDecision] = useState<'GRANTED' | 'DENIED' | 'ALL'>('ALL')
   const [keyword, setKeyword] = useState('')
+  const [debouncedKeyword, setDebouncedKeyword] = useState('')
 
   const [events, setEvents] = useState<AccessEvent[]>([])
   const [total, setTotal] = useState(0)
@@ -86,6 +87,12 @@ function AttendanceRecords() {
   const today = toDateStr()
   const range = useMemo(() => resolveRange(rangePreset, customFrom, customTo), [rangePreset, customFrom, customTo])
   const maxTo = addMonths(customFrom, 3) < today ? addMonths(customFrom, 3) : today
+
+  // debounce keyword → reset offset and trigger server fetch
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedKeyword(keyword.trim()); setOffset(0) }, 400)
+    return () => clearTimeout(t)
+  }, [keyword])
 
   // load dept options once
   useEffect(() => {
@@ -106,6 +113,7 @@ function AttendanceRecords() {
           departmentId: departmentId !== 'ALL' ? departmentId : undefined,
           direction: direction !== 'ALL' ? direction : undefined,
           decision: decision !== 'ALL' ? decision : undefined,
+          q: debouncedKeyword || undefined,
           limit: PAGE_SIZE,
           offset,
         })
@@ -126,7 +134,7 @@ function AttendanceRecords() {
 
     void load()
     return () => { cancelled = true }
-  }, [range.from, range.to, departmentId, direction, decision, offset])
+  }, [range.from, range.to, departmentId, direction, decision, debouncedKeyword, offset])
 
   const handlePreset = (p: RangePreset) => { setRangePreset(p); setOffset(0) }
   const handleDirection = (v: 'IN' | 'OUT' | 'ALL') => { setDirection(v); setOffset(0) }
@@ -149,17 +157,6 @@ function AttendanceRecords() {
     link.remove()
   }
 
-  const filteredEvents = useMemo(() => {
-    const q = keyword.trim().toLowerCase()
-    if (!q) return events
-    return events.filter(
-      (e) =>
-        e.employeeId.toLowerCase().includes(q) ||
-        (e.displayName?.toLowerCase().includes(q) ?? false) ||
-        (e.departmentId?.toLowerCase().includes(q) ?? false) ||
-        e.gateId.toLowerCase().includes(q),
-    )
-  }, [events, keyword])
 
   return (
     <AppShell title="刷卡記錄" subtitle="門禁刷卡事件明細查詢">
@@ -311,10 +308,10 @@ function AttendanceRecords() {
                 <tr><td colSpan={7} className="text-secondary text-center py-4">載入中...</td></tr>
               ) : error ? (
                 <tr><td colSpan={7} className="text-danger">{error}</td></tr>
-              ) : filteredEvents.length === 0 ? (
+              ) : events.length === 0 ? (
                 <tr><td colSpan={7} className="text-secondary text-center py-4">這段期間沒有符合條件的事件</td></tr>
               ) : (
-                filteredEvents.map((event) => (
+                events.map((event) => (
                   <tr key={event.requestId}>
                     <td>{formatDateTime(event.timestamp)}</td>
                     <td>
