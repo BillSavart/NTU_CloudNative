@@ -1658,7 +1658,7 @@ def _format_employee_metric_row(
         "monthlyOvertimeCount": overtime_count,
         "monthlyDeniedCount": denied_count,
         "monthlyAnomalyCount": anomaly_count,
-        "averageDailyHours": round(work_hours / attendance_days, 2) if attendance_days else None,
+        "averageDailyHours": round(work_hours / attendance_days, 2) if attendance_days else 0.0,
     }
 
 
