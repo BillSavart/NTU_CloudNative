@@ -28,6 +28,67 @@ type ReportMetrics = {
   hourlyActivity: HourlyActivityItem[]
 }
 
+type ReportSectionOptions = {
+  attendanceRate: boolean
+  todayAttendance: boolean
+  departmentStaySummary: boolean
+  departmentStayRanking: boolean
+  anomalySummary: boolean
+  averageWorkHours: boolean
+  eventMetrics: boolean
+  workTrend: boolean
+  departmentDistribution: boolean
+  hourlyActivity: boolean
+  eventDetails: boolean
+  attendanceDetails: boolean
+}
+
+type AttendanceDetailOptions = {
+  firstIn: boolean
+  lastOut: boolean
+  workHours: boolean
+  inGate: boolean
+  outGate: boolean
+  anomalies: boolean
+}
+
+type AttendanceDetailRow = {
+  key: string
+  date: string
+  employeeId: string
+  displayName: string
+  departmentId: string
+  firstIn?: AccessEvent
+  lastOut?: AccessEvent
+  workHours: number | null
+  anomalies: AccessEvent[]
+}
+
+type ReportTargetMode = 'department' | 'employee'
+
+type EmployeeOption = {
+  employeeId: string
+  displayName: string
+  departmentId: string
+}
+
+type DepartmentStayStat = {
+  departmentId: string
+  totalHours: number
+  averageHours: number | null
+  workDays: number
+  employeeCount: number
+}
+
+type HrMetrics = {
+  attendanceRate: number | null
+  normalAttendanceRate: number | null
+  todayAttendanceCount: number
+  anomalyDays: number
+  averageStayHours: number | null
+  departmentStayStats: DepartmentStayStat[]
+}
+
 type DepartmentOption = {
   departmentId: string
   name: string
@@ -39,6 +100,17 @@ function localDateInputValue(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function localDateKey(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : localDateInputValue(date)
+}
+
+function localTimeText(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })
 }
 
 function defaultFromDate() {
@@ -117,6 +189,109 @@ function summarizeEvents(events: AccessEvent[]): ReportMetrics {
   }
 }
 
+function buildAttendanceDetails(events: AccessEvent[]): AttendanceDetailRow[] {
+  const groups = new Map<string, AttendanceDetailRow & { grantedIn: AccessEvent[]; grantedOut: AccessEvent[] }>()
+
+  for (const event of events) {
+    const date = localDateKey(event.timestamp)
+    const key = `${date}-${event.employeeId}`
+    const row =
+      groups.get(key) ??
+      {
+        key,
+        date,
+        employeeId: event.employeeId,
+        displayName: event.displayName?.trim() || event.employeeId,
+        departmentId: event.departmentId || '-',
+        workHours: null,
+        anomalies: [],
+        grantedIn: [],
+        grantedOut: [],
+      }
+
+    if (!row.displayName || row.displayName === row.employeeId) row.displayName = event.displayName?.trim() || event.employeeId
+    if (event.departmentId) row.departmentId = event.departmentId
+    if (event.decision === 'GRANTED' && event.direction === 'IN') row.grantedIn.push(event)
+    if (event.decision === 'GRANTED' && event.direction === 'OUT') row.grantedOut.push(event)
+    if (event.decision === 'DENIED') row.anomalies.push(event)
+    groups.set(key, row)
+  }
+
+  return [...groups.values()]
+    .map((row) => {
+      const grantedIn = [...row.grantedIn].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      const grantedOut = [...row.grantedOut].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      const firstIn = grantedIn[0]
+      const lastOut = grantedOut.at(-1)
+      const firstInTime = firstIn ? new Date(firstIn.timestamp).getTime() : NaN
+      const lastOutTime = lastOut ? new Date(lastOut.timestamp).getTime() : NaN
+      const workHours = Number.isFinite(firstInTime) && Number.isFinite(lastOutTime) && lastOutTime > firstInTime ? (lastOutTime - firstInTime) / 3_600_000 : null
+      // Strip the raw grouping arrays; only the derived fields below are returned.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { grantedIn: _grantedIn, grantedOut: _grantedOut, ...cleanRow } = row
+      return { ...cleanRow, firstIn, lastOut, workHours }
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) || a.employeeId.localeCompare(b.employeeId))
+}
+
+function buildEmployeeOptions(events: AccessEvent[]): EmployeeOption[] {
+  const options = new Map<string, EmployeeOption>()
+
+  for (const event of events) {
+    if (!event.employeeId) continue
+    const existing = options.get(event.employeeId)
+    options.set(event.employeeId, {
+      employeeId: event.employeeId,
+      displayName: event.displayName?.trim() || existing?.displayName || event.employeeId,
+      departmentId: event.departmentId || existing?.departmentId || '-',
+    })
+  }
+
+  return [...options.values()].sort((a, b) => a.employeeId.localeCompare(b.employeeId))
+}
+
+function employeeSearchLabel(employee: EmployeeOption) {
+  return `${employee.employeeId} | ${employee.displayName} | ${employee.departmentId}`
+}
+
+function buildHrMetrics(attendanceDetails: AttendanceDetailRow[]): HrMetrics {
+  const totalRows = attendanceDetails.length
+  const attendedRows = attendanceDetails.filter((row) => row.firstIn).length
+  const normalRows = attendanceDetails.filter((row) => row.firstIn && row.lastOut && row.anomalies.length === 0).length
+  const anomalyDays = attendanceDetails.filter((row) => row.anomalies.length > 0 || !row.firstIn || !row.lastOut).length
+  const today = localDateInputValue(new Date())
+  const todayAttendanceCount = new Set(attendanceDetails.filter((row) => row.date === today && row.firstIn).map((row) => row.employeeId)).size
+  const stayRows = attendanceDetails.filter((row) => typeof row.workHours === 'number')
+  const totalStayHours = stayRows.reduce((sum, row) => sum + (row.workHours ?? 0), 0)
+  const departments = new Map<string, { totalHours: number; workDays: number; employees: Set<string> }>()
+
+  for (const row of stayRows) {
+    const departmentId = row.departmentId || '-'
+    const stat = departments.get(departmentId) ?? { totalHours: 0, workDays: 0, employees: new Set<string>() }
+    stat.totalHours += row.workHours ?? 0
+    stat.workDays += 1
+    stat.employees.add(row.employeeId)
+    departments.set(departmentId, stat)
+  }
+
+  return {
+    attendanceRate: totalRows > 0 ? (attendedRows / totalRows) * 100 : null,
+    normalAttendanceRate: totalRows > 0 ? (normalRows / totalRows) * 100 : null,
+    todayAttendanceCount,
+    anomalyDays,
+    averageStayHours: stayRows.length > 0 ? totalStayHours / stayRows.length : null,
+    departmentStayStats: [...departments.entries()]
+      .map(([departmentId, stat]) => ({
+        departmentId,
+        totalHours: stat.totalHours,
+        averageHours: stat.workDays > 0 ? stat.totalHours / stat.workDays : null,
+        workDays: stat.workDays,
+        employeeCount: stat.employees.size,
+      }))
+      .sort((a, b) => b.totalHours - a.totalHours),
+  }
+}
+
 function toCsv(events: AccessEvent[]) {
   const headers = [
     'requestId',
@@ -157,7 +332,7 @@ function toCsv(events: AccessEvent[]) {
   return [headers.join(','), ...rows].join('\n')
 }
 
-async function fetchAccessEventsForCsv(from: string, to: string, departmentId: string) {
+async function fetchAccessEventsForCsv(from: string, to: string, departmentId: string, employeeId?: string) {
   const pageSize = 200
   const maxRows = 5000
   const pages: AccessEvent[] = []
@@ -167,6 +342,7 @@ async function fetchAccessEventsForCsv(from: string, to: string, departmentId: s
       from,
       to,
       departmentId,
+      employeeId,
       limit: pageSize,
       offset,
     })
@@ -182,6 +358,99 @@ async function fetchAccessEventsForCsv(from: string, to: string, departmentId: s
 
 function metricLine(label: string, value: string | number) {
   return `<div class="metric"><span>${htmlEscape(label)}</span><strong>${htmlEscape(value)}</strong></div>`
+}
+
+function eventDetailRows(events: AccessEvent[]) {
+  return events.length > 0
+    ? events
+        .slice(0, 80)
+        .map(
+          (event) => `
+            <tr>
+              <td>${htmlEscape(new Date(event.timestamp).toLocaleString('zh-TW', { hour12: false }))}</td>
+              <td>${htmlEscape(event.employeeId)}</td>
+              <td>${htmlEscape(event.displayName)}</td>
+              <td>${htmlEscape(event.departmentId)}</td>
+              <td>${htmlEscape(event.gateId)}</td>
+              <td>${htmlEscape(event.direction)}</td>
+              <td>${htmlEscape(event.decision)}</td>
+              <td>${htmlEscape(event.reason)}</td>
+            </tr>
+          `,
+        )
+        .join('')
+    : '<tr><td colspan="8" class="empty">這段期間沒有事件資料</td></tr>'
+}
+
+function attendanceDetailHeaders(options: AttendanceDetailOptions) {
+  return [
+    '<th>日期</th>',
+    '<th>員工編號</th>',
+    '<th>姓名</th>',
+    '<th>部門</th>',
+    options.firstIn ? '<th>上班</th>' : '',
+    options.inGate ? '<th>刷入門禁</th>' : '',
+    options.lastOut ? '<th>下班</th>' : '',
+    options.outGate ? '<th>刷出門禁</th>' : '',
+    options.workHours ? '<th>工時</th>' : '',
+    options.anomalies ? '<th>異常事件</th>' : '',
+  ].join('')
+}
+
+function attendanceDetailRows(rows: AttendanceDetailRow[], options: AttendanceDetailOptions) {
+  if (rows.length === 0) {
+    const colSpan = 4 + Object.values(options).filter(Boolean).length
+    return `<tr><td colspan="${colSpan}" class="empty">這段期間沒有出勤明細</td></tr>`
+  }
+
+  return rows
+    .slice(0, 80)
+    .map((row) => {
+      const anomalyText =
+        row.anomalies.length > 0
+          ? row.anomalies
+              .slice(0, 3)
+              .map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`)
+              .join('；')
+          : '-'
+
+      return `
+        <tr>
+          <td>${htmlEscape(row.date)}</td>
+          <td>${htmlEscape(row.employeeId)}</td>
+          <td>${htmlEscape(row.displayName || '-')}</td>
+          <td>${htmlEscape(row.departmentId)}</td>
+          ${options.firstIn ? `<td>${htmlEscape(localTimeText(row.firstIn?.timestamp))}</td>` : ''}
+          ${options.inGate ? `<td>${htmlEscape(row.firstIn?.gateId ?? '-')}</td>` : ''}
+          ${options.lastOut ? `<td>${htmlEscape(localTimeText(row.lastOut?.timestamp))}</td>` : ''}
+          ${options.outGate ? `<td>${htmlEscape(row.lastOut?.gateId ?? '-')}</td>` : ''}
+          ${options.workHours ? `<td>${htmlEscape(formatHours(row.workHours))}</td>` : ''}
+          ${options.anomalies ? `<td>${htmlEscape(anomalyText)}</td>` : ''}
+        </tr>
+      `
+    })
+    .join('')
+}
+
+function departmentStayRows(items: DepartmentStayStat[]) {
+  if (items.length === 0) {
+    return '<tr><td colspan="5" class="empty">這段期間沒有部門停留時數資料</td></tr>'
+  }
+
+  return items
+    .slice(0, 12)
+    .map(
+      (item, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${htmlEscape(item.departmentId)}</td>
+          <td>${htmlEscape(formatHours(item.totalHours))}</td>
+          <td>${htmlEscape(formatHours(item.averageHours))}</td>
+          <td>${htmlEscape(item.employeeCount)}</td>
+        </tr>
+      `,
+    )
+    .join('')
 }
 
 function barRows(items: Array<{ label: string; value: number }>) {
@@ -304,6 +573,10 @@ function formatDeniedRate(rate: number, denied: number) {
   return `${percentage.toFixed(1)}%`
 }
 
+function formatPercentValue(value: number | null | undefined) {
+  return typeof value === 'number' ? `${value.toFixed(1)}%` : '-'
+}
+
 function trendItems(workHours: WorkHourSummary | null, mode: TrendMode) {
   if (!workHours) return []
   if (mode === 'monthly') return workHours.monthlyTrend
@@ -325,34 +598,20 @@ function buildVisualReport(
   events: AccessEvent[],
   metrics: ReportMetrics,
   workHours: WorkHourSummary | null,
+  attendanceDetails: AttendanceDetailRow[],
+  hrMetrics: HrMetrics,
   from: string,
   to: string,
   departmentId: string,
-  includeDepartmentDistribution: boolean,
+  targetLabel: string,
+  preparerName: string,
+  sectionOptions: ReportSectionOptions,
+  attendanceOptions: AttendanceDetailOptions,
   generationLatencyMs?: number,
 ) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
-  const rows =
-    events.length > 0
-      ? events
-          .slice(0, 80)
-          .map(
-            (event) => `
-              <tr>
-                <td>${htmlEscape(new Date(event.timestamp).toLocaleString('zh-TW', { hour12: false }))}</td>
-                <td>${htmlEscape(event.employeeId)}</td>
-                <td>${htmlEscape(event.displayName)}</td>
-                <td>${htmlEscape(event.departmentId)}</td>
-                <td>${htmlEscape(event.gateId)}</td>
-                <td>${htmlEscape(event.direction)}</td>
-                <td>${htmlEscape(event.decision)}</td>
-                <td>${htmlEscape(event.reason)}</td>
-              </tr>
-            `,
-          )
-          .join('')
-      : '<tr><td colspan="8" class="empty">此條件目前沒有事件資料。</td></tr>'
+  const generationLatencyText = typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)}ms` : '-'
 
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -390,7 +649,7 @@ function buildVisualReport(
       .trend-label { fill: #5f6b7a; font-size: 10px; text-anchor: middle; }
       .trend-value { fill: #0f2742; font-size: 11px; font-weight: 700; text-anchor: middle; }
       .trend-empty { color: #5f6b7a; font-size: 12px; padding: 18px; text-align: center; }
-      table { border-collapse: collapse; font-size: 10px; width: 100%; }
+      table { border-collapse: collapse; font-size: 10px; margin-bottom: 18px; width: 100%; }
       th, td { border: 1px solid #cfd6df; padding: 6px; text-align: left; vertical-align: top; }
       th { background: #edf2f7; color: #253044; }
       .empty { color: #5f6b7a; padding: 18px; text-align: center; }
@@ -399,47 +658,75 @@ function buildVisualReport(
   </head>
   <body>
     <h1>出勤報表</h1>
-    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)} | 產生時間：${htmlEscape(generatedAt)}</div>
-    <div class="metrics">
-      ${metricLine('事件總數', metrics.total)}
-      ${metricLine('允許通行', metrics.granted)}
-      ${metricLine('拒絕通行', metrics.denied)}
-      ${metricLine('拒絕率', formatDeniedRate(metrics.deniedRate, metrics.denied))}
-      ${metricLine('刷進', metrics.inCount)}
-      ${metricLine('刷出', metrics.outCount)}
-      ${metricLine('平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`)}
-      ${metricLine('產製耗時', typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-')}
-      ${metricLine('平均工時', formatHours(workHours?.averageHours))}
-    </div>
-    <h2>月工時趨勢</h2>
-    <div class="chart">${lineTrendChart(workHours?.monthlyTrend ?? [])}</div>
-    <h2>季工時趨勢</h2>
-    <div class="chart">${lineTrendChart(workHours?.quarterlyTrend ?? [])}</div>
-    <h2>年工時趨勢</h2>
-    <div class="chart">${lineTrendChart(workHours?.yearlyTrend ?? [])}</div>
+    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)} | 報表對象：${htmlEscape(targetLabel)} | 製表人：${htmlEscape(preparerName)} | 產生時間：${htmlEscape(generatedAt)} | 此次報表產製耗時：${htmlEscape(generationLatencyText)}</div>
     ${
-      includeDepartmentDistribution
+      sectionOptions.attendanceRate || sectionOptions.todayAttendance || sectionOptions.departmentStaySummary || sectionOptions.anomalySummary
+        ? `<h2>HR 出勤重點</h2><div class="metrics">
+            ${sectionOptions.attendanceRate ? metricLine('正常出勤率', formatPercentValue(hrMetrics.normalAttendanceRate)) : ''}
+            ${sectionOptions.todayAttendance ? metricLine('今日出勤人數', hrMetrics.todayAttendanceCount) : ''}
+            ${sectionOptions.departmentStaySummary ? metricLine('平均停留時數', formatHours(hrMetrics.averageStayHours)) : ''}
+            ${sectionOptions.anomalySummary ? metricLine('異常天數', hrMetrics.anomalyDays) : ''}
+          </div>`
+        : ''
+    }
+    ${
+      sectionOptions.departmentStayRanking
+        ? `<h2>部門停留時數排名</h2>
+          <table>
+            <thead><tr><th>排名</th><th>部門</th><th>總停留時數</th><th>平均停留時數</th><th>人數</th></tr></thead>
+            <tbody>${departmentStayRows(hrMetrics.departmentStayStats)}</tbody>
+          </table>`
+        : ''
+    }
+    ${sectionOptions.averageWorkHours ? `<div class="metrics">${metricLine('平均工時', formatHours(workHours?.averageHours))}</div>` : ''}
+    ${
+      sectionOptions.eventMetrics
+        ? `<h2>刷卡事件指標</h2><div class="metrics">
+            ${metricLine('事件總數', metrics.total)}
+            ${metricLine('允許通行', metrics.granted)}
+            ${metricLine('拒絕通行', metrics.denied)}
+            ${metricLine('拒絕率', formatDeniedRate(metrics.deniedRate, metrics.denied))}
+            ${metricLine('刷進', metrics.inCount)}
+            ${metricLine('刷出', metrics.outCount)}
+            ${metricLine('刷卡平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`)}
+            ${metricLine('頁面資料產製耗時', typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-')}
+          </div>`
+        : ''
+    }
+    ${
+      sectionOptions.workTrend
+        ? `<h2>月工時趨勢</h2>
+          <div class="chart">${lineTrendChart(workHours?.monthlyTrend ?? [])}</div>
+          <h2>季工時趨勢</h2>
+          <div class="chart">${lineTrendChart(workHours?.quarterlyTrend ?? [])}</div>
+          <h2>年工時趨勢</h2>
+          <div class="chart">${lineTrendChart(workHours?.yearlyTrend ?? [])}</div>`
+        : ''
+    }
+    ${
+      sectionOptions.departmentDistribution
         ? `<h2>部門事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
         : ''
     }
-    <h2>時段活動量</h2>
-    <div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>
-    <h2>事件明細預覽</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>時間</th>
-          <th>員工編號</th>
-          <th>姓名</th>
-          <th>部門</th>
-          <th>門禁</th>
-          <th>方向</th>
-          <th>結果</th>
-          <th>原因</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+    ${sectionOptions.hourlyActivity ? `<h2>時段活動量</h2><div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>` : ''}
+    ${
+      sectionOptions.eventDetails
+        ? `<h2>事件明細</h2>
+          <table>
+            <thead><tr><th>時間</th><th>員工編號</th><th>姓名</th><th>部門</th><th>門禁</th><th>方向</th><th>結果</th><th>原因</th></tr></thead>
+            <tbody>${eventDetailRows(events)}</tbody>
+          </table>`
+        : ''
+    }
+    ${
+      sectionOptions.attendanceDetails
+        ? `<h2>出勤日明細</h2>
+          <table>
+            <thead><tr>${attendanceDetailHeaders(attendanceOptions)}</tr></thead>
+            <tbody>${attendanceDetailRows(attendanceDetails, attendanceOptions)}</tbody>
+          </table>`
+        : ''
+    }
     <script>
       window.addEventListener('load', () => {
         setTimeout(() => window.print(), 250)
@@ -452,7 +739,10 @@ function buildVisualReport(
 function Reports() {
   const [from, setFrom] = useState(defaultFromDate)
   const [to, setTo] = useState(() => localDateInputValue(new Date()))
+  const [targetMode, setTargetMode] = useState<ReportTargetMode>('department')
   const [departmentId, setDepartmentId] = useState('ALL')
+  const [employeeSearch, setEmployeeSearch] = useState('')
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('')
   const [downloadContent, setDownloadContent] = useState<DownloadContent>('visual')
   const [trendMode, setTrendMode] = useState<TrendMode>('monthly')
   const [events, setEvents] = useState<AccessEvent[]>([])
@@ -461,7 +751,29 @@ function Reports() {
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [showAttendanceRate, setShowAttendanceRate] = useState(true)
+  const [showTodayAttendance, setShowTodayAttendance] = useState(true)
+  const [showDepartmentStaySummary, setShowDepartmentStaySummary] = useState(true)
+  const [showDepartmentStayRanking, setShowDepartmentStayRanking] = useState(true)
+  const [showAnomalySummary, setShowAnomalySummary] = useState(true)
+  const [showAverageWorkHours, setShowAverageWorkHours] = useState(true)
+  const [showEventMetrics, setShowEventMetrics] = useState(true)
+  const [showWorkTrend, setShowWorkTrend] = useState(true)
+  const [showDepartmentDistribution, setShowDepartmentDistribution] = useState(true)
+  const [showHourlyActivity, setShowHourlyActivity] = useState(true)
+  const [showEventDetails, setShowEventDetails] = useState(true)
+  const [showAttendanceDetails, setShowAttendanceDetails] = useState(true)
+  const [attendanceDetailOptions, setAttendanceDetailOptions] = useState<AttendanceDetailOptions>({
+    firstIn: true,
+    lastOut: true,
+    workHours: true,
+    inGate: true,
+    outGate: true,
+    anomalies: true,
+  })
   const [message, setMessage] = useState<string | null>(null)
+  const activeEmployeeId = targetMode === 'employee' && selectedEmployeeId.trim() ? selectedEmployeeId.trim() : undefined
+  const activeDepartmentId = targetMode === 'department' ? departmentId : 'ALL'
 
   useEffect(() => {
     let cancelled = false
@@ -472,7 +784,8 @@ function Reports() {
       fetchReportCenterData({
         from,
         to,
-        departmentId,
+        departmentId: activeDepartmentId,
+        employeeId: activeEmployeeId,
         limit: 500,
         offset: 0,
       }),
@@ -499,7 +812,7 @@ function Reports() {
     return () => {
       cancelled = true
     }
-  }, [departmentId, from, to])
+  }, [activeDepartmentId, activeEmployeeId, from, to])
 
   const metrics = useMemo<ReportMetrics>(() => {
     if (!reportData) {
@@ -518,6 +831,9 @@ function Reports() {
       hourlyActivity: reportData.hourlyActivity,
     }
   }, [events, reportData])
+  const attendanceDetails = useMemo(() => buildAttendanceDetails(events), [events])
+  const employeeOptions = useMemo(() => buildEmployeeOptions(events), [events])
+  const hrMetrics = useMemo(() => buildHrMetrics(attendanceDetails), [attendanceDetails])
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
   const isEmployee = currentUser?.role === 'EMPLOYEE'
@@ -535,16 +851,110 @@ function Reports() {
   })
   const trendPath = trendPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
   const hourlyAxis = buildCountAxis(maxHourlyCount)
+  const preparerName = currentUser?.displayName?.trim() || currentUser?.username || currentUser?.employeeId || '未知'
+  const selectedEmployee = employeeOptions.find((employee) => employee.employeeId === selectedEmployeeId)
+  const targetLabel =
+    targetMode === 'employee'
+      ? selectedEmployee
+        ? `${selectedEmployee.displayName} (${selectedEmployee.employeeId})`
+        : selectedEmployeeId || '指定員工'
+      : departmentId === 'ALL'
+        ? '全部部門'
+        : departmentId
+  const reportSectionOptions: ReportSectionOptions = {
+    attendanceRate: showAttendanceRate,
+    todayAttendance: showTodayAttendance,
+    departmentStaySummary: showDepartmentStaySummary,
+    departmentStayRanking: showDepartmentStayRanking,
+    anomalySummary: showAnomalySummary,
+    averageWorkHours: showAverageWorkHours,
+    eventMetrics: showEventMetrics,
+    workTrend: showWorkTrend,
+    departmentDistribution: !isEmployee && showDepartmentDistribution,
+    hourlyActivity: showHourlyActivity,
+    eventDetails: showEventDetails,
+    attendanceDetails: showAttendanceDetails,
+  }
+  const allReportOptionsSelected =
+    showAttendanceRate &&
+    showTodayAttendance &&
+    showDepartmentStaySummary &&
+    showDepartmentStayRanking &&
+    showAnomalySummary &&
+    showAverageWorkHours &&
+    showEventMetrics &&
+    showWorkTrend &&
+    (isEmployee || showDepartmentDistribution) &&
+    showHourlyActivity &&
+    showEventDetails &&
+    showAttendanceDetails &&
+    Object.values(attendanceDetailOptions).every(Boolean)
+  const setAllReportOptions = (checked: boolean) => {
+    setShowAttendanceRate(checked)
+    setShowTodayAttendance(checked)
+    setShowDepartmentStaySummary(checked)
+    setShowDepartmentStayRanking(checked)
+    setShowAnomalySummary(checked)
+    setShowAverageWorkHours(checked)
+    setShowEventMetrics(checked)
+    setShowWorkTrend(checked)
+    setShowDepartmentDistribution(checked)
+    setShowHourlyActivity(checked)
+    setShowEventDetails(checked)
+    setShowAttendanceDetails(checked)
+    setAttendanceDetailOptions({
+      firstIn: checked,
+      lastOut: checked,
+      workHours: checked,
+      inGate: checked,
+      outGate: checked,
+      anomalies: checked,
+    })
+  }
+  const updateAttendanceDetailOption = (key: keyof AttendanceDetailOptions, checked: boolean) => {
+    setAttendanceDetailOptions((current) => ({ ...current, [key]: checked }))
+  }
+  const selectEmployeeSearchValue = (value: string) => {
+    setEmployeeSearch(value)
+    const normalized = value.trim().toLowerCase()
+    const matchedEmployee = employeeOptions.find((employee) => {
+      const label = employeeSearchLabel(employee).toLowerCase()
+      return employee.employeeId.toLowerCase() === normalized || employee.displayName.toLowerCase() === normalized || label === normalized
+    })
+    if (matchedEmployee) {
+      setTargetMode('employee')
+      setSelectedEmployeeId(matchedEmployee.employeeId)
+      return
+    }
+
+    const matchedDepartment = departmentOptions.find((department) => {
+      const label = `${department.name} (${department.departmentId})`.toLowerCase()
+      return department.departmentId.toLowerCase() === normalized || department.name.toLowerCase() === normalized || label === normalized
+    })
+    if (matchedDepartment) {
+      setTargetMode('department')
+      setDepartmentId(matchedDepartment.departmentId)
+      setSelectedEmployeeId('')
+      return
+    }
+
+    if (/^[A-Za-z0-9_-]+$/.test(value.trim())) {
+      setTargetMode('employee')
+      setSelectedEmployeeId(value.trim())
+    } else {
+      setSelectedEmployeeId('')
+    }
+  }
 
   const downloadReport = async () => {
     setIsDownloading(true)
     setMessage(null)
 
     try {
-      const deptPart = departmentId === 'ALL' ? 'all' : departmentId.toLowerCase()
+      const deptPart = activeEmployeeId ? `employee-${activeEmployeeId}` : activeDepartmentId === 'ALL' ? 'all' : activeDepartmentId.toLowerCase()
 
       if (downloadContent === 'raw') {
-        const eventsForCsv = await fetchAccessEventsForCsv(from, to, departmentId)
+        const eventsForCsv = await fetchAccessEventsForCsv(from, to, activeDepartmentId, activeEmployeeId)
         const csv = toCsv(eventsForCsv)
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
         const url = URL.createObjectURL(blob)
@@ -562,7 +972,8 @@ function Reports() {
       const result = await fetchReportCenterData({
         from,
         to,
-        departmentId,
+        departmentId: activeDepartmentId,
+        employeeId: activeEmployeeId,
         limit: 500,
         offset: 0,
       })
@@ -578,7 +989,21 @@ function Reports() {
         hourlyActivity: result.hourlyActivity,
       }
 
-      const reportHtml = buildVisualReport(result.events, reportMetrics, result.workHours, from, to, departmentId, !isEmployee, result.generationLatencyMs)
+      const reportHtml = buildVisualReport(
+        result.events,
+        reportMetrics,
+        result.workHours,
+        buildAttendanceDetails(result.events),
+        buildHrMetrics(buildAttendanceDetails(result.events)),
+        from,
+        to,
+        activeDepartmentId,
+        targetLabel,
+        preparerName,
+        reportSectionOptions,
+        attendanceDetailOptions,
+        result.generationLatencyMs,
+      )
       const reportUrl = URL.createObjectURL(new Blob([reportHtml], { type: 'text/html;charset=utf-8' }))
       const link = document.createElement('a')
       link.href = reportUrl
@@ -620,16 +1045,51 @@ function Reports() {
           </div>
           {!isEmployee ? (
             <div className="col-md-3">
-            <label className="form-label" htmlFor="report-department">部門</label>
-            <select id="report-department" className="form-select" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)}>
-              <option value="ALL">全部可見部門</option>
-              {departmentOptions.map((option) => (
-                <option key={option.departmentId} value={option.departmentId}>
-                  {'\u00A0'.repeat(option.depth * 2)}
-                  {option.name} ({option.departmentId})
-                </option>
-              ))}
-            </select>
+              <label className="form-label" htmlFor="report-department">部門 / 對象</label>
+              <select
+                id="report-department"
+                className="form-select"
+                value={targetMode === 'employee' ? '__EMPLOYEE__' : departmentId}
+                onChange={(event) => {
+                  if (event.target.value === '__EMPLOYEE__') {
+                    setTargetMode('employee')
+                    return
+                  }
+                  setTargetMode('department')
+                  setDepartmentId(event.target.value)
+                  setSelectedEmployeeId('')
+                }}
+              >
+                <option value="__EMPLOYEE__">指定員工</option>
+                <option value="ALL">全部部門</option>
+                {departmentOptions.map((option) => (
+                  <option key={option.departmentId} value={option.departmentId}>
+                    {'\u00A0'.repeat(option.depth * 2)}
+                    {option.name} ({option.departmentId})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          {!isEmployee && targetMode === 'employee' ? (
+            <div className="col-md-3">
+              <label className="form-label" htmlFor="report-employee-search">指定員工 / 部門</label>
+              <input
+                id="report-employee-search"
+                className="form-control"
+                list="report-employee-options"
+                placeholder="輸入員工編號、姓名或部門"
+                value={employeeSearch}
+                onChange={(event) => selectEmployeeSearchValue(event.target.value)}
+              />
+              <datalist id="report-employee-options">
+                {employeeOptions.map((employee) => (
+                  <option key={employee.employeeId} value={employeeSearchLabel(employee)} />
+                ))}
+                {departmentOptions.map((department) => (
+                  <option key={department.departmentId} value={`${department.name} (${department.departmentId})`} />
+                ))}
+              </datalist>
             </div>
           ) : null}
           <div className="col-md-3">
@@ -639,36 +1099,231 @@ function Reports() {
               <option value="raw">原始事件資料 CSV</option>
             </select>
           </div>
-          {message && <div className="col-12 small text-secondary text-end">{message}</div>}
+          <div className="col-12">
+            <div className="report-section-options" aria-label="報表顯示項目">
+              <span>報表顯示項目</span>
+              <label>
+                <input type="checkbox" checked={allReportOptionsSelected} onChange={(event) => setAllReportOptions(event.target.checked)} />
+                全選
+              </label>
+              <label>
+                <input type="checkbox" checked={showAttendanceRate} onChange={(event) => setShowAttendanceRate(event.target.checked)} />
+                正常出勤率
+              </label>
+              <label>
+                <input type="checkbox" checked={showTodayAttendance} onChange={(event) => setShowTodayAttendance(event.target.checked)} />
+                今日出勤人數
+              </label>
+              <label>
+                <input type="checkbox" checked={showDepartmentStaySummary} onChange={(event) => setShowDepartmentStaySummary(event.target.checked)} />
+                停留時數統計
+              </label>
+              <label>
+                <input type="checkbox" checked={showDepartmentStayRanking} onChange={(event) => setShowDepartmentStayRanking(event.target.checked)} />
+                部門停留時數排名
+              </label>
+              <label>
+                <input type="checkbox" checked={showAnomalySummary} onChange={(event) => setShowAnomalySummary(event.target.checked)} />
+                異常狀況
+              </label>
+              <label>
+                <input type="checkbox" checked={showAverageWorkHours} onChange={(event) => setShowAverageWorkHours(event.target.checked)} />
+                平均工時
+              </label>
+              <label>
+                <input type="checkbox" checked={showEventMetrics} onChange={(event) => setShowEventMetrics(event.target.checked)} />
+                刷卡事件指標
+              </label>
+              <label>
+                <input type="checkbox" checked={showWorkTrend} onChange={(event) => setShowWorkTrend(event.target.checked)} />
+                工時趨勢
+              </label>
+              {!isEmployee ? (
+                <label>
+                  <input type="checkbox" checked={showDepartmentDistribution} onChange={(event) => setShowDepartmentDistribution(event.target.checked)} />
+                  部門事件分布
+                </label>
+              ) : null}
+              <label>
+                <input type="checkbox" checked={showHourlyActivity} onChange={(event) => setShowHourlyActivity(event.target.checked)} />
+                時段活動量
+              </label>
+              <label>
+                <input type="checkbox" checked={showEventDetails} onChange={(event) => setShowEventDetails(event.target.checked)} />
+                事件明細
+              </label>
+              <label>
+                <input type="checkbox" checked={showAttendanceDetails} onChange={(event) => setShowAttendanceDetails(event.target.checked)} />
+                出勤日明細
+              </label>
+              {showAttendanceDetails ? (
+              <div className="report-section-options-subgroup" aria-label="出勤日明細欄位">
+                <span>出勤日明細欄位</span>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.firstIn} onChange={(event) => updateAttendanceDetailOption('firstIn', event.target.checked)} />
+                  上班
+                </label>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.inGate} onChange={(event) => updateAttendanceDetailOption('inGate', event.target.checked)} />
+                  刷入門禁
+                </label>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.lastOut} onChange={(event) => updateAttendanceDetailOption('lastOut', event.target.checked)} />
+                  下班
+                </label>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.outGate} onChange={(event) => updateAttendanceDetailOption('outGate', event.target.checked)} />
+                  刷出門禁
+                </label>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.workHours} onChange={(event) => updateAttendanceDetailOption('workHours', event.target.checked)} />
+                  工時
+                </label>
+                <label>
+                  <input type="checkbox" checked={attendanceDetailOptions.anomalies} onChange={(event) => updateAttendanceDetailOption('anomalies', event.target.checked)} />
+                  異常事件
+                </label>
+              </div>
+              ) : null}
+            </div>
+          </div>          {message && <div className="col-12 small text-secondary text-end">{message}</div>}
         </div>
       </section>
 
-      <section className="kpi-grid">
-        <div className="kpi-card">
-          <div className="kpi-label">平均工時</div>
-          <div className="kpi-value">{isLoading ? '-' : formatHours(reportData?.workHours.averageHours)}</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">刷卡事件數</div>
-          <div className="kpi-value">{isLoading ? '-' : metrics.total.toLocaleString()}</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">資料產製耗時</div>
-          <div className="kpi-value">{isLoading ? '-' : `${(reportData?.generationLatencyMs ?? 0).toFixed(1)}`}</div>
-          <div className="kpi-footnote">ms</div>
-        </div>
-      </section>
+      {showAttendanceRate || showTodayAttendance || showDepartmentStaySummary || showAnomalySummary ? (
+        <section className="kpi-grid">
+          {showAttendanceRate ? (
+            <div className="kpi-card">
+              <div className="kpi-label">正常出勤率</div>
+              <div className="kpi-value">{isLoading ? '-' : formatPercentValue(hrMetrics.normalAttendanceRate)}</div>
+              <div className="kpi-footnote">完整上下班且無異常</div>
+            </div>
+          ) : null}
+          {showTodayAttendance ? (
+            <div className="kpi-card">
+              <div className="kpi-label">今日出勤人數</div>
+              <div className="kpi-value">{isLoading ? '-' : hrMetrics.todayAttendanceCount.toLocaleString()}</div>
+              <div className="kpi-footnote">今日已有上班刷卡</div>
+            </div>
+          ) : null}
+          {showDepartmentStaySummary ? (
+            <div className="kpi-card">
+              <div className="kpi-label">平均停留時數</div>
+              <div className="kpi-value">{isLoading ? '-' : formatHours(hrMetrics.averageStayHours)}</div>
+              <div className="kpi-footnote">依出勤日明細估算</div>
+            </div>
+          ) : null}
+          {showAnomalySummary ? (
+            <div className="kpi-card">
+              <div className="kpi-label">異常天數</div>
+              <div className="kpi-value">{isLoading ? '-' : hrMetrics.anomalyDays.toLocaleString()}</div>
+              <div className="kpi-footnote">拒絕通行或缺少上下班</div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
-      <section className="panel-card work-trend-panel mb-3">
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <h2 className="h6 m-0">{trendTitle(trendMode)}</h2>
-          <select className="form-select form-select-sm w-auto" value={trendMode} onChange={(event) => setTrendMode(event.target.value as TrendMode)}>
-            <option value="monthly">月</option>
-            <option value="quarterly">季</option>
-            <option value="yearly">年</option>
-          </select>
-        </div>
-        <div className="work-trend-chart">
+      {showDepartmentStayRanking ? (
+        <section className="panel-card mb-3">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">部門停留時數排名</h2>
+            <span className="small text-secondary">依總停留時數排序</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>部門</th>
+                  <th>總停留時數</th>
+                  <th>平均停留時數</th>
+                  <th>人數</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hrMetrics.departmentStayStats.length > 0 ? (
+                  hrMetrics.departmentStayStats.slice(0, 10).map((item, index) => (
+                    <tr key={item.departmentId}>
+                      <td>{index + 1}</td>
+                      <td>{item.departmentId}</td>
+                      <td>{formatHours(item.totalHours)}</td>
+                      <td>{formatHours(item.averageHours)}</td>
+                      <td>{item.employeeCount.toLocaleString()}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有部門停留時數資料'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {showAverageWorkHours ? (
+        <section className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-label">平均工時</div>
+            <div className="kpi-value">{isLoading ? '-' : formatHours(reportData?.workHours.averageHours)}</div>
+          </div>
+        </section>
+      ) : null}
+
+      {showEventMetrics ? (
+        <section className="panel-card report-event-metrics-panel mb-3">
+          <h2 className="report-static-section-title">刷卡事件指標</h2>
+          <div className="report-event-metrics-grid">
+            <div>
+              <span>事件總數</span>
+              <strong>{metrics.total.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>允許通行</span>
+              <strong>{metrics.granted.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>拒絕通行</span>
+              <strong>{metrics.denied.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>拒絕率</span>
+              <strong>{formatDeniedRate(metrics.deniedRate, metrics.denied)}</strong>
+            </div>
+            <div>
+              <span>刷進</span>
+              <strong>{metrics.inCount.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>刷出</span>
+              <strong>{metrics.outCount.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>刷卡平均延遲</span>
+              <strong>{metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs.toLocaleString()} ms`}</strong>
+            </div>
+            <div>
+              <span>頁面資料產製耗時</span>
+              <strong>{reportData?.generationLatencyMs == null ? '-' : `${reportData.generationLatencyMs.toFixed(1)} ms`}</strong>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {showWorkTrend ? (
+        <section className="panel-card work-trend-panel mb-3">
+          <div className="report-section-toolbar">
+            <h2 className="h6 m-0">{trendTitle(trendMode)}</h2>
+            <select className="form-select form-select-sm w-auto" value={trendMode} onChange={(event) => setTrendMode(event.target.value as TrendMode)}>
+              <option value="monthly">月</option>
+              <option value="quarterly">季</option>
+              <option value="yearly">年</option>
+            </select>
+          </div>
+          <div className="work-trend-chart">
           {activeTrend.length > 0 ? (
             <svg className="work-trend-line" viewBox={`0 0 ${trendChartWidth} ${trendChartHeight}`} role="img" aria-label={trendTitle(trendMode)}>
               {[0, 0.5, 1].map((ratio) => {
@@ -691,13 +1346,14 @@ function Reports() {
           ) : (
             <div className="work-trend-empty text-secondary small">目前沒有完整進出可計算工時。</div>
           )}
-        </div>
-      </section>
+          </div>
+        </section>
+      ) : null}
 
-      <section className="panel-grid mb-3">
-        {!isEmployee ? (
+      {!isEmployee && showDepartmentDistribution ? (
+        <section className="panel-grid mb-3">
           <div className="panel-card">
-          <div className="d-flex justify-content-between align-items-center mb-3">
+          <div className="report-section-toolbar">
             <h2 className="h6 m-0">部門事件分布</h2>
             <span className="small text-secondary">Top {metrics.topDepartments.length}</span>
           </div>
@@ -717,32 +1373,16 @@ function Reports() {
             )}
           </div>
           </div>
-        ) : null}
+        </section>
+      ) : null}
 
-        <div className="panel-card">
-          <h2 className="h6 mb-3">刷卡方向</h2>
-          <div className="report-direction">
-            <div>
-              <span>IN</span>
-              <strong>{metrics.inCount.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>OUT</span>
-              <strong>{metrics.outCount.toLocaleString()}</strong>
-            </div>
+      {showHourlyActivity ? (
+        <section className="panel-card report-event-metrics-panel mb-3">
+          <div className="report-section-toolbar">
+            <h2 className="report-static-section-title">時段活動量</h2>
+            <span className="small text-secondary">台北時間</span>
           </div>
-          <div className="report-mini-metric">
-            平均延遲：{metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs.toLocaleString()} ms`}
-          </div>
-        </div>
-      </section>
-
-      <section className="panel-card mb-3">
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <h2 className="h6 m-0">時段活動量</h2>
-          <span className="small text-secondary">台北時間</span>
-        </div>
-        <div className="report-hourly-chart">
+          <div className="report-hourly-chart">
           {metrics.hourlyActivity.length > 0 ? (
             <>
               <div className="report-hourly-legend" aria-label="IN OUT 圖例">
@@ -772,52 +1412,109 @@ function Reports() {
           ) : (
             <div className="text-secondary small">目前沒有符合條件的刷卡時段。</div>
           )}
-        </div>
-      </section>
+          </div>
+        </section>
+      ) : null}
 
-      <section className="panel-card">
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <h2 className="h6 m-0">事件明細預覽</h2>
-          <span className="small text-secondary">最多顯示 500 筆</span>
-        </div>
-        <div className="table-responsive">
-          <table className="table-clean">
-            <thead>
-              <tr>
-                <th>時間</th>
-                <th>員工</th>
-                <th>部門</th>
-                <th>門禁</th>
-                <th>方向</th>
-                <th>結果</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.length > 0 ? (
-                events.slice(0, 20).map((event) => (
-                  <tr key={event.requestId}>
-                    <td>{new Date(event.timestamp).toLocaleString('zh-TW', { hour12: false })}</td>
-                    <td>
-                      {event.displayName || event.employeeId}
-                      <div className="small text-secondary">{event.employeeId}</div>
-                    </td>
-                    <td>{event.departmentId}</td>
-                    <td>{event.gateId}</td>
-                    <td>{event.direction}</td>
-                    <td className={event.decision === 'DENIED' ? 'danger-text' : undefined}>{event.decision}</td>
-                  </tr>
-                ))
-              ) : (
+      {showEventDetails ? (
+        <section className="panel-card mb-3">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">事件明細</h2>
+            <span className="small text-secondary">最近 500 筆</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
                 <tr>
-                  <td colSpan={6} className="text-secondary text-center py-4">
-                    {isLoading ? '載入中...' : '目前沒有符合條件的資料'}
-                  </td>
+                  <th>時間</th>
+                  <th>員工</th>
+                  <th>部門</th>
+                  <th>門禁</th>
+                  <th>方向</th>
+                  <th>結果</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              </thead>
+              <tbody>
+                {events.length > 0 ? (
+                  events.slice(0, 20).map((event) => (
+                    <tr key={event.requestId}>
+                      <td>{new Date(event.timestamp).toLocaleString('zh-TW', { hour12: false })}</td>
+                      <td>
+                        {event.displayName || event.employeeId}
+                        <div className="small text-secondary">{event.employeeId}</div>
+                      </td>
+                      <td>{event.departmentId}</td>
+                      <td>{event.gateId}</td>
+                      <td>{event.direction}</td>
+                      <td className={event.decision === 'DENIED' ? 'danger-text' : undefined}>{event.decision}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有事件資料'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {showAttendanceDetails ? (
+        <section className="panel-card">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">出勤日明細</h2>
+            <span className="small text-secondary">依日期與員工彙整</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>員工編號</th>
+                  <th>姓名</th>
+                  <th>部門</th>
+                  {attendanceDetailOptions.firstIn ? <th>上班</th> : null}
+                  {attendanceDetailOptions.inGate ? <th>刷入門禁</th> : null}
+                  {attendanceDetailOptions.lastOut ? <th>下班</th> : null}
+                  {attendanceDetailOptions.outGate ? <th>刷出門禁</th> : null}
+                  {attendanceDetailOptions.workHours ? <th>工時</th> : null}
+                  {attendanceDetailOptions.anomalies ? <th>異常事件</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {attendanceDetails.length > 0 ? (
+                  attendanceDetails.slice(0, 20).map((item) => {
+                    const anomalyText = item.anomalies.length > 0 ? item.anomalies.slice(0, 2).map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`).join('；') : '-'
+                    return (
+                      <tr key={item.key}>
+                        <td>{item.date}</td>
+                        <td>{item.employeeId}</td>
+                        <td>{item.displayName || '-'}</td>
+                        <td>{item.departmentId}</td>
+                        {attendanceDetailOptions.firstIn ? <td>{localTimeText(item.firstIn?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.inGate ? <td>{item.firstIn?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.lastOut ? <td>{localTimeText(item.lastOut?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.outGate ? <td>{item.lastOut?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.workHours ? <td>{formatHours(item.workHours)}</td> : null}
+                        {attendanceDetailOptions.anomalies ? <td className={item.anomalies.length > 0 ? 'danger-text' : undefined}>{anomalyText}</td> : null}
+                      </tr>
+                    )
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={4 + Object.values(attendanceDetailOptions).filter(Boolean).length} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有出勤明細'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
     </AppShell>
   )
 }

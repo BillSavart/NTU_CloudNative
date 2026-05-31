@@ -277,7 +277,7 @@ function Dashboard() {
             <span className="danger-text">{recentSevenDaysSummary?.deniedEvents ?? '-'}</span>
           </Link>
           <div className="alert-link-row dashboard-static-row">
-            <span>平均延遲 ms</span>
+            <span>刷卡平均延遲 ms</span>
             <span className="danger-text">{formatAverageLatency(summary)}</span>
           </div>
           </div>

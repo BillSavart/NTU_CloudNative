@@ -68,6 +68,7 @@ def dashboard(
 def report_center(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
+    employee_id: str | None = Query(default=None, alias="employeeId"),
     department_id: str | None = Query(default=None, alias="departmentId"),
     limit: int = Query(default=500, ge=1, le=1000),
     current_user: UserAccount | None = Depends(get_optional_current_user),
@@ -78,6 +79,7 @@ def report_center(
         current_user=current_user,
         from_time=parse_optional_datetime(from_),
         to_time=parse_optional_datetime(to),
+        employee_id=employee_id,
         department_id=department_id,
         limit=limit,
     )
