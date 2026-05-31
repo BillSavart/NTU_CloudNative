@@ -1657,60 +1657,6 @@ function Reports() {
         </section>
       ) : null}
 
-      {showAttendanceDetails ? (
-        <section className="panel-card mb-3">
-          <div className="d-flex justify-content-between align-items-center mb-3">
-            <h2 className="h6 m-0">出勤日明細</h2>
-            <span className="small text-secondary">依日期與員工彙整</span>
-          </div>
-          <div className="table-responsive">
-            <table className="table-clean">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>員工編號</th>
-                  <th>姓名</th>
-                  <th>部門</th>
-                  {attendanceDetailOptions.firstIn ? <th>上班</th> : null}
-                  {attendanceDetailOptions.inGate ? <th>刷入門禁</th> : null}
-                  {attendanceDetailOptions.lastOut ? <th>下班</th> : null}
-                  {attendanceDetailOptions.outGate ? <th>刷出門禁</th> : null}
-                  {attendanceDetailOptions.workHours ? <th>工時</th> : null}
-                  {attendanceDetailOptions.anomalies ? <th>異常事件</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {attendanceDetails.length > 0 ? (
-                  attendanceDetails.slice(0, 20).map((item) => {
-                    const anomalyText = item.anomalies.length > 0 ? item.anomalies.slice(0, 2).map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`).join('；') : '-'
-                    return (
-                      <tr key={item.key}>
-                        <td>{item.date}</td>
-                        <td>{item.employeeId}</td>
-                        <td>{item.displayName || '-'}</td>
-                        <td>{item.departmentId}</td>
-                        {attendanceDetailOptions.firstIn ? <td>{localTimeText(item.firstIn?.timestamp)}</td> : null}
-                        {attendanceDetailOptions.inGate ? <td>{item.firstIn?.gateId ?? '-'}</td> : null}
-                        {attendanceDetailOptions.lastOut ? <td>{localTimeText(item.lastOut?.timestamp)}</td> : null}
-                        {attendanceDetailOptions.outGate ? <td>{item.lastOut?.gateId ?? '-'}</td> : null}
-                        {attendanceDetailOptions.workHours ? <td>{formatHours(item.workHours)}</td> : null}
-                        {attendanceDetailOptions.anomalies ? <td className={item.anomalies.length > 0 ? 'danger-text' : undefined}>{anomalyText}</td> : null}
-                      </tr>
-                    )
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={4 + Object.values(attendanceDetailOptions).filter(Boolean).length} className="text-secondary text-center py-4">
-                      {isLoading ? '載入中...' : '這段期間沒有出勤明細'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
       {showEventMetrics && Object.values(eventMetricOptions).some(Boolean) ? (
         <section className="panel-card report-event-metrics-panel mb-3">
           <h2 className="report-static-section-title">刷卡事件統計</h2>
