@@ -226,6 +226,8 @@ function buildAttendanceDetails(events: AccessEvent[]): AttendanceDetailRow[] {
       const firstInTime = firstIn ? new Date(firstIn.timestamp).getTime() : NaN
       const lastOutTime = lastOut ? new Date(lastOut.timestamp).getTime() : NaN
       const workHours = Number.isFinite(firstInTime) && Number.isFinite(lastOutTime) && lastOutTime > firstInTime ? (lastOutTime - firstInTime) / 3_600_000 : null
+      // Strip the raw grouping arrays; only the derived fields below are returned.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { grantedIn: _grantedIn, grantedOut: _grantedOut, ...cleanRow } = row
       return { ...cleanRow, firstIn, lastOut, workHours }
     })
