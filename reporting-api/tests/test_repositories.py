@@ -16,6 +16,7 @@ from app.repositories import (
     get_dashboard_operational_metrics,
     get_compliance_anomalies,
     get_department_analytics,
+    get_department_employee_metrics,
     get_department_tree,
     get_report_center,
     parse_access_event,
@@ -135,6 +136,50 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(analytics["visibleDepartmentCount"], len(analytics["departments"]))
         self.assertEqual(analytics["visibleDepartmentCount"], 1)
         self.assertEqual(analytics["departments"][0]["departmentId"], "OPS_A")
+
+    def test_department_employee_metrics_ignore_negative_daily_work_hours(self) -> None:
+        with self.SessionLocal() as db:
+            db.add_all(
+                [
+                    AccessEvent(
+                        request_id="req-negative-out",
+                        employee_id="EMP001",
+                        gate_id="GATE_04_A",
+                        direction="OUT",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="IN",
+                        current_state="OUT",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 23, 8, 0, tzinfo=TAIPEI),
+                    ),
+                    AccessEvent(
+                        request_id="req-negative-in",
+                        employee_id="EMP001",
+                        gate_id="GATE_04_A",
+                        direction="IN",
+                        decision="GRANTED",
+                        reason="ACCESS_ALLOWED",
+                        previous_state="OUT",
+                        current_state="IN",
+                        latency_ms=5,
+                        occurred_at=datetime(2026, 5, 23, 18, 0, tzinfo=TAIPEI),
+                    ),
+                ]
+            )
+            db.commit()
+
+            metrics = get_department_employee_metrics(
+                db,
+                "FAB_A",
+                current_user=self._user(db, "admin"),
+                limit=20,
+            )
+
+        employee = next(item for item in metrics["items"] if item["employeeId"] == "EMP001")
+        self.assertEqual(employee["monthlyWorkHours"], 0.0)
+        self.assertEqual(employee["averageDailyHours"], 0.0)
+        self.assertGreaterEqual(metrics["summary"]["totalMonthlyWorkHours"], 0.0)
 
     def test_dashboard_combines_summary_anomalies_and_timeseries(self) -> None:
         with self.SessionLocal() as db:

@@ -1500,7 +1500,7 @@ def _monthly_employee_metrics(
                 count(*) FILTER (WHERE first_in IS NOT NULL) AS attendance_days,
                 coalesce(sum(
                     CASE
-                        WHEN first_in IS NOT NULL AND last_out IS NOT NULL
+                        WHEN first_in IS NOT NULL AND last_out IS NOT NULL AND last_out > first_in
                         THEN extract(epoch FROM (last_out - first_in)) / 3600.0
                         ELSE 0
                     END
@@ -1509,6 +1509,7 @@ def _monthly_employee_metrics(
                 count(*) FILTER (
                     WHERE first_in IS NOT NULL
                       AND last_out IS NOT NULL
+                      AND last_out > first_in
                       AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
                 ) AS overtime_count
             FROM daily
@@ -1593,7 +1594,7 @@ def _monthly_employee_metrics_in_python(
             rollup[employee_id]["attendance_days"] += 1
             if _is_late_time(first_in.time()):
                 rollup[employee_id]["late_count"] += 1
-        if first_in is not None and last_out is not None:
+        if first_in is not None and last_out is not None and last_out > first_in:
             work_hours = (last_out - first_in).total_seconds() / 3600
             rollup[employee_id]["work_hours"] += work_hours
             if work_hours > _overtime_hours():
@@ -1618,6 +1619,8 @@ def _format_employee_metric_row(
     overtime_count: int,
     denied_count: int,
 ) -> dict[str, Any]:
+    work_hours = max(work_hours, 0.0)
+    attendance_days = max(attendance_days, 0)
     anomaly_count = late_count + overtime_count + denied_count
     return {
         "monthlyWorkHours": round(work_hours, 2),
