@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import bindparam, case, func, select, text
+from sqlalchemy import bindparam, case, func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
@@ -461,7 +461,7 @@ def get_report_center(
             "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
         },
         "topDepartments": top_departments,
-        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
+        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id, employee_id=employee_id),
         "hourlyActivity": [
             {
                 "hour": hour,
@@ -565,7 +565,7 @@ def _get_report_center_sql(
             "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
         },
         "topDepartments": top_departments,
-        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id),
+        "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id, employee_id=employee_id),
         "hourlyActivity": [
             {
                 "hour": row["hour"],
@@ -586,19 +586,20 @@ def get_work_hour_summary(
     current_user: UserAccount | None = None,
     to_time: datetime | None = None,
     department_id: str | None = None,
+    employee_id: str | None = None,
 ) -> dict[str, Any]:
     if to_time is None:
         to_time = datetime.now(TAIPEI)
-    cache_key = _work_hour_summary_cache_key(db, current_user, to_time, department_id)
+    cache_key = _work_hour_summary_cache_key(db, current_user, to_time, department_id, employee_id)
     cached = _work_hour_summary_cache.get(cache_key)
     now = perf_counter()
     if cached is not None and now - cached[0] < WORK_HOUR_SUMMARY_CACHE_TTL_SECONDS:
         return cached[1]
 
     if db.bind is not None and db.bind.dialect.name != "sqlite":
-        summary = _get_work_hour_summary_sql(db, current_user, to_time, department_id)
+        summary = _get_work_hour_summary_sql(db, current_user, to_time, department_id, employee_id)
     else:
-        summary = _get_work_hour_summary_in_python(db, current_user, to_time, department_id)
+        summary = _get_work_hour_summary_in_python(db, current_user, to_time, department_id, employee_id)
 
     _work_hour_summary_cache[cache_key] = (now, summary)
     if len(_work_hour_summary_cache) > 128:
@@ -612,12 +613,13 @@ def _work_hour_summary_cache_key(
     current_user: UserAccount | None,
     to_time: datetime,
     department_id: str | None,
+    employee_id: str | None,
 ) -> tuple[Any, ...]:
     visible_ids = _visible_department_ids(db, current_user, department_id)
     scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
     to_date = _local_date(to_time).isoformat()
     user_key = current_user.user_id if current_user is not None else "anonymous"
-    return (user_key, department_id or "ALL", scope_key, to_date)
+    return (user_key, department_id or "ALL", employee_id or "ALL_EMPLOYEES", scope_key, to_date)
 
 
 def _get_work_hour_summary_sql(
@@ -625,6 +627,7 @@ def _get_work_hour_summary_sql(
     current_user: UserAccount | None,
     to_time: datetime,
     department_id: str | None,
+    employee_id: str | None,
 ) -> dict[str, Any]:
     history_from = to_time - timedelta(days=370)
     visible_ids = _visible_department_ids(db, current_user, department_id)
@@ -654,6 +657,9 @@ def _get_work_hour_summary_sql(
     if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
         filters.append("e.employee_id = :employee_id")
         params["employee_id"] = current_user.employee_id
+    elif employee_id:
+        filters.append("e.employee_id = :employee_id")
+        params["employee_id"] = employee_id
 
     daily_cte = f"""
         WITH daily AS MATERIALIZED (
@@ -752,9 +758,12 @@ def _get_work_hour_summary_in_python(
     current_user: UserAccount | None,
     to_time: datetime,
     department_id: str | None,
+    employee_id: str | None,
 ) -> dict[str, Any]:
     history_from = to_time - timedelta(days=370)
     rows = _dashboard_event_rows(db, current_user, department_id, history_from, to_time)
+    if employee_id and not (current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id):
+        rows = [row for row in rows if row.employee_id == employee_id]
     daily: dict[tuple[str, date], dict[str, datetime | None]] = defaultdict(lambda: {"first_in": None, "last_out": None})
 
     for row in rows:
@@ -1202,6 +1211,50 @@ def get_employee_states(
         "total": total,
         "limit": limit,
         "offset": offset,
+    }
+
+
+def search_employee_options(
+    db: Session,
+    current_user: UserAccount | None = None,
+    department_id: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 200))
+    normalized_department_id = None if department_id in (None, "", "ALL") else department_id
+    query = _scoped_employee_select(db, current_user, normalized_department_id)
+
+    keyword = (q or "").strip()
+    if keyword:
+        pattern = f"%{keyword}%"
+        query = query.where(
+            or_(
+                Employee.employee_id.ilike(pattern),
+                Employee.display_name.ilike(pattern),
+                Employee.department_id.ilike(pattern),
+            )
+        )
+
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    employees = db.scalars(
+        query.order_by(Employee.department_id.asc().nullslast(), Employee.employee_id.asc()).limit(limit)
+    ).all()
+
+    return {
+        "items": [
+            {
+                "employeeId": employee.employee_id,
+                "displayName": employee.display_name,
+                "departmentId": employee.department_id,
+                "managerEmployeeId": employee.manager_employee_id,
+                "lastKnownState": employee.last_known_state,
+                "lastSeenAt": employee.last_seen_at.isoformat() if employee.last_seen_at else None,
+            }
+            for employee in employees
+        ],
+        "total": total,
+        "limit": limit,
     }
 
 

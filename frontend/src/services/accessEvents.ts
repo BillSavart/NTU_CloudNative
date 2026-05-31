@@ -83,6 +83,22 @@ export type DepartmentEmployeeMetric = {
   averageDailyHours?: number | null
 }
 
+
+export type EmployeeOptionItem = {
+  employeeId: string
+  displayName?: string | null
+  departmentId?: string | null
+  managerEmployeeId?: string | null
+  lastKnownState?: 'UNKNOWN' | 'IN' | 'OUT'
+  lastSeenAt?: string | null
+}
+
+export type EmployeeOptionsResponse = {
+  items: EmployeeOptionItem[]
+  total: number
+  limit: number
+}
+
 export type DepartmentEmployeeMetricsResponse = {
   departmentId: string
   name: string
@@ -354,6 +370,28 @@ export async function fetchDepartmentAnalytics(days = 31): Promise<DepartmentAna
     departments: Array.isArray(result.departments) ? result.departments : [],
     visibleDepartmentCount: Number(result.visibleDepartmentCount ?? 0),
     days: Number(result.days ?? days),
+  }
+}
+
+
+export async function fetchEmployeeOptions(filters: { q?: string; departmentId?: string; limit?: number } = {}): Promise<EmployeeOptionsResponse> {
+  const params = new URLSearchParams()
+  params.set('limit', String(filters.limit ?? 100))
+  if (filters.q?.trim()) params.set('q', filters.q.trim())
+  if (filters.departmentId && filters.departmentId !== 'ALL') params.set('departmentId', filters.departmentId)
+
+  const response = await fetch(`/api/reports/employees/options?${params.toString()}`, {
+    method: 'GET',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to load employee options (${response.status})`)
+  }
+  const result = (await response.json()) as Partial<EmployeeOptionsResponse>
+  return {
+    items: Array.isArray(result.items) ? result.items : [],
+    total: Number(result.total ?? 0),
+    limit: Number(result.limit ?? filters.limit ?? 100),
   }
 }
 

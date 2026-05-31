@@ -20,6 +20,7 @@ from app.repositories import (
     list_anomalies,
     parse_optional_datetime,
     query_access_events,
+    search_employee_options,
     update_compliance_anomaly_remark,
 )
 
@@ -165,6 +166,22 @@ def department_employees(
         offset=offset,
     )
 
+
+@router.get("/reports/employees/options")
+def employee_options(
+    q: str | None = None,
+    department_id: str | None = Query(default=None, alias="departmentId"),
+    limit: int = Query(default=100, ge=1, le=200),
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return search_employee_options(
+        db,
+        current_user=current_user,
+        department_id=department_id,
+        q=q,
+        limit=limit,
+    )
 
 @router.get("/reports/employees/current-state")
 def employee_current_state(
