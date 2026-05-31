@@ -1,4 +1,9 @@
+import csv
+import io
+from typing import Generator, List
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -69,18 +74,22 @@ def report_center(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
     employee_id: str | None = Query(default=None, alias="employeeId"),
-    department_id: str | None = Query(default=None, alias="departmentId"),
+    department_ids: List[str] = Query(default=[], alias="departmentId"),
     limit: int = Query(default=500, ge=1, le=1000),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    # Resolve multi-dept: single or multiple
+    dept_id = department_ids[0] if len(department_ids) == 1 else None
+    dept_ids = department_ids if len(department_ids) > 1 else None
     return get_report_center(
         db,
         current_user=current_user,
         from_time=parse_optional_datetime(from_),
         to_time=parse_optional_datetime(to),
         employee_id=employee_id,
-        department_id=department_id,
+        department_id=dept_id,
+        department_ids=dept_ids,
         limit=limit,
     )
 
@@ -88,7 +97,7 @@ def report_center(
 @router.get("/reports/access/events")
 def access_events(
     employee_id: str | None = Query(default=None, alias="employeeId"),
-    department_id: str | None = Query(default=None, alias="departmentId"),
+    department_ids: List[str] = Query(default=[], alias="departmentId"),
     decision: str | None = None,
     direction: str | None = None,
     reason: str | None = None,
@@ -103,7 +112,7 @@ def access_events(
         db,
         current_user=current_user,
         employee_id=employee_id,
-        department_id=department_id,
+        department_ids=department_ids if department_ids else None,
         decision=decision,
         direction=direction,
         reason=reason,
@@ -229,8 +238,9 @@ def compliance_anomalies(
     anomaly_type: str | None = Query(default=None, alias="type"),
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
-    days: int = Query(default=7, ge=1, le=31),
+    days: int = Query(default=7, ge=1, le=92),
     limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -243,6 +253,7 @@ def compliance_anomalies(
         to_time=parse_optional_datetime(to),
         days=days,
         limit=limit,
+        offset=offset,
     )
 
 
@@ -283,3 +294,83 @@ def timeseries(
             department_id=department_id,
         )
     }
+
+
+def _stream_events_csv(
+    db: Session,
+    current_user: UserAccount | None,
+    employee_id: str | None,
+    department_ids: list[str] | None,
+    from_time: object,
+    to_time: object,
+    decision: str | None = None,
+    direction: str | None = None,
+) -> Generator[str, None, None]:
+    """Yield CSV rows in batches — no row limit, no full-dataset RAM spike."""
+    headers = [
+        "requestId", "employeeId", "displayName", "departmentId",
+        "gateId", "direction", "decision", "reason",
+        "previousState", "currentState", "latencyMs", "timestamp",
+    ]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    yield buf.getvalue()
+
+    batch_size = 200  # matches query_access_events internal cap
+    offset = 0
+    while True:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        result = query_access_events(
+            db,
+            current_user=current_user,
+            employee_id=employee_id,
+            department_ids=department_ids,
+            decision=decision,
+            direction=direction,
+            from_time=from_time,
+            to_time=to_time,
+            limit=batch_size,
+            offset=offset,
+        )
+        for event in result["items"]:
+            writer.writerow([
+                event.get("requestId", ""),
+                event.get("employeeId", ""),
+                event.get("displayName", ""),
+                event.get("departmentId", ""),
+                event.get("gateId", ""),
+                event.get("direction", ""),
+                event.get("decision", ""),
+                event.get("reason", ""),
+                event.get("previousState", ""),
+                event.get("currentState", ""),
+                event.get("latencyMs", ""),
+                event.get("timestamp", ""),
+            ])
+        yield buf.getvalue()
+        if len(result["items"]) < batch_size:
+            break
+        offset += batch_size
+
+
+@router.get("/reports/export/events.csv")
+def export_events_csv(
+    employee_id: str | None = Query(default=None, alias="employeeId"),
+    department_ids: List[str] = Query(default=[], alias="departmentId"),
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+    decision: str | None = None,
+    direction: str | None = None,
+    current_user: UserAccount | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    from_time = parse_optional_datetime(from_)
+    to_time = parse_optional_datetime(to)
+    filename = "access-events.csv"
+    return StreamingResponse(
+        _stream_events_csv(db, current_user, employee_id, department_ids or None, from_time, to_time, decision, direction),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

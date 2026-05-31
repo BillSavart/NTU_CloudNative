@@ -507,7 +507,7 @@
       <div class="direction-group">
         <div class="dir-opt selected-in" data-dir="IN" onclick="setStressDir('IN')">IN ↓</div>
         <div class="dir-opt" data-dir="OUT" onclick="setStressDir('OUT')">OUT ↑</div>
-        <div class="dir-opt selected" data-dir="ALT" onclick="setStressDir('ALT')">交替 IN/OUT</div>
+        <div class="dir-opt" data-dir="ALT" onclick="setStressDir('ALT')">交替 IN/OUT</div>
         <div class="dir-opt" data-dir="RND" onclick="setStressDir('RND')">隨機</div>
       </div>
     </div>
@@ -580,6 +580,8 @@
   let stressRunning = false;
   let stressStop = false;
   let iterCount = 0;
+  let empLocks = new Map();
+  let empLastDir = new Map();
 
   // ── Tab ──
   function switchTab(tab) {
@@ -685,6 +687,8 @@
 
   function resetStats() {
     statTotal=0; statOk=0; statFail=0; latencies=[]; rpsWindow=[];
+    empLocks = new Map();
+    empLastDir = new Map();
     ['stat-total','stat-ok','stat-fail','stat-rps','stat-lat','stat-errpct'].forEach(id => {
       document.getElementById(id).textContent = id.includes('lat') || id.includes('err') ? '—' : '0';
     });
@@ -750,7 +754,25 @@
       if (stressStop) return;
       const empId  = empRandom  ? randEmp()  : baseEmpId;
       const gateId = gateRandom ? randGate() : baseGateId;
-      const dir    = resolveDir(idx);
+
+      let release = null;
+      if (stressDir === 'ALT') {
+        const prev = empLocks.get(empId) || Promise.resolve();
+        const myDone = new Promise(r => { release = r; });
+        empLocks.set(empId, myDone);
+        await prev;
+        if (stressStop) { release(); return; }
+      }
+
+      let dir;
+      if (stressDir === 'ALT') {
+        const last = empLastDir.get(empId);
+        dir = (last === 'IN') ? 'OUT' : 'IN';
+        empLastDir.set(empId, dir);
+      } else {
+        dir = resolveDir(idx);
+      }
+
       const t0 = Date.now();
       try {
         const res = await fetch(`${API}/swipe`, {
@@ -778,6 +800,7 @@
       }
       done++;
       updateStats(total);
+      if (release) release();
     };
 
     // concurrency pool

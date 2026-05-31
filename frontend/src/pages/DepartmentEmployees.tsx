@@ -39,11 +39,14 @@ function stateClassName(state: DepartmentEmployeeMetric['lastKnownState']) {
   return 'status-pill status-pill-unknown'
 }
 
+const PAGE_SIZE = 50
+
 function DepartmentEmployees() {
   const { departmentId = '' } = useParams()
   const [data, setData] = useState<DepartmentEmployeeMetricsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [offset, setOffset] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -52,7 +55,7 @@ function DepartmentEmployees() {
       try {
         setLoading(true)
         setError(null)
-        const result = await fetchDepartmentEmployeeMetrics(departmentId, 300)
+        const result = await fetchDepartmentEmployeeMetrics(departmentId, PAGE_SIZE, offset)
         if (!cancelled) setData(result)
       } catch (loadError) {
         if (!cancelled) {
@@ -70,7 +73,7 @@ function DepartmentEmployees() {
     return () => {
       cancelled = true
     }
-  }, [departmentId])
+  }, [departmentId, offset])
 
   const highAttentionCount = useMemo(() => {
     return data?.items.filter((employee) => employee.monthlyAnomalyCount >= 2 || (employee.averageDailyHours ?? 0) > 10).length ?? 0
@@ -118,6 +121,25 @@ function DepartmentEmployees() {
             </p>
           </div>
         </div>
+        {!loading && !error && data && data.total > PAGE_SIZE && (
+          <div className="d-flex justify-content-between align-items-center mb-2 small text-secondary">
+            <span>第 {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} 筆，共 {data.total} 筆</span>
+            <div className="d-flex gap-2">
+              <button
+                className="btn btn-sm btn-outline-secondary"
+                type="button"
+                disabled={offset === 0}
+                onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
+              >← 上一頁</button>
+              <button
+                className="btn btn-sm btn-outline-secondary"
+                type="button"
+                disabled={offset + PAGE_SIZE >= data.total}
+                onClick={() => setOffset((o) => o + PAGE_SIZE)}
+              >下一頁 →</button>
+            </div>
+          </div>
+        )}
         <div className="table-responsive">
           <table className="table-clean employee-metrics-table">
             <thead>

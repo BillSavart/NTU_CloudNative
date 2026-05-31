@@ -197,10 +197,13 @@ export type DashboardSummary = {
 export type AccessEventFilters = {
   employeeId?: string
   departmentId?: string
+  departmentIds?: string[]
   from?: string
   to?: string
   limit?: number
   offset?: number
+  decision?: 'GRANTED' | 'DENIED'
+  direction?: 'IN' | 'OUT'
 }
 
 function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
@@ -209,9 +212,24 @@ function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
   params.set('offset', String(filters.offset ?? 0))
 
   if (filters.employeeId) params.set('employeeId', filters.employeeId)
-  if (filters.departmentId && filters.departmentId !== 'ALL') params.set('departmentId', filters.departmentId)
-  if (filters.from) params.set('from', new Date(`${filters.from}T00:00:00`).toISOString())
-  if (filters.to) params.set('to', new Date(`${filters.to}T23:59:59`).toISOString())
+
+  // Multi-dept: append multiple departmentId params; fall back to single
+  if (filters.departmentIds && filters.departmentIds.length > 0) {
+    for (const id of filters.departmentIds) params.append('departmentId', id)
+  } else if (filters.departmentId && filters.departmentId !== 'ALL') {
+    params.set('departmentId', filters.departmentId)
+  }
+
+  if (filters.from) {
+    const v = filters.from.includes('T') ? filters.from : new Date(`${filters.from}T00:00:00`).toISOString()
+    params.set('from', v)
+  }
+  if (filters.to) {
+    const v = filters.to.includes('T') ? filters.to : new Date(`${filters.to}T23:59:59`).toISOString()
+    params.set('to', v)
+  }
+  if (filters.decision) params.set('decision', filters.decision)
+  if (filters.direction) params.set('direction', filters.direction)
 
   return params.toString()
 }
@@ -424,10 +442,12 @@ export async function fetchComplianceAnomalies(
   days = 7,
   from?: string,
   to?: string,
+  offset = 0,
 ): Promise<{ items: ComplianceAnomaly[]; total: number }> {
   const params = new URLSearchParams()
   params.set('limit', String(limit))
   params.set('days', String(days))
+  params.set('offset', String(offset))
   if (departmentId) params.set('departmentId', departmentId)
   if (type && type !== 'all') params.set('type', type)
   if (from) params.set('from', from)

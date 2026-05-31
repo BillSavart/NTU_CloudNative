@@ -360,21 +360,31 @@ def get_report_center(
     to_time: datetime | None = None,
     employee_id: str | None = None,
     department_id: str | None = None,
+    department_ids: list[str] | None = None,
     limit: int = 500,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     limit = max(1, min(limit, 1000))
+    # Resolve multi-dept: pre-compute effective visible IDs once
+    effective_override: list[str] | None = None
+    effective_dept_id = department_id
+    if department_ids:
+        effective_override = _multi_dept_visible_ids(db, current_user, department_ids)
+        effective_dept_id = None  # use override instead
     # Cache by scope *and* window so the recent-window live preview (and any
     # repeated download window) stays responsive after the first load. The
     # window is part of the key, so explicit ranges no longer bypass the cache.
     use_cache = DASHBOARD_CACHE_TTL_SECONDS > 0
     cache_key = None
     if use_cache:
-        visible_ids = _visible_department_ids(db, current_user, department_id)
-        scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
+        if effective_override is not None:
+            scope_key = ",".join(effective_override)
+        else:
+            visible_ids = _visible_department_ids(db, current_user, effective_dept_id)
+            scope_key = "ALL" if visible_ids is None else ",".join(visible_ids)
         cache_key = (
             current_user.user_id if current_user is not None else "anonymous",
-            department_id or "ALL",
+            effective_dept_id or "ALL",
             scope_key,
             employee_id or "ALL",
             from_time.isoformat() if from_time is not None else "DEFAULT",
@@ -395,7 +405,8 @@ def get_report_center(
             from_time=from_time,
             to_time=to_time,
             employee_id=employee_id,
-            department_id=department_id,
+            department_id=effective_dept_id,
+            override_visible_ids=effective_override,
             limit=limit,
             started_at=started_at,
         )
@@ -489,8 +500,9 @@ def _get_report_center_sql(
     department_id: str | None,
     limit: int,
     started_at: float,
+    override_visible_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    scoped_query = _scoped_event_select(db, current_user, department_id, from_time, to_time)
+    scoped_query = _scoped_event_select(db, current_user, department_id, from_time, to_time, override_visible_ids)
     if employee_id:
         scoped_query = scoped_query.where(AccessEvent.employee_id == employee_id)
     scoped = scoped_query.subquery()
@@ -941,6 +953,7 @@ def query_access_events(
     current_user: UserAccount | None = None,
     employee_id: str | None = None,
     department_id: str | None = None,
+    department_ids: list[str] | None = None,
     decision: str | None = None,
     direction: str | None = None,
     reason: str | None = None,
@@ -951,7 +964,23 @@ def query_access_events(
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    query = _scoped_event_select(db, current_user, department_id, from_time, to_time)
+
+    # Multi-dept support: use department_ids list when provided
+    if department_ids and len(department_ids) > 1:
+        effective_ids = _multi_dept_visible_ids(db, current_user, department_ids)
+        query = select(AccessEvent).options(selectinload(AccessEvent.employee))
+        if effective_ids is not None:
+            query = query.join(Employee, AccessEvent.employee_id == Employee.employee_id)
+            query = query.where(Employee.department_id.in_(effective_ids))
+        if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+            query = query.where(AccessEvent.employee_id == current_user.employee_id)
+        if from_time is not None:
+            query = query.where(AccessEvent.occurred_at >= from_time)
+        if to_time is not None:
+            query = query.where(AccessEvent.occurred_at <= to_time)
+    else:
+        single_dept = (department_ids[0] if department_ids and len(department_ids) == 1 else None) or department_id
+        query = _scoped_event_select(db, current_user, single_dept, from_time, to_time)
 
     if employee_id:
         query = query.where(AccessEvent.employee_id == employee_id)
@@ -1562,9 +1591,11 @@ def get_compliance_anomalies(
     to_time: datetime | None = None,
     days: int = 7,
     limit: int = 100,
+    offset: int = 0,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 200))
-    days = max(1, min(days, 31))
+    offset = max(0, offset)
+    days = max(1, min(days, 92))
     now = datetime.now(TAIPEI)
     if to_time is None:
         to_time = now
@@ -1574,6 +1605,7 @@ def get_compliance_anomalies(
     params: dict[str, Any] = {
         **_attendance_rule_params(),
         "limit": limit,
+        "offset": offset,
         "from_time": from_time,
         "to_time": to_time,
     }
@@ -1626,7 +1658,7 @@ def get_compliance_anomalies(
           AND last_out IS NOT NULL
           AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
         ORDER BY work_date DESC, work_hours DESC
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     )
     if visible_ids is not None:
@@ -1658,6 +1690,7 @@ def get_compliance_anomalies(
             from_time=from_time,
             to_time=to_time,
             limit=limit,
+            offset=offset,
         )
 
     unpaired_sql = text(
@@ -1681,7 +1714,7 @@ def get_compliance_anomalies(
         FROM daily
         WHERE first_in IS NULL OR last_out IS NULL
         ORDER BY work_date DESC, coalesce(last_out, first_in) DESC
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     )
     if visible_ids is not None:
@@ -1707,7 +1740,7 @@ def get_compliance_anomalies(
             for row in unpaired_rows
         ]
 
-    denied_params: dict[str, Any] = {"limit": limit, "from_time": from_time, "to_time": to_time}
+    denied_params: dict[str, Any] = {"limit": limit, "offset": offset, "from_time": from_time, "to_time": to_time}
     denied_filters = ["e.decision = 'DENIED'", "e.occurred_at >= :from_time", "e.occurred_at <= :to_time"]
     if visible_ids is not None:
         denied_filters.append("emp.department_id IN :visible_ids")
@@ -1730,7 +1763,7 @@ def get_compliance_anomalies(
         JOIN employees emp ON emp.employee_id = e.employee_id
         WHERE {' AND '.join(denied_filters)}
         ORDER BY e.occurred_at DESC, e.id DESC
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     )
     if visible_ids is not None:
@@ -1758,10 +1791,84 @@ def get_compliance_anomalies(
         key=lambda item: item["occurredAt"],
         reverse=True,
     )[:limit]
+
+    # For single-type queries, run a fast COUNT so the frontend can show the real total.
+    total = len(items) + offset  # fallback: at least known count
+    if anomaly_type in {"overtime_daily", "late_arrival", "unpaired_access", "denied_access"}:
+        count_params: dict[str, Any] = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+        if anomaly_type == "denied_access":
+            count_params = {k: v for k, v in denied_params.items() if k not in ("limit", "offset")}
+            count_sql = text(
+                f"""
+                SELECT count(*) FROM access_events e
+                JOIN employees emp ON emp.employee_id = e.employee_id
+                WHERE {' AND '.join(denied_filters)}
+                """
+            )
+            if visible_ids is not None:
+                count_sql = count_sql.bindparams(bindparam("visible_ids", expanding=True))
+        elif anomaly_type == "overtime_daily":
+            count_sql = text(
+                f"""
+                WITH daily AS (
+                    SELECT e.employee_id, e.occurred_at::date AS work_date,
+                        min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                        max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+                    FROM access_events e
+                    JOIN employees emp ON emp.employee_id = e.employee_id
+                    WHERE {' AND '.join(filters)} AND e.occurred_at >= :from_time AND e.occurred_at <= :to_time
+                    GROUP BY e.employee_id, e.occurred_at::date
+                )
+                SELECT count(*) FROM daily
+                WHERE first_in IS NOT NULL AND last_out IS NOT NULL
+                  AND extract(epoch FROM (last_out - first_in)) / 3600.0 > :overtime_hours
+                """
+            )
+            if visible_ids is not None:
+                count_sql = count_sql.bindparams(bindparam("visible_ids", expanding=True))
+        elif anomaly_type == "late_arrival":
+            count_sql = text(
+                f"""
+                WITH ranked AS (
+                    SELECT e.employee_id, e.occurred_at,
+                        row_number() OVER (PARTITION BY e.employee_id, e.occurred_at::date ORDER BY e.occurred_at ASC) AS rn
+                    FROM access_events e
+                    JOIN employees emp ON emp.employee_id = e.employee_id
+                    WHERE {' AND '.join(filters)} AND e.direction = 'IN'
+                      AND e.occurred_at >= :from_time AND e.occurred_at <= :to_time
+                )
+                SELECT count(*) FROM ranked WHERE rn = 1 AND {_late_sql('occurred_at')}
+                """
+            )
+            if visible_ids is not None:
+                count_sql = count_sql.bindparams(bindparam("visible_ids", expanding=True))
+        else:  # unpaired_access
+            count_sql = text(
+                f"""
+                WITH daily AS (
+                    SELECT e.employee_id, e.occurred_at::date AS work_date,
+                        min(e.occurred_at) FILTER (WHERE e.direction = 'IN') AS first_in,
+                        max(e.occurred_at) FILTER (WHERE e.direction = 'OUT') AS last_out
+                    FROM access_events e
+                    JOIN employees emp ON emp.employee_id = e.employee_id
+                    WHERE {' AND '.join(filters)} AND e.occurred_at >= :from_time AND e.occurred_at <= :to_time
+                    GROUP BY e.employee_id, e.occurred_at::date
+                )
+                SELECT count(*) FROM daily WHERE first_in IS NULL OR last_out IS NULL
+                """
+            )
+            if visible_ids is not None:
+                count_sql = count_sql.bindparams(bindparam("visible_ids", expanding=True))
+        try:
+            total = int(db.scalar(count_sql, count_params) or 0)
+        except Exception:
+            total = len(items) + offset
+
     return {
         "items": items,
-        "total": len(items),
+        "total": total,
         "limit": limit,
+        "offset": offset,
     }
 
 
@@ -1902,6 +2009,7 @@ def _query_late_arrival_items(
     from_time: datetime,
     to_time: datetime,
     limit: int,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     if db.bind is not None and db.bind.dialect.name == "sqlite":
         return _query_late_arrival_items_in_python(db, current_user, department_id, from_time, to_time, limit)
@@ -1912,6 +2020,7 @@ def _query_late_arrival_items(
         "from_time": from_time,
         "to_time": to_time,
         "limit": limit,
+        "offset": offset,
     }
     filters = [
         "e.gate_id LIKE :main_gate_pattern",
@@ -1950,7 +2059,7 @@ def _query_late_arrival_items(
         WHERE rn = 1
           AND {_late_sql('occurred_at')}
         ORDER BY occurred_at DESC
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     )
     if visible_ids is not None:
@@ -2051,9 +2160,10 @@ def _scoped_event_select(
     department_id: str | None,
     from_time: datetime | None,
     to_time: datetime | None,
+    override_visible_ids: list[str] | None = None,
 ):
     query = select(AccessEvent).options(selectinload(AccessEvent.employee))
-    visible_ids = _visible_department_ids(db, current_user, department_id)
+    visible_ids = override_visible_ids if override_visible_ids is not None else _visible_department_ids(db, current_user, department_id)
     if visible_ids is not None:
         query = query.join(Employee, AccessEvent.employee_id == Employee.employee_id)
         query = query.where(Employee.department_id.in_(visible_ids))
@@ -2107,6 +2217,24 @@ def _dashboard_event_rows(
     query = query.where(AccessEvent.occurred_at >= from_time, AccessEvent.occurred_at <= to_time)
     query = query.order_by(AccessEvent.occurred_at.asc(), AccessEvent.id.asc())
     return db.execute(query).all()
+
+
+def _multi_dept_visible_ids(db: Session, current_user: UserAccount | None, department_ids: list[str]) -> list[str] | None:
+    """Like _visible_department_ids but expands multiple depts (each with descendants) and unions them."""
+    if not department_ids:
+        return _visible_department_ids(db, current_user, None)
+    if len(department_ids) == 1:
+        return _visible_department_ids(db, current_user, department_ids[0])
+    requested_ids: set[str] = set()
+    for dept_id in department_ids:
+        requested_ids.add(dept_id)
+        requested_ids.update(get_descendant_department_ids(db, dept_id))
+    if current_user is None:
+        return []
+    visible_ids = get_visible_department_ids(db, current_user)
+    if visible_ids is None:
+        return sorted(requested_ids)
+    return sorted(requested_ids.intersection(visible_ids)) or ["__none__"]
 
 
 def _visible_department_ids(db: Session, current_user: UserAccount | None, department_id: str | None) -> list[str] | None:
