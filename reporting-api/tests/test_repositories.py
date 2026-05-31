@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import AccessEvent, Department, Employee, UserAccount, UserDepartmentScope
 from tests.support import create_test_engine
+import app.repositories as repositories
 from app.repositories import (
     get_access_summary,
     get_dashboard,
@@ -308,6 +309,42 @@ class RepositoryTestCase(unittest.TestCase):
             )
 
         self.assertEqual(report["topDepartments"], [{"departmentId": "OPS_A", "count": 1}])
+
+    def test_report_center_caches_windowed_calls_by_scope_and_window(self) -> None:
+        repositories._report_center_cache.clear()
+        window = {
+            "from_time": datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+            "to_time": datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
+            "limit": 2,
+        }
+        with self.SessionLocal() as db:
+            manager = self._user(db, "manager")
+            first = get_report_center(db, current_user=manager, **window)
+            second = get_report_center(db, current_user=manager, **window)
+            # Same scope + window within the TTL must be served from cache,
+            # i.e. the identical object, without recomputing.
+            self.assertIs(second, first)
+
+            wider = dict(window, to_time=datetime(2026, 5, 20, 20, 0, tzinfo=TAIPEI))
+            third = get_report_center(db, current_user=manager, **wider)
+            # A different window is a distinct key — fresh computation.
+            self.assertIsNot(third, first)
+        self.assertEqual(len(repositories._report_center_cache), 2)
+
+    def test_report_center_cache_is_size_bounded(self) -> None:
+        repositories._report_center_cache.clear()
+        with self.SessionLocal() as db, patch.object(repositories, "_REPORT_CENTER_CACHE_MAX", 3):
+            manager = self._user(db, "manager")
+            base = datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI)
+            for minute in range(6):
+                get_report_center(
+                    db,
+                    current_user=manager,
+                    from_time=base,
+                    to_time=base + timedelta(minutes=minute + 1),
+                    limit=2,
+                )
+            self.assertLessEqual(len(repositories._report_center_cache), 3)
 
     def _payload(
         self,
