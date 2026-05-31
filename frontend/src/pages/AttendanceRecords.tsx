@@ -95,29 +95,36 @@ function AttendanceRecords() {
   // fetch events when filters or page changes
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    fetchAccessEvents({
-      from: range.from,
-      to: range.to,
-      departmentId: departmentId !== 'ALL' ? departmentId : undefined,
-      direction: direction !== 'ALL' ? direction : undefined,
-      decision: decision !== 'ALL' ? decision : undefined,
-      limit: PAGE_SIZE,
-      offset,
-    })
-      .then((result) => {
-        if (cancelled) return
-        setEvents(result.events)
-        setTotal(result.total)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : '載入失敗')
-        setEvents([])
-        setTotal(0)
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
+
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await fetchAccessEvents({
+          from: range.from,
+          to: range.to,
+          departmentId: departmentId !== 'ALL' ? departmentId : undefined,
+          direction: direction !== 'ALL' ? direction : undefined,
+          decision: decision !== 'ALL' ? decision : undefined,
+          limit: PAGE_SIZE,
+          offset,
+        })
+        if (!cancelled) {
+          setEvents(result.events)
+          setTotal(result.total)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : '載入失敗')
+          setEvents([])
+          setTotal(0)
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
     return () => { cancelled = true }
   }, [range.from, range.to, departmentId, direction, decision, offset])
 
