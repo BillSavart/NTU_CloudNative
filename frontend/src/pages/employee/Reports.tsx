@@ -15,7 +15,6 @@ import {
   type ReportCenterResponse,
 } from '../../services/accessEvents'
 
-type DownloadContent = 'raw' | 'visual'
 type TrendMode = 'monthly' | 'quarterly' | 'yearly'
 
 type ReportMetrics = {
@@ -138,10 +137,6 @@ function localTimeText(value?: string | null) {
 }
 
 // The live preview defaults to a small window so the cold load stays cheap, but
-// the picker can be widened up to LIVE_VIEW_MONTHS. Older data is pulled only on
-// explicit download. Keep this in sync with the backend report-center cache,
-// which caches windowed calls.
-const LIVE_VIEW_MONTHS = 3
 const LIVE_VIEW_DEFAULT_DAYS = 7
 
 function monthsAgoDate(months: number) {
@@ -156,19 +151,15 @@ function daysAgoDate(days: number) {
   return localDateInputValue(date)
 }
 
-// Earliest date the on-page preview may reach (the picker's lower bound).
-function earliestLiveDate() {
-  return monthsAgoDate(LIVE_VIEW_MONTHS)
+function addMonths(dateStr: string, months: number) {
+  const date = new Date(dateStr)
+  date.setMonth(date.getMonth() + months)
+  return localDateInputValue(date)
 }
 
 // Default preview window on first load — small, so the cold fetch is light.
 function defaultFromDate() {
   return daysAgoDate(LIVE_VIEW_DEFAULT_DAYS)
-}
-
-function csvEscape(value: string | number | null | undefined) {
-  const text = value === null || value === undefined ? '' : String(value)
-  return `"${text.replaceAll('"', '""')}"`
 }
 
 function htmlEscape(value: string | number | null | undefined) {
@@ -367,70 +358,6 @@ function buildDailyAttendanceTrend(attendanceDetails: AttendanceDetailRow[]): Da
   return [...byDate.entries()]
     .map(([label, employees]) => ({ label, count: employees.size }))
     .sort((a, b) => a.label.localeCompare(b.label))
-}
-
-function toCsv(events: AccessEvent[]) {
-  const headers = [
-    'requestId',
-    'employeeId',
-    'displayName',
-    'departmentId',
-    'gateId',
-    'direction',
-    'decision',
-    'reason',
-    'previousState',
-    'currentState',
-    'latencyMs',
-    'timestamp',
-    'consumedAt',
-  ]
-
-  const rows = events.map((event) =>
-    [
-      event.requestId,
-      event.employeeId,
-      event.displayName,
-      event.departmentId,
-      event.gateId,
-      event.direction,
-      event.decision,
-      event.reason,
-      event.previousState,
-      event.currentState,
-      event.latencyMs,
-      event.timestamp,
-      event.consumedAt,
-    ]
-      .map(csvEscape)
-      .join(','),
-  )
-
-  return [headers.join(','), ...rows].join('\n')
-}
-
-async function fetchAccessEventsForCsv(from: string, to: string, departmentId: string, employeeId?: string) {
-  const pageSize = 200
-  const maxRows = 5000
-  const pages: AccessEvent[] = []
-
-  for (let offset = 0; offset < maxRows; offset += pageSize) {
-    const result = await fetchAccessEvents({
-      from,
-      to,
-      departmentId,
-      employeeId,
-      limit: pageSize,
-      offset,
-    })
-    pages.push(...result.events)
-
-    if (result.events.length < pageSize) {
-      break
-    }
-  }
-
-  return pages.slice(0, maxRows)
 }
 
 function metricLine(label: string, value: string | number) {
@@ -900,16 +827,42 @@ function buildVisualReport(
 </html>`
 }
 
+type RangePreset = 'today' | 'last3d' | 'last7d' | 'thisMonth' | 'last3m' | 'custom'
+
+const RANGE_PRESETS: { key: RangePreset; label: string }[] = [
+  { key: 'today',     label: '今天' },
+  { key: 'last3d',    label: '近3天' },
+  { key: 'last7d',    label: '近7天' },
+  { key: 'thisMonth', label: '本月' },
+  { key: 'last3m',    label: '3個月內' },
+  { key: 'custom',    label: '自定義' },
+]
+
+function startOfMonthDate() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+function resolvePresetRange(preset: RangePreset, customFrom: string, customTo: string) {
+  const today = localDateInputValue(new Date())
+  switch (preset) {
+    case 'today':     return { from: today, to: today }
+    case 'last3d':    return { from: daysAgoDate(3), to: today }
+    case 'last7d':    return { from: daysAgoDate(7), to: today }
+    case 'thisMonth': return { from: startOfMonthDate(), to: today }
+    case 'last3m':    return { from: monthsAgoDate(3), to: today }
+    case 'custom':    return { from: customFrom, to: customTo }
+  }
+}
+
 function Reports() {
-  const [from, setFrom] = useState(defaultFromDate)
-  const [to, setTo] = useState(() => localDateInputValue(new Date()))
-  const [downloadHistorical, setDownloadHistorical] = useState(false)
-  const [downloadFrom, setDownloadFrom] = useState(defaultFromDate)
+  const [rangePreset, setRangePreset] = useState<RangePreset>('last7d')
+  const [customFrom, setCustomFrom] = useState(defaultFromDate)
+  const [customTo, setCustomTo] = useState(() => localDateInputValue(new Date()))
   const [targetMode, setTargetMode] = useState<ReportTargetMode>('department')
   const [departmentId, setDepartmentId] = useState('ALL')
   const [employeeSearch, setEmployeeSearch] = useState('')
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('')
-  const [downloadContent, setDownloadContent] = useState<DownloadContent>('visual')
   const [trendMode, setTrendMode] = useState<TrendMode>('monthly')
   const [events, setEvents] = useState<AccessEvent[]>([])
   const [reportData, setReportData] = useState<ReportCenterResponse | null>(null)
@@ -954,20 +907,27 @@ function Reports() {
     anomalies: true,
   })
   const [message, setMessage] = useState<string | null>(null)
+  const [attendancePage, setAttendancePage] = useState(0)
+  // Event details table — independent server-side pagination
+  const EVENT_TABLE_PAGE_SIZE = 20
+  const [eventTableOffset, setEventTableOffset] = useState(0)
+  const [eventTableItems, setEventTableItems] = useState<AccessEvent[]>([])
+  const [eventTableTotal, setEventTableTotal] = useState(0)
+  const [eventTableLoading, setEventTableLoading] = useState(false)
   const activeEmployeeId = targetMode === 'employee' && selectedEmployeeId.trim() ? selectedEmployeeId.trim() : undefined
   const activeDepartmentId = targetMode === 'department' ? departmentId : 'ALL'
   const todayValue = localDateInputValue(new Date())
-  const liveMinDate = earliestLiveDate()
-  // The on-page preview window is always clamped to the last LIVE_VIEW_MONTHS so
-  // the live fetch (and its cache key) stay bounded. Downloads can reach further
-  // back via the historical override below.
-  const liveFrom = from < liveMinDate ? liveMinDate : from
-  const downloadFromEffective = downloadHistorical ? downloadFrom : liveFrom
+  const { from: liveFrom, to } = useMemo(
+    () => resolvePresetRange(rangePreset, customFrom, customTo),
+    [rangePreset, customFrom, customTo],
+  )
 
   useEffect(() => {
     let cancelled = false
     setIsLoading(true)
     setMessage(null)
+    setAttendancePage(0)
+    setEventTableOffset(0)
 
     Promise.all([
       fetchReportCenterData({
@@ -1002,6 +962,28 @@ function Reports() {
       cancelled = true
     }
   }, [activeDepartmentId, activeEmployeeId, liveFrom, to])
+
+  // Independent server-side pagination for event details table
+  useEffect(() => {
+    let cancelled = false
+    setEventTableLoading(true)
+    fetchAccessEvents({
+      departmentId: activeDepartmentId !== 'ALL' ? activeDepartmentId : undefined,
+      employeeId: activeEmployeeId,
+      from: liveFrom,
+      to,
+      limit: EVENT_TABLE_PAGE_SIZE,
+      offset: eventTableOffset,
+    })
+      .then((result) => {
+        if (cancelled) return
+        setEventTableItems(result.events)
+        setEventTableTotal(result.total)
+      })
+      .catch(() => { if (!cancelled) setEventTableItems([]) })
+      .finally(() => { if (!cancelled) setEventTableLoading(false) })
+    return () => { cancelled = true }
+  }, [activeDepartmentId, activeEmployeeId, liveFrom, to, eventTableOffset])
 
   const metrics = useMemo<ReportMetrics>(() => {
     if (!reportData) {
@@ -1213,26 +1195,8 @@ function Reports() {
     setMessage(null)
 
     try {
-      const deptPart = activeEmployeeId ? `employee-${activeEmployeeId}` : activeDepartmentId === 'ALL' ? 'all' : activeDepartmentId.toLowerCase()
-      // Downloads may reach further back than the on-screen preview when the
-      // historical override is enabled; otherwise they match the live window.
-      const rangeFrom = downloadFromEffective
+      const rangeFrom = liveFrom
 
-      if (downloadContent === 'raw') {
-        const eventsForCsv = await fetchAccessEventsForCsv(rangeFrom, to, activeDepartmentId, activeEmployeeId)
-        const csv = toCsv(eventsForCsv)
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = `access-events-${deptPart}-${rangeFrom}-to-${to}.csv`
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        URL.revokeObjectURL(url)
-        setMessage(`已下載原始資料 CSV，共 ${eventsForCsv.length} 筆。`)
-        return
-      }
 
       const result = await fetchReportCenterData({
         from: rangeFrom,
@@ -1301,38 +1265,50 @@ function Reports() {
         </div>
 
         <div className="row g-3 align-items-end mt-1">
-          <div className="col-md-3">
-            <label className="form-label" htmlFor="report-from-date">起始日期</label>
-            <input id="report-from-date" className="form-control" type="date" min={liveMinDate} max={to} value={from} onChange={(event) => setFrom(event.target.value < liveMinDate ? liveMinDate : event.target.value)} />
-          </div>
-          <div className="col-md-3">
-            <label className="form-label" htmlFor="report-to-date">結束日期</label>
-            <input id="report-to-date" className="form-control" type="date" min={liveMinDate} max={todayValue} value={to} onChange={(event) => setTo(event.target.value)} />
-          </div>
           <div className="col-12">
-            <div className="form-check">
-              <input
-                id="report-download-historical"
-                className="form-check-input"
-                type="checkbox"
-                checked={downloadHistorical}
-                onChange={(event) => setDownloadHistorical(event.target.checked)}
-              />
-              <label className="form-check-label" htmlFor="report-download-historical">
-                下載更早資料（超過近三個月）
-              </label>
+            <label className="form-label">時間範圍</label>
+            <div className="d-flex flex-wrap gap-2">
+              {RANGE_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  className={`btn btn-sm ${rangePreset === p.key ? 'btn-primary' : 'btn-outline-secondary'}`}
+                  onClick={() => setRangePreset(p.key)}
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
-            {downloadHistorical ? (
-              <div className="row g-3 align-items-end mt-1">
-                <div className="col-md-3">
-                  <label className="form-label" htmlFor="report-download-from">下載起始日期</label>
-                  <input id="report-download-from" className="form-control" type="date" max={to} value={downloadFrom} onChange={(event) => setDownloadFrom(event.target.value)} />
-                </div>
+            {rangePreset === 'custom' && (
+              <div className="d-flex gap-2 align-items-center mt-2 flex-wrap">
+                <input
+                  type="date"
+                  className="form-control form-control-sm w-auto"
+                  value={customFrom}
+                  max={customTo}
+                  onChange={(e) => {
+                    const newFrom = e.target.value
+                    setCustomFrom(newFrom)
+                    // if current to exceeds from+3months, clamp it
+                    const maxTo = addMonths(newFrom, 3)
+                    if (customTo > maxTo) setCustomTo(maxTo > todayValue ? todayValue : maxTo)
+                  }}
+                />
+                <span className="text-secondary small">至</span>
+                <input
+                  type="date"
+                  className="form-control form-control-sm w-auto"
+                  value={customTo}
+                  min={customFrom}
+                  max={addMonths(customFrom, 3) < todayValue ? addMonths(customFrom, 3) : todayValue}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                />
+                <span className="text-secondary small">（區間最大 3 個月）</span>
               </div>
-            ) : null}
-            <div className="small text-secondary mt-1">
-              頁面預覽僅顯示近三個月，載入較快；如需更早的資料，請勾選「下載更早資料」設定起始日期後按「下載報表」。
-            </div>
+            )}
+            {rangePreset !== 'custom' && (
+              <div className="small text-secondary mt-1">{liveFrom} 至 {to}</div>
+            )}
           </div>
           {!isEmployee ? (
             <div className="col-md-3">
@@ -1355,7 +1331,7 @@ function Reports() {
                 <option value="ALL">全部部門</option>
                 {departmentOptions.map((option) => (
                   <option key={option.departmentId} value={option.departmentId}>
-                    {'\u00A0'.repeat(option.depth * 2)}
+                    {' '.repeat(option.depth * 2)}
                     {option.name} ({option.departmentId})
                   </option>
                 ))}
@@ -1364,12 +1340,12 @@ function Reports() {
           ) : null}
           {!isEmployee && targetMode === 'employee' ? (
             <div className="col-md-3">
-              <label className="form-label" htmlFor="report-employee-search">指定對象 / 部門</label>
+              <label className="form-label" htmlFor="report-employee-search">員工</label>
               <input
                 id="report-employee-search"
                 className="form-control"
                 list="report-employee-options"
-                placeholder="輸入員工編號、姓名或部門"
+                placeholder="輸入員工編號或姓名"
                 value={employeeSearch}
                 onChange={(event) => selectEmployeeSearchValue(event.target.value)}
               />
@@ -1377,19 +1353,9 @@ function Reports() {
                 {visibleEmployeeOptions.map((employee) => (
                   <option key={employee.employeeId} value={employeeSearchLabel(employee)} />
                 ))}
-                {departmentOptions.map((department) => (
-                  <option key={department.departmentId} value={`${department.name} (${department.departmentId})`} />
-                ))}
               </datalist>
             </div>
           ) : null}
-          <div className="col-md-3">
-            <label className="form-label" htmlFor="report-download-content">下載內容</label>
-            <select id="report-download-content" className="form-select" value={downloadContent} onChange={(event) => setDownloadContent(event.target.value as DownloadContent)}>
-              <option value="visual">{isEmployee ? '我的報表' : '出勤趨勢報表'}</option>
-              <option value="raw">原始事件資料 CSV</option>
-            </select>
-          </div>
           <div className="col-12">
             <div className="report-section-options" aria-label="報表顯示項目">
               <span>報表顯示項目</span>
@@ -1935,7 +1901,7 @@ function Reports() {
         <section className="panel-card mb-3">
           <div className="d-flex justify-content-between align-items-center mb-3">
             <h2 className="h6 m-0">事件明細</h2>
-            <span className="small text-secondary">最近 500 筆</span>
+            <span className="small text-secondary">共 {eventTableTotal.toLocaleString()} 筆</span>
           </div>
           <div className="table-responsive">
             <table className="table-clean">
@@ -1950,8 +1916,10 @@ function Reports() {
                 </tr>
               </thead>
               <tbody>
-                {events.length > 0 ? (
-                  events.slice(0, 20).map((event) => (
+                {eventTableLoading ? (
+                  <tr><td colSpan={6} className="text-secondary text-center py-4">載入中...</td></tr>
+                ) : eventTableItems.length > 0 ? (
+                  eventTableItems.map((event) => (
                     <tr key={event.requestId}>
                       <td>{new Date(event.timestamp).toLocaleString('zh-TW', { hour12: false })}</td>
                       <td>
@@ -1967,16 +1935,87 @@ function Reports() {
                 ) : (
                   <tr>
                     <td colSpan={6} className="text-secondary text-center py-4">
-                      {isLoading ? '載入中...' : '這段期間沒有事件資料'}
+                      這段期間沒有事件資料
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+          {eventTableTotal > EVENT_TABLE_PAGE_SIZE && (
+            <div className="d-flex justify-content-between align-items-center mt-2 small text-secondary">
+              <span>第 {eventTableOffset + 1}–{Math.min(eventTableOffset + EVENT_TABLE_PAGE_SIZE, eventTableTotal)} 筆，共 {eventTableTotal.toLocaleString()} 筆</span>
+              <div className="d-flex gap-2">
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={eventTableOffset === 0 || eventTableLoading} onClick={() => setEventTableOffset((o) => Math.max(0, o - EVENT_TABLE_PAGE_SIZE))}>← 上一頁</button>
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={eventTableOffset + EVENT_TABLE_PAGE_SIZE >= eventTableTotal || eventTableLoading} onClick={() => setEventTableOffset((o) => o + EVENT_TABLE_PAGE_SIZE)}>下一頁 →</button>
+              </div>
+            </div>
+          )}
         </section>
       ) : null}
 
+      {showAttendanceDetails ? (
+        <section className="panel-card">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">出勤日明細</h2>
+            <span className="small text-secondary">共 {attendanceDetails.length} 筆</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>員工編號</th>
+                  <th>姓名</th>
+                  <th>部門</th>
+                  {attendanceDetailOptions.firstIn ? <th>上班</th> : null}
+                  {attendanceDetailOptions.inGate ? <th>刷入門禁</th> : null}
+                  {attendanceDetailOptions.lastOut ? <th>下班</th> : null}
+                  {attendanceDetailOptions.outGate ? <th>刷出門禁</th> : null}
+                  {attendanceDetailOptions.workHours ? <th>工時</th> : null}
+                  {attendanceDetailOptions.anomalies ? <th>異常事件</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {attendanceDetails.length > 0 ? (
+                  attendanceDetails.slice(attendancePage * 20, attendancePage * 20 + 20).map((item) => {
+                    const anomalyText = item.anomalies.length > 0 ? item.anomalies.slice(0, 2).map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`).join('；') : '-'
+                    return (
+                      <tr key={item.key}>
+                        <td>{item.date}</td>
+                        <td>{item.employeeId}</td>
+                        <td>{item.displayName || '-'}</td>
+                        <td>{item.departmentId}</td>
+                        {attendanceDetailOptions.firstIn ? <td>{localTimeText(item.firstIn?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.inGate ? <td>{item.firstIn?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.lastOut ? <td>{localTimeText(item.lastOut?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.outGate ? <td>{item.lastOut?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.workHours ? <td>{formatHours(item.workHours)}</td> : null}
+                        {attendanceDetailOptions.anomalies ? <td className={item.anomalies.length > 0 ? 'danger-text' : undefined}>{anomalyText}</td> : null}
+                      </tr>
+                    )
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={4 + Object.values(attendanceDetailOptions).filter(Boolean).length} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有出勤明細'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {attendanceDetails.length > 20 && (
+            <div className="d-flex justify-content-between align-items-center mt-2 small text-secondary">
+              <span>第 {attendancePage * 20 + 1}–{Math.min(attendancePage * 20 + 20, attendanceDetails.length)} 筆，共 {attendanceDetails.length} 筆</span>
+              <div className="d-flex gap-2">
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={attendancePage === 0} onClick={() => setAttendancePage((p) => p - 1)}>← 上一頁</button>
+                <button className="btn btn-sm btn-outline-secondary" type="button" disabled={(attendancePage + 1) * 20 >= attendanceDetails.length} onClick={() => setAttendancePage((p) => p + 1)}>下一頁 →</button>
+              </div>
+            </div>
+          )}
+        </section>
+      ) : null}
     </AppShell>
   )
 }

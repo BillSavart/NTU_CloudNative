@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import DepartmentAnalytics from './pages/DepartmentAnalytics'
 import DepartmentEmployees from './pages/DepartmentEmployees'
 import ComplianceAlerts from './pages/ComplianceAlerts'
+import AttendanceRecords from './pages/AttendanceRecords'
 import MyAttendance from './pages/employee/MyAttendance'
 import Reports from './pages/employee/Reports'
 import { Navigate, Route, Routes } from 'react-router-dom'
@@ -17,6 +18,7 @@ function App() {
       <Route path="/analytics" element={<DepartmentAnalytics />} />
       <Route path="/analytics/departments/:departmentId/employees" element={<DepartmentEmployees />} />
       <Route path="/alerts" element={<ComplianceAlerts />} />
+      <Route path="/attendance-records" element={<AttendanceRecords />} />
       <Route path="/employee/my-attendance" element={<MyAttendance />} />
       <Route path="/employee/reports" element={<Reports />} />
       <Route path="*" element={<Navigate to="/login" replace />} />

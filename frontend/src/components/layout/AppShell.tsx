@@ -13,6 +13,7 @@ type AppShellProps = {
 const navItems = [
   { to: '/dashboard', label: '首頁總覽' },
   { to: '/employee/my-attendance', label: '我的出勤' },
+  { to: '/attendance-records', label: '刷卡記錄' },
   { to: '/analytics', label: '部門分析', staffOnly: true },
   { to: '/alerts', label: '異常合規' },
   { to: '/employee/reports', label: '報表中心' },
