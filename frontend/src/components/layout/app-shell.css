@@ -470,6 +470,23 @@
   accent-color: var(--color-primary);
 }
 
+.report-section-options-toggle {
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-heading);
+  font-size: 13px;
+  font-weight: 700;
+  margin-left: auto;
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+.report-section-options-toggle:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 .report-section-options-subgroup {
   align-items: center;
   background: var(--color-surface-muted);
@@ -486,6 +503,13 @@
   color: var(--color-muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.report-condition-footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .report-event-metrics-panel {

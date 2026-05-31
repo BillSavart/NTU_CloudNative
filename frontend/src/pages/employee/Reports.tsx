@@ -10,6 +10,8 @@ import {
   fetchAccessEvents,
   fetchDepartmentTree,
   fetchReportCenterData,
+  fetchEmployeeOptions,
+  type EmployeeOptionItem,
   type ReportCenterResponse,
 } from '../../services/accessEvents'
 
@@ -29,18 +31,34 @@ type ReportMetrics = {
 }
 
 type ReportSectionOptions = {
+  coreKpi: boolean
   attendanceRate: boolean
-  todayAttendance: boolean
+  periodAttendanceCount: boolean
   departmentStaySummary: boolean
   departmentStayRanking: boolean
+  departmentAttendanceRate: boolean
   anomalySummary: boolean
   averageWorkHours: boolean
+  trendAnalysis: boolean
+  attendanceTrend: boolean
   eventMetrics: boolean
+  eventMetricOptions: EventMetricOptions
   workTrend: boolean
+  organizationAnalysis: boolean
   departmentDistribution: boolean
   hourlyActivity: boolean
   eventDetails: boolean
   attendanceDetails: boolean
+}
+
+type EventMetricOptions = {
+  total: boolean
+  granted: boolean
+  denied: boolean
+  deniedRate: boolean
+  inCount: boolean
+  outCount: boolean
+  avgLatency: boolean
 }
 
 type AttendanceDetailOptions = {
@@ -78,15 +96,21 @@ type DepartmentStayStat = {
   averageHours: number | null
   workDays: number
   employeeCount: number
+  normalAttendanceRate: number | null
 }
 
 type HrMetrics = {
   attendanceRate: number | null
   normalAttendanceRate: number | null
-  todayAttendanceCount: number
+  periodAttendanceCount: number
   anomalyDays: number
   averageStayHours: number | null
   departmentStayStats: DepartmentStayStat[]
+}
+
+type DailyAttendanceTrendPoint = {
+  label: string
+  count: number
 }
 
 type DepartmentOption = {
@@ -277,20 +301,34 @@ function employeeSearchLabel(employee: EmployeeOption) {
   return `${employee.employeeId} | ${employee.displayName} | ${employee.departmentId}`
 }
 
+function toEmployeeOption(employee: EmployeeOptionItem): EmployeeOption {
+  return {
+    employeeId: employee.employeeId,
+    displayName: employee.displayName?.trim() || employee.employeeId,
+    departmentId: employee.departmentId || '-',
+  }
+}
 function buildHrMetrics(attendanceDetails: AttendanceDetailRow[]): HrMetrics {
   const totalRows = attendanceDetails.length
   const attendedRows = attendanceDetails.filter((row) => row.firstIn).length
   const normalRows = attendanceDetails.filter((row) => row.firstIn && row.lastOut && row.anomalies.length === 0).length
   const anomalyDays = attendanceDetails.filter((row) => row.anomalies.length > 0 || !row.firstIn || !row.lastOut).length
-  const today = localDateInputValue(new Date())
-  const todayAttendanceCount = new Set(attendanceDetails.filter((row) => row.date === today && row.firstIn).map((row) => row.employeeId)).size
+  const periodAttendanceCount = new Set(attendanceDetails.filter((row) => row.firstIn).map((row) => row.employeeId)).size
   const stayRows = attendanceDetails.filter((row) => typeof row.workHours === 'number')
   const totalStayHours = stayRows.reduce((sum, row) => sum + (row.workHours ?? 0), 0)
-  const departments = new Map<string, { totalHours: number; workDays: number; employees: Set<string> }>()
+  const departments = new Map<string, { totalHours: number; workDays: number; employees: Set<string>; totalRows: number; normalRows: number }>()
+
+  for (const row of attendanceDetails) {
+    const departmentId = row.departmentId || '-'
+    const stat = departments.get(departmentId) ?? { totalHours: 0, workDays: 0, employees: new Set<string>(), totalRows: 0, normalRows: 0 }
+    stat.totalRows += 1
+    if (row.firstIn && row.lastOut && row.anomalies.length === 0) stat.normalRows += 1
+    departments.set(departmentId, stat)
+  }
 
   for (const row of stayRows) {
     const departmentId = row.departmentId || '-'
-    const stat = departments.get(departmentId) ?? { totalHours: 0, workDays: 0, employees: new Set<string>() }
+    const stat = departments.get(departmentId) ?? { totalHours: 0, workDays: 0, employees: new Set<string>(), totalRows: 0, normalRows: 0 }
     stat.totalHours += row.workHours ?? 0
     stat.workDays += 1
     stat.employees.add(row.employeeId)
@@ -300,7 +338,7 @@ function buildHrMetrics(attendanceDetails: AttendanceDetailRow[]): HrMetrics {
   return {
     attendanceRate: totalRows > 0 ? (attendedRows / totalRows) * 100 : null,
     normalAttendanceRate: totalRows > 0 ? (normalRows / totalRows) * 100 : null,
-    todayAttendanceCount,
+    periodAttendanceCount,
     anomalyDays,
     averageStayHours: stayRows.length > 0 ? totalStayHours / stayRows.length : null,
     departmentStayStats: [...departments.entries()]
@@ -310,9 +348,25 @@ function buildHrMetrics(attendanceDetails: AttendanceDetailRow[]): HrMetrics {
         averageHours: stat.workDays > 0 ? stat.totalHours / stat.workDays : null,
         workDays: stat.workDays,
         employeeCount: stat.employees.size,
+        normalAttendanceRate: stat.totalRows > 0 ? (stat.normalRows / stat.totalRows) * 100 : null,
       }))
       .sort((a, b) => b.totalHours - a.totalHours),
   }
+}
+
+function buildDailyAttendanceTrend(attendanceDetails: AttendanceDetailRow[]): DailyAttendanceTrendPoint[] {
+  const byDate = new Map<string, Set<string>>()
+
+  for (const row of attendanceDetails) {
+    if (!row.firstIn) continue
+    const employees = byDate.get(row.date) ?? new Set<string>()
+    employees.add(row.employeeId)
+    byDate.set(row.date, employees)
+  }
+
+  return [...byDate.entries()]
+    .map(([label, employees]) => ({ label, count: employees.size }))
+    .sort((a, b) => a.label.localeCompare(b.label))
 }
 
 function toCsv(events: AccessEvent[]) {
@@ -457,7 +511,7 @@ function attendanceDetailRows(rows: AttendanceDetailRow[], options: AttendanceDe
 
 function departmentStayRows(items: DepartmentStayStat[]) {
   if (items.length === 0) {
-    return '<tr><td colspan="5" class="empty">這段期間沒有部門停留時數資料</td></tr>'
+    return '<tr><td colspan="6" class="empty">這段期間沒有部門停留時數資料</td></tr>'
   }
 
   return items
@@ -470,6 +524,28 @@ function departmentStayRows(items: DepartmentStayStat[]) {
           <td>${htmlEscape(formatHours(item.totalHours))}</td>
           <td>${htmlEscape(formatHours(item.averageHours))}</td>
           <td>${htmlEscape(item.employeeCount)}</td>
+          <td>${htmlEscape(formatPercentValue(item.normalAttendanceRate))}</td>
+        </tr>
+      `,
+    )
+    .join('')
+}
+
+function departmentAttendanceRows(items: DepartmentStayStat[]) {
+  if (items.length === 0) {
+    return '<tr><td colspan="4" class="empty">這段期間沒有部門出勤率資料</td></tr>'
+  }
+
+  return [...items]
+    .sort((a, b) => (b.normalAttendanceRate ?? -1) - (a.normalAttendanceRate ?? -1))
+    .slice(0, 12)
+    .map(
+      (item, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${htmlEscape(item.departmentId)}</td>
+          <td>${htmlEscape(formatPercentValue(item.normalAttendanceRate))}</td>
+          <td>${htmlEscape(item.workDays)}</td>
         </tr>
       `,
     )
@@ -588,6 +664,50 @@ function lineTrendChart(items: WorkHourTrendPoint[]) {
   `
 }
 
+function attendanceTrendChart(items: DailyAttendanceTrendPoint[]) {
+  if (items.length === 0) {
+    return '<div class="trend-empty">沒有出勤人數趨勢資料</div>'
+  }
+
+  const width = 640
+  const height = 174
+  const padding = { top: 28, right: 32, bottom: 44, left: 40 }
+  const innerWidth = width - padding.left - padding.right
+  const innerHeight = height - padding.top - padding.bottom
+  const maxCount = Math.max(1, ...items.map((item) => item.count))
+  const points = items.map((item, index) => {
+    const x = padding.left + (items.length <= 1 ? innerWidth / 2 : (index / (items.length - 1)) * innerWidth)
+    const y = padding.top + innerHeight - (item.count / maxCount) * innerHeight
+    return { ...item, x, y }
+  })
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
+  const gridLines = [0, 0.5, 1]
+    .map((ratio) => {
+      const y = padding.top + innerHeight - ratio * innerHeight
+      return `<line class="trend-grid-line" x1="${padding.left}" x2="${width - padding.right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`
+    })
+    .join('')
+  const pointMarks = points
+    .map(
+      (point) => `
+        <g>
+          <circle class="trend-point" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="4" />
+          <text class="trend-value" x="${point.x.toFixed(1)}" y="${Math.max(14, point.y - 10).toFixed(1)}">${htmlEscape(point.count)}</text>
+          <text class="trend-label" x="${point.x.toFixed(1)}" y="${height - 16}">${htmlEscape(point.label.slice(5))}</text>
+        </g>
+      `,
+    )
+    .join('')
+
+  return `
+    <svg class="trend-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="attendance trend">
+      ${gridLines}
+      ${points.length > 1 ? `<path class="trend-path" d="${path}" />` : ''}
+      ${pointMarks}
+    </svg>
+  `
+}
+
 function formatDeniedRate(rate: number, denied: number) {
   const percentage = rate * 100
   if (denied > 0 && percentage > 0 && percentage < 0.1) {
@@ -634,7 +754,9 @@ function buildVisualReport(
 ) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
+  const targetPart = targetLabel && targetLabel !== deptPart ? ` | 報表對象：${htmlEscape(targetLabel)}` : ''
   const generationLatencyText = typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)}ms` : '-'
+  const dailyAttendanceTrend = buildDailyAttendanceTrend(attendanceDetails)
 
   return `<!doctype html>
 <html lang="zh-Hant">
@@ -681,43 +803,60 @@ function buildVisualReport(
   </head>
   <body>
     <h1>出勤報表</h1>
-    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)} | 報表對象：${htmlEscape(targetLabel)} | 製表人：${htmlEscape(preparerName)} | 產生時間：${htmlEscape(generatedAt)} | 此次報表產製耗時：${htmlEscape(generationLatencyText)}</div>
+    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)}${targetPart} | 製表人：${htmlEscape(preparerName)} | 產生時間：${htmlEscape(generatedAt)} | 此次報表產製耗時：${htmlEscape(generationLatencyText)}</div>
     ${
-      sectionOptions.attendanceRate || sectionOptions.todayAttendance || sectionOptions.departmentStaySummary || sectionOptions.anomalySummary
-        ? `<h2>HR 出勤重點</h2><div class="metrics">
-            ${sectionOptions.attendanceRate ? metricLine('正常出勤率', formatPercentValue(hrMetrics.normalAttendanceRate)) : ''}
-            ${sectionOptions.todayAttendance ? metricLine('今日出勤人數', hrMetrics.todayAttendanceCount) : ''}
-            ${sectionOptions.departmentStaySummary ? metricLine('平均停留時數', formatHours(hrMetrics.averageStayHours)) : ''}
+      sectionOptions.coreKpi && (sectionOptions.attendanceRate || sectionOptions.periodAttendanceCount || sectionOptions.averageWorkHours || sectionOptions.anomalySummary)
+        ? `<h2>核心出勤 KPI</h2><div class="metrics">
+            ${sectionOptions.attendanceRate ? metricLine('期間正常出勤率', formatPercentValue(hrMetrics.normalAttendanceRate)) : ''}
+            ${sectionOptions.periodAttendanceCount ? metricLine('期間出勤人數', hrMetrics.periodAttendanceCount) : ''}
+            ${sectionOptions.averageWorkHours ? metricLine('期間平均工時', formatHours(hrMetrics.averageStayHours)) : ''}
             ${sectionOptions.anomalySummary ? metricLine('異常天數', hrMetrics.anomalyDays) : ''}
           </div>`
         : ''
     }
     ${
-      sectionOptions.departmentStayRanking
+      sectionOptions.organizationAnalysis && sectionOptions.departmentStaySummary
+        ? `<h2>組織停留時數統計</h2><div class="metrics">${metricLine('期間平均停留時數', formatHours(hrMetrics.averageStayHours))}</div>`
+        : ''
+    }
+    ${
+      sectionOptions.organizationAnalysis && sectionOptions.departmentStayRanking
         ? `<h2>部門停留時數排名</h2>
           <table>
-            <thead><tr><th>排名</th><th>部門</th><th>總停留時數</th><th>平均停留時數</th><th>人數</th></tr></thead>
+            <thead><tr><th>排名</th><th>部門</th><th>總停留時數</th><th>平均停留時數</th><th>人數</th><th>正常出勤率</th></tr></thead>
             <tbody>${departmentStayRows(hrMetrics.departmentStayStats)}</tbody>
           </table>`
         : ''
     }
-    ${sectionOptions.averageWorkHours ? `<div class="metrics">${metricLine('平均工時', formatHours(workHours?.averageHours))}</div>` : ''}
+    ${
+      sectionOptions.organizationAnalysis && sectionOptions.departmentAttendanceRate
+        ? `<h2>部門正常出勤率</h2>
+          <table>
+            <thead><tr><th>排名</th><th>部門</th><th>正常出勤率</th><th>有效出勤日數</th></tr></thead>
+            <tbody>${departmentAttendanceRows(hrMetrics.departmentStayStats)}</tbody>
+          </table>`
+        : ''
+    }
     ${
       sectionOptions.eventMetrics
-        ? `<h2>刷卡事件指標</h2><div class="metrics">
-            ${metricLine('事件總數', metrics.total)}
-            ${metricLine('允許通行', metrics.granted)}
-            ${metricLine('拒絕通行', metrics.denied)}
-            ${metricLine('拒絕率', formatDeniedRate(metrics.deniedRate, metrics.denied))}
-            ${metricLine('刷進', metrics.inCount)}
-            ${metricLine('刷出', metrics.outCount)}
-            ${metricLine('刷卡平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`)}
-            ${metricLine('頁面資料產製耗時', typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-')}
+        ? `<h2>刷卡事件統計</h2><div class="metrics">
+            ${sectionOptions.eventMetricOptions.total ? metricLine('期間刷卡事件總數', metrics.total) : ''}
+            ${sectionOptions.eventMetricOptions.granted ? metricLine('允許通行數', metrics.granted) : ''}
+            ${sectionOptions.eventMetricOptions.denied ? metricLine('拒絕通行數', metrics.denied) : ''}
+            ${sectionOptions.eventMetricOptions.deniedRate ? metricLine('拒絕率', formatDeniedRate(metrics.deniedRate, metrics.denied)) : ''}
+            ${sectionOptions.eventMetricOptions.inCount ? metricLine('刷進次數', metrics.inCount) : ''}
+            ${sectionOptions.eventMetricOptions.outCount ? metricLine('刷出次數', metrics.outCount) : ''}
+            ${sectionOptions.eventMetricOptions.avgLatency ? metricLine('刷卡平均延遲', metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs} ms`) : ''}
           </div>`
         : ''
     }
     ${
-      sectionOptions.workTrend
+      sectionOptions.trendAnalysis && sectionOptions.attendanceTrend
+        ? `<h2>期間出勤人數趨勢</h2><div class="chart">${attendanceTrendChart(dailyAttendanceTrend)}</div>`
+        : ''
+    }
+    ${
+      sectionOptions.trendAnalysis && sectionOptions.workTrend
         ? `<h2>月工時趨勢</h2>
           <div class="chart">${lineTrendChart(workHours?.monthlyTrend ?? [])}</div>
           <h2>季工時趨勢</h2>
@@ -727,11 +866,11 @@ function buildVisualReport(
         : ''
     }
     ${
-      sectionOptions.departmentDistribution
-        ? `<h2>部門事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
+      sectionOptions.organizationAnalysis && sectionOptions.departmentDistribution
+        ? `<h2>部門刷卡事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
         : ''
     }
-    ${sectionOptions.hourlyActivity ? `<h2>時段活動量</h2><div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>` : ''}
+    ${sectionOptions.trendAnalysis && sectionOptions.hourlyActivity ? `<h2>時段活動量趨勢</h2><div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>` : ''}
     ${
       sectionOptions.eventDetails
         ? `<h2>事件明細</h2>
@@ -774,19 +913,35 @@ function Reports() {
   const [reportData, setReportData] = useState<ReportCenterResponse | null>(null)
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([])
+  const [employeeOptions, setEmployeeOptions] = useState<EmployeeOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [showReportOptionDetails, setShowReportOptionDetails] = useState(false)
+  const [showCoreKpi, setShowCoreKpi] = useState(true)
   const [showAttendanceRate, setShowAttendanceRate] = useState(true)
-  const [showTodayAttendance, setShowTodayAttendance] = useState(true)
+  const [showPeriodAttendanceCount, setShowPeriodAttendanceCount] = useState(true)
   const [showDepartmentStaySummary, setShowDepartmentStaySummary] = useState(true)
   const [showDepartmentStayRanking, setShowDepartmentStayRanking] = useState(true)
+  const [showDepartmentAttendanceRate, setShowDepartmentAttendanceRate] = useState(true)
   const [showAnomalySummary, setShowAnomalySummary] = useState(true)
   const [showAverageWorkHours, setShowAverageWorkHours] = useState(true)
-  const [showEventMetrics, setShowEventMetrics] = useState(true)
+  const [showTrendAnalysis, setShowTrendAnalysis] = useState(true)
+  const [showAttendanceTrend, setShowAttendanceTrend] = useState(true)
+  const [showEventMetrics, setShowEventMetrics] = useState(false)
+  const [eventMetricOptions, setEventMetricOptions] = useState<EventMetricOptions>({
+    total: true,
+    granted: true,
+    denied: true,
+    deniedRate: true,
+    inCount: true,
+    outCount: true,
+    avgLatency: true,
+  })
   const [showWorkTrend, setShowWorkTrend] = useState(true)
+  const [showOrganizationAnalysis, setShowOrganizationAnalysis] = useState(true)
   const [showDepartmentDistribution, setShowDepartmentDistribution] = useState(true)
   const [showHourlyActivity, setShowHourlyActivity] = useState(true)
-  const [showEventDetails, setShowEventDetails] = useState(true)
+  const [showEventDetails, setShowEventDetails] = useState(false)
   const [showAttendanceDetails, setShowAttendanceDetails] = useState(true)
   const [attendanceDetailOptions, setAttendanceDetailOptions] = useState<AttendanceDetailOptions>({
     firstIn: true,
@@ -864,18 +1019,53 @@ function Reports() {
     }
   }, [events, reportData])
   const attendanceDetails = useMemo(() => buildAttendanceDetails(events), [events])
-  const employeeOptions = useMemo(() => buildEmployeeOptions(events), [events])
+  const dailyAttendanceTrend = useMemo(() => buildDailyAttendanceTrend(attendanceDetails), [attendanceDetails])
+  const eventEmployeeOptions = useMemo(() => buildEmployeeOptions(events), [events])
+  const visibleEmployeeOptions = useMemo(() => {
+    const merged = new Map<string, EmployeeOption>()
+    for (const employee of employeeOptions) merged.set(employee.employeeId, employee)
+    for (const employee of eventEmployeeOptions) {
+      if (!merged.has(employee.employeeId)) merged.set(employee.employeeId, employee)
+    }
+    return [...merged.values()].sort((a, b) => a.employeeId.localeCompare(b.employeeId))
+  }, [employeeOptions, eventEmployeeOptions])
   const hrMetrics = useMemo(() => buildHrMetrics(attendanceDetails), [attendanceDetails])
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
   const isEmployee = currentUser?.role === 'EMPLOYEE'
+
+  useEffect(() => {
+    if (isEmployee || targetMode !== 'employee') return
+
+    const optionQuery = employeeSearch.split('|')[0]?.trim() || employeeSearch
+    let cancelled = false
+    fetchEmployeeOptions({ q: optionQuery, limit: 100 })
+      .then((result) => {
+        if (cancelled) return
+        setEmployeeOptions(result.items.map(toEmployeeOption))
+      })
+      .catch(() => {
+        if (!cancelled) setEmployeeOptions([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser?.userId, employeeSearch, isEmployee, targetMode])
   const activeTrend = trendItems(reportData?.workHours ?? null, trendMode)
+  const maxAttendanceTrendCount = Math.max(1, ...dailyAttendanceTrend.map((item) => item.count))
   const maxTrendHours = Math.max(1, ...activeTrend.map((item) => item.averageHours))
   const trendChartWidth = 640
   const trendChartHeight = 154
   const trendChartPadding = { top: 22, right: 28, bottom: 34, left: 28 }
   const trendInnerWidth = trendChartWidth - trendChartPadding.left - trendChartPadding.right
   const trendInnerHeight = 82
+  const attendanceTrendPoints = dailyAttendanceTrend.map((item, index) => {
+    const x = trendChartPadding.left + (dailyAttendanceTrend.length <= 1 ? trendInnerWidth / 2 : (index / (dailyAttendanceTrend.length - 1)) * trendInnerWidth)
+    const y = trendChartPadding.top + trendInnerHeight - (item.count / maxAttendanceTrendCount) * trendInnerHeight
+    return { ...item, x, y }
+  })
+  const attendanceTrendPath = attendanceTrendPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
   const trendPoints = activeTrend.map((item, index) => {
     const x = trendChartPadding.left + (activeTrend.length <= 1 ? trendInnerWidth / 2 : (index / (activeTrend.length - 1)) * trendInnerWidth)
     const y = trendChartPadding.top + trendInnerHeight - (item.averageHours / maxTrendHours) * trendInnerHeight
@@ -884,54 +1074,80 @@ function Reports() {
   const trendPath = trendPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
   const hourlyAxis = buildCountAxis(maxHourlyCount)
   const preparerName = currentUser?.displayName?.trim() || currentUser?.username || currentUser?.employeeId || '未知'
-  const selectedEmployee = employeeOptions.find((employee) => employee.employeeId === selectedEmployeeId)
+  const selectedEmployee = visibleEmployeeOptions.find((employee) => employee.employeeId === selectedEmployeeId)
   const targetLabel =
     targetMode === 'employee'
       ? selectedEmployee
         ? `${selectedEmployee.displayName} (${selectedEmployee.employeeId})`
-        : selectedEmployeeId || '指定員工'
+        : selectedEmployeeId || '指定對象'
       : departmentId === 'ALL'
         ? '全部部門'
         : departmentId
   const reportSectionOptions: ReportSectionOptions = {
-    attendanceRate: showAttendanceRate,
-    todayAttendance: showTodayAttendance,
-    departmentStaySummary: showDepartmentStaySummary,
-    departmentStayRanking: showDepartmentStayRanking,
+    coreKpi: showCoreKpi,
+    attendanceRate: showCoreKpi && showAttendanceRate,
+    periodAttendanceCount: showCoreKpi && showPeriodAttendanceCount,
+    departmentStaySummary: !isEmployee && showOrganizationAnalysis && showDepartmentStaySummary,
+    departmentStayRanking: !isEmployee && showOrganizationAnalysis && showDepartmentStayRanking,
+    departmentAttendanceRate: !isEmployee && showDepartmentAttendanceRate,
     anomalySummary: showAnomalySummary,
-    averageWorkHours: showAverageWorkHours,
-    eventMetrics: showEventMetrics,
-    workTrend: showWorkTrend,
-    departmentDistribution: !isEmployee && showDepartmentDistribution,
-    hourlyActivity: showHourlyActivity,
+    averageWorkHours: showCoreKpi && showAverageWorkHours,
+    trendAnalysis: showTrendAnalysis,
+    attendanceTrend: showTrendAnalysis && showAttendanceTrend,
+    eventMetrics: showEventMetrics && Object.values(eventMetricOptions).some(Boolean),
+    eventMetricOptions,
+    workTrend: showTrendAnalysis && showWorkTrend,
+    organizationAnalysis: !isEmployee && showOrganizationAnalysis,
+    departmentDistribution: showOrganizationAnalysis && !isEmployee && showDepartmentDistribution,
+    hourlyActivity: showTrendAnalysis && showHourlyActivity,
     eventDetails: showEventDetails,
     attendanceDetails: showAttendanceDetails,
   }
   const allReportOptionsSelected =
+    showCoreKpi &&
     showAttendanceRate &&
-    showTodayAttendance &&
+    showPeriodAttendanceCount &&
+    showAverageWorkHours &&
+    showAnomalySummary &&
+    showTrendAnalysis &&
+    showAttendanceTrend &&
+    showWorkTrend &&
+    showHourlyActivity &&
+    showOrganizationAnalysis &&
     showDepartmentStaySummary &&
     showDepartmentStayRanking &&
-    showAnomalySummary &&
-    showAverageWorkHours &&
-    showEventMetrics &&
-    showWorkTrend &&
+    (isEmployee || showDepartmentAttendanceRate) &&
     (isEmployee || showDepartmentDistribution) &&
-    showHourlyActivity &&
+    showEventMetrics &&
+    Object.values(eventMetricOptions).every(Boolean) &&
     showEventDetails &&
     showAttendanceDetails &&
     Object.values(attendanceDetailOptions).every(Boolean)
   const setAllReportOptions = (checked: boolean) => {
+    setShowCoreKpi(checked)
     setShowAttendanceRate(checked)
-    setShowTodayAttendance(checked)
+    setShowPeriodAttendanceCount(checked)
+    setShowAverageWorkHours(checked)
+    setShowAnomalySummary(checked)
+    setShowTrendAnalysis(checked)
+    setShowAttendanceTrend(checked)
+    setShowWorkTrend(checked)
+    setShowHourlyActivity(checked)
+    setShowOrganizationAnalysis(checked)
     setShowDepartmentStaySummary(checked)
     setShowDepartmentStayRanking(checked)
-    setShowAnomalySummary(checked)
-    setShowAverageWorkHours(checked)
-    setShowEventMetrics(checked)
-    setShowWorkTrend(checked)
+    setShowDepartmentAttendanceRate(checked)
     setShowDepartmentDistribution(checked)
-    setShowHourlyActivity(checked)
+    setShowEventMetrics(checked)
+    setEventMetricOptions({
+      total: checked,
+      granted: checked,
+      denied: checked,
+      deniedRate: checked,
+      inCount: checked,
+      outCount: checked,
+      avgLatency: checked,
+    })
     setShowEventDetails(checked)
     setShowAttendanceDetails(checked)
     setAttendanceDetailOptions({
@@ -946,10 +1162,13 @@ function Reports() {
   const updateAttendanceDetailOption = (key: keyof AttendanceDetailOptions, checked: boolean) => {
     setAttendanceDetailOptions((current) => ({ ...current, [key]: checked }))
   }
+  const updateEventMetricOption = (key: keyof EventMetricOptions, checked: boolean) => {
+    setEventMetricOptions((current) => ({ ...current, [key]: checked }))
+  }
   const selectEmployeeSearchValue = (value: string) => {
     setEmployeeSearch(value)
     const normalized = value.trim().toLowerCase()
-    const matchedEmployee = employeeOptions.find((employee) => {
+    const matchedEmployee = visibleEmployeeOptions.find((employee) => {
       const label = employeeSearchLabel(employee).toLowerCase()
       return employee.employeeId.toLowerCase() === normalized || employee.displayName.toLowerCase() === normalized || label === normalized
     })
@@ -1120,7 +1339,7 @@ function Reports() {
                   setSelectedEmployeeId('')
                 }}
               >
-                <option value="__EMPLOYEE__">指定員工</option>
+                <option value="__EMPLOYEE__">指定對象</option>
                 <option value="ALL">全部部門</option>
                 {departmentOptions.map((option) => (
                   <option key={option.departmentId} value={option.departmentId}>
@@ -1133,7 +1352,7 @@ function Reports() {
           ) : null}
           {!isEmployee && targetMode === 'employee' ? (
             <div className="col-md-3">
-              <label className="form-label" htmlFor="report-employee-search">指定員工 / 部門</label>
+              <label className="form-label" htmlFor="report-employee-search">指定對象 / 部門</label>
               <input
                 id="report-employee-search"
                 className="form-control"
@@ -1143,7 +1362,7 @@ function Reports() {
                 onChange={(event) => selectEmployeeSearchValue(event.target.value)}
               />
               <datalist id="report-employee-options">
-                {employeeOptions.map((employee) => (
+                {visibleEmployeeOptions.map((employee) => (
                   <option key={employee.employeeId} value={employeeSearchLabel(employee)} />
                 ))}
                 {departmentOptions.map((department) => (
@@ -1167,115 +1386,197 @@ function Reports() {
                 全選
               </label>
               <label>
-                <input type="checkbox" checked={showAttendanceRate} onChange={(event) => setShowAttendanceRate(event.target.checked)} />
-                正常出勤率
+                <input type="checkbox" checked={showCoreKpi} onChange={(event) => setShowCoreKpi(event.target.checked)} />
+                核心出勤 KPI
               </label>
               <label>
-                <input type="checkbox" checked={showTodayAttendance} onChange={(event) => setShowTodayAttendance(event.target.checked)} />
-                今日出勤人數
-              </label>
-              <label>
-                <input type="checkbox" checked={showDepartmentStaySummary} onChange={(event) => setShowDepartmentStaySummary(event.target.checked)} />
-                停留時數統計
-              </label>
-              <label>
-                <input type="checkbox" checked={showDepartmentStayRanking} onChange={(event) => setShowDepartmentStayRanking(event.target.checked)} />
-                部門停留時數排名
-              </label>
-              <label>
-                <input type="checkbox" checked={showAnomalySummary} onChange={(event) => setShowAnomalySummary(event.target.checked)} />
-                異常狀況
-              </label>
-              <label>
-                <input type="checkbox" checked={showAverageWorkHours} onChange={(event) => setShowAverageWorkHours(event.target.checked)} />
-                平均工時
-              </label>
-              <label>
-                <input type="checkbox" checked={showEventMetrics} onChange={(event) => setShowEventMetrics(event.target.checked)} />
-                刷卡事件指標
-              </label>
-              <label>
-                <input type="checkbox" checked={showWorkTrend} onChange={(event) => setShowWorkTrend(event.target.checked)} />
-                工時趨勢
+                <input type="checkbox" checked={showTrendAnalysis} onChange={(event) => setShowTrendAnalysis(event.target.checked)} />
+                趨勢分析
               </label>
               {!isEmployee ? (
                 <label>
-                  <input type="checkbox" checked={showDepartmentDistribution} onChange={(event) => setShowDepartmentDistribution(event.target.checked)} />
-                  部門事件分布
+                  <input type="checkbox" checked={showOrganizationAnalysis} onChange={(event) => setShowOrganizationAnalysis(event.target.checked)} />
+                  組織分析
                 </label>
               ) : null}
-              <label>
-                <input type="checkbox" checked={showHourlyActivity} onChange={(event) => setShowHourlyActivity(event.target.checked)} />
-                時段活動量
-              </label>
-              <label>
-                <input type="checkbox" checked={showEventDetails} onChange={(event) => setShowEventDetails(event.target.checked)} />
-                事件明細
-              </label>
               <label>
                 <input type="checkbox" checked={showAttendanceDetails} onChange={(event) => setShowAttendanceDetails(event.target.checked)} />
                 出勤日明細
               </label>
-              {showAttendanceDetails ? (
-              <div className="report-section-options-subgroup" aria-label="出勤日明細欄位">
-                <span>出勤日明細欄位</span>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.firstIn} onChange={(event) => updateAttendanceDetailOption('firstIn', event.target.checked)} />
-                  上班
-                </label>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.inGate} onChange={(event) => updateAttendanceDetailOption('inGate', event.target.checked)} />
-                  刷入門禁
-                </label>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.lastOut} onChange={(event) => updateAttendanceDetailOption('lastOut', event.target.checked)} />
-                  下班
-                </label>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.outGate} onChange={(event) => updateAttendanceDetailOption('outGate', event.target.checked)} />
-                  刷出門禁
-                </label>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.workHours} onChange={(event) => updateAttendanceDetailOption('workHours', event.target.checked)} />
-                  工時
-                </label>
-                <label>
-                  <input type="checkbox" checked={attendanceDetailOptions.anomalies} onChange={(event) => updateAttendanceDetailOption('anomalies', event.target.checked)} />
-                  異常事件
-                </label>
-              </div>
+              <label>
+                <input type="checkbox" checked={showEventMetrics} onChange={(event) => setShowEventMetrics(event.target.checked)} />
+                刷卡事件統計
+              </label>
+              <label>
+                <input type="checkbox" checked={showEventDetails} onChange={(event) => setShowEventDetails(event.target.checked)} />
+                刷卡事件明細
+              </label>
+              <button
+                className="report-section-options-toggle"
+                type="button"
+                onClick={() => setShowReportOptionDetails((current) => !current)}
+                aria-expanded={showReportOptionDetails}
+              >
+                {showReportOptionDetails ? '收起細項' : '展開細項'}
+              </button>
+              {showReportOptionDetails && showCoreKpi ? (
+                <div className="report-section-options-subgroup" aria-label="核心出勤 KPI 指標">
+                  <span>核心出勤 KPI</span>
+                  <label>
+                    <input type="checkbox" checked={showAttendanceRate} onChange={(event) => setShowAttendanceRate(event.target.checked)} />
+                    期間正常出勤率
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showPeriodAttendanceCount} onChange={(event) => setShowPeriodAttendanceCount(event.target.checked)} />
+                    期間出勤人數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showAverageWorkHours} onChange={(event) => setShowAverageWorkHours(event.target.checked)} />
+                    期間平均工時
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showAnomalySummary} onChange={(event) => setShowAnomalySummary(event.target.checked)} />
+                    期間異常天數
+                  </label>
+                </div>
+              ) : null}
+              {showReportOptionDetails && showTrendAnalysis ? (
+                <div className="report-section-options-subgroup" aria-label="趨勢分析指標">
+                  <span>趨勢分析</span>
+                  <label>
+                    <input type="checkbox" checked={showAttendanceTrend} onChange={(event) => setShowAttendanceTrend(event.target.checked)} />
+                    期間出勤人數趨勢
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showWorkTrend} onChange={(event) => setShowWorkTrend(event.target.checked)} />
+                    工時趨勢
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showHourlyActivity} onChange={(event) => setShowHourlyActivity(event.target.checked)} />
+                    時段刷卡活動量
+                  </label>
+                </div>
+              ) : null}
+              {showReportOptionDetails && !isEmployee && showOrganizationAnalysis ? (
+                <div className="report-section-options-subgroup" aria-label="組織分析指標">
+                  <span>組織分析</span>
+                  <label>
+                    <input type="checkbox" checked={showDepartmentStaySummary} onChange={(event) => setShowDepartmentStaySummary(event.target.checked)} />
+                    組織平均停留時數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showDepartmentStayRanking} onChange={(event) => setShowDepartmentStayRanking(event.target.checked)} />
+                    部門停留時數排名
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showDepartmentAttendanceRate} onChange={(event) => setShowDepartmentAttendanceRate(event.target.checked)} />
+                    部門正常出勤率
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={showDepartmentDistribution} onChange={(event) => setShowDepartmentDistribution(event.target.checked)} />
+                    部門刷卡事件分布
+                  </label>
+                </div>
+              ) : null}
+              {showReportOptionDetails && showAttendanceDetails ? (
+                <div className="report-section-options-subgroup" aria-label="出勤日明細欄位">
+                  <span>出勤日明細欄位</span>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.firstIn} onChange={(event) => updateAttendanceDetailOption('firstIn', event.target.checked)} />
+                    上班
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.inGate} onChange={(event) => updateAttendanceDetailOption('inGate', event.target.checked)} />
+                    刷入門禁
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.lastOut} onChange={(event) => updateAttendanceDetailOption('lastOut', event.target.checked)} />
+                    下班
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.outGate} onChange={(event) => updateAttendanceDetailOption('outGate', event.target.checked)} />
+                    刷出門禁
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.workHours} onChange={(event) => updateAttendanceDetailOption('workHours', event.target.checked)} />
+                    工時
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={attendanceDetailOptions.anomalies} onChange={(event) => updateAttendanceDetailOption('anomalies', event.target.checked)} />
+                    異常事件
+                  </label>
+                </div>
+              ) : null}
+              {showReportOptionDetails && showEventMetrics ? (
+                <div className="report-section-options-subgroup" aria-label="刷卡事件統計指標">
+                  <span>刷卡事件統計</span>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.total} onChange={(event) => updateEventMetricOption('total', event.target.checked)} />
+                    期間事件總數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.granted} onChange={(event) => updateEventMetricOption('granted', event.target.checked)} />
+                    允許通行數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.denied} onChange={(event) => updateEventMetricOption('denied', event.target.checked)} />
+                    拒絕通行數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.deniedRate} onChange={(event) => updateEventMetricOption('deniedRate', event.target.checked)} />
+                    拒絕率
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.inCount} onChange={(event) => updateEventMetricOption('inCount', event.target.checked)} />
+                    刷進次數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.outCount} onChange={(event) => updateEventMetricOption('outCount', event.target.checked)} />
+                    刷出次數
+                  </label>
+                  <label>
+                    <input type="checkbox" checked={eventMetricOptions.avgLatency} onChange={(event) => updateEventMetricOption('avgLatency', event.target.checked)} />
+                    刷卡平均延遲
+                  </label>
+                </div>
               ) : null}
             </div>
-          </div>          {message && <div className="col-12 small text-secondary text-end">{message}</div>}
+          </div>
+          <div className="col-12 report-condition-footer">
+            {message ? <div className="small text-secondary">{message}</div> : <div />}
+            <div className="small text-secondary">
+              頁面資料產製耗時：{reportData?.generationLatencyMs == null ? '-' : `${reportData.generationLatencyMs.toFixed(1)} ms`}
+            </div>
+          </div>
         </div>
       </section>
 
-      {showAttendanceRate || showTodayAttendance || showDepartmentStaySummary || showAnomalySummary ? (
+      {showCoreKpi && (showAttendanceRate || showPeriodAttendanceCount || showAverageWorkHours || showAnomalySummary) ? (
         <section className="kpi-grid">
           {showAttendanceRate ? (
             <div className="kpi-card">
-              <div className="kpi-label">正常出勤率</div>
+              <div className="kpi-label">期間正常出勤率</div>
               <div className="kpi-value">{isLoading ? '-' : formatPercentValue(hrMetrics.normalAttendanceRate)}</div>
               <div className="kpi-footnote">完整上下班且無異常</div>
             </div>
           ) : null}
-          {showTodayAttendance ? (
+          {showPeriodAttendanceCount ? (
             <div className="kpi-card">
-              <div className="kpi-label">今日出勤人數</div>
-              <div className="kpi-value">{isLoading ? '-' : hrMetrics.todayAttendanceCount.toLocaleString()}</div>
-              <div className="kpi-footnote">今日已有上班刷卡</div>
+              <div className="kpi-label">期間出勤人數</div>
+              <div className="kpi-value">{isLoading ? '-' : hrMetrics.periodAttendanceCount.toLocaleString()}</div>
+              <div className="kpi-footnote">至少有一次上班刷卡</div>
             </div>
           ) : null}
-          {showDepartmentStaySummary ? (
+          {showAverageWorkHours ? (
             <div className="kpi-card">
-              <div className="kpi-label">平均停留時數</div>
+              <div className="kpi-label">期間平均工時</div>
               <div className="kpi-value">{isLoading ? '-' : formatHours(hrMetrics.averageStayHours)}</div>
-              <div className="kpi-footnote">依出勤日明細估算</div>
+              <div className="kpi-footnote">完整進出紀錄平均</div>
             </div>
           ) : null}
           {showAnomalySummary ? (
             <div className="kpi-card">
-              <div className="kpi-label">異常天數</div>
+              <div className="kpi-label">期間異常天數</div>
               <div className="kpi-value">{isLoading ? '-' : hrMetrics.anomalyDays.toLocaleString()}</div>
               <div className="kpi-footnote">拒絕通行或缺少上下班</div>
             </div>
@@ -1283,11 +1584,21 @@ function Reports() {
         </section>
       ) : null}
 
-      {showDepartmentStayRanking ? (
+      {!isEmployee && showOrganizationAnalysis && showDepartmentStaySummary ? (
+        <section className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-label">組織平均停留時數</div>
+            <div className="kpi-value">{isLoading ? '-' : formatHours(hrMetrics.averageStayHours)}</div>
+            <div className="kpi-footnote">依刷進到刷出估算</div>
+          </div>
+        </section>
+      ) : null}
+
+      {!isEmployee && showOrganizationAnalysis && showDepartmentStayRanking ? (
         <section className="panel-card mb-3">
           <div className="d-flex justify-content-between align-items-center mb-3">
             <h2 className="h6 m-0">部門停留時數排名</h2>
-            <span className="small text-secondary">依總停留時數排序</span>
+            <span className="small text-secondary">所選期間，依總停留時數排序</span>
           </div>
           <div className="table-responsive">
             <table className="table-clean">
@@ -1298,6 +1609,7 @@ function Reports() {
                   <th>總停留時數</th>
                   <th>平均停留時數</th>
                   <th>人數</th>
+                  <th>正常出勤率</th>
                 </tr>
               </thead>
               <tbody>
@@ -1309,11 +1621,12 @@ function Reports() {
                       <td>{formatHours(item.totalHours)}</td>
                       <td>{formatHours(item.averageHours)}</td>
                       <td>{item.employeeCount.toLocaleString()}</td>
+                      <td>{formatPercentValue(item.normalAttendanceRate)}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={5} className="text-secondary text-center py-4">
+                    <td colSpan={6} className="text-secondary text-center py-4">
                       {isLoading ? '載入中...' : '這段期間沒有部門停留時數資料'}
                     </td>
                   </tr>
@@ -1324,56 +1637,186 @@ function Reports() {
         </section>
       ) : null}
 
-      {showAverageWorkHours ? (
-        <section className="kpi-grid">
-          <div className="kpi-card">
-            <div className="kpi-label">平均工時</div>
-            <div className="kpi-value">{isLoading ? '-' : formatHours(reportData?.workHours.averageHours)}</div>
+      {!isEmployee && showOrganizationAnalysis && showDepartmentAttendanceRate ? (
+        <section className="panel-card mb-3">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">部門正常出勤率</h2>
+            <span className="small text-secondary">所選期間，完整上下班且無異常</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
+                <tr>
+                  <th>排名</th>
+                  <th>部門</th>
+                  <th>正常出勤率</th>
+                  <th>有效出勤日數</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hrMetrics.departmentStayStats.length > 0 ? (
+                  [...hrMetrics.departmentStayStats]
+                    .sort((a, b) => (b.normalAttendanceRate ?? -1) - (a.normalAttendanceRate ?? -1))
+                    .slice(0, 10)
+                    .map((item, index) => (
+                      <tr key={item.departmentId}>
+                        <td>{index + 1}</td>
+                        <td>{item.departmentId}</td>
+                        <td>{formatPercentValue(item.normalAttendanceRate)}</td>
+                        <td>{item.workDays.toLocaleString()}</td>
+                      </tr>
+                    ))
+                ) : (
+                  <tr>
+                    <td colSpan={4} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有部門出勤率資料'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </section>
       ) : null}
 
-      {showEventMetrics ? (
+      {showAttendanceDetails ? (
+        <section className="panel-card mb-3">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h2 className="h6 m-0">出勤日明細</h2>
+            <span className="small text-secondary">依日期與員工彙整</span>
+          </div>
+          <div className="table-responsive">
+            <table className="table-clean">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>員工編號</th>
+                  <th>姓名</th>
+                  <th>部門</th>
+                  {attendanceDetailOptions.firstIn ? <th>上班</th> : null}
+                  {attendanceDetailOptions.inGate ? <th>刷入門禁</th> : null}
+                  {attendanceDetailOptions.lastOut ? <th>下班</th> : null}
+                  {attendanceDetailOptions.outGate ? <th>刷出門禁</th> : null}
+                  {attendanceDetailOptions.workHours ? <th>工時</th> : null}
+                  {attendanceDetailOptions.anomalies ? <th>異常事件</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {attendanceDetails.length > 0 ? (
+                  attendanceDetails.slice(0, 20).map((item) => {
+                    const anomalyText = item.anomalies.length > 0 ? item.anomalies.slice(0, 2).map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`).join('；') : '-'
+                    return (
+                      <tr key={item.key}>
+                        <td>{item.date}</td>
+                        <td>{item.employeeId}</td>
+                        <td>{item.displayName || '-'}</td>
+                        <td>{item.departmentId}</td>
+                        {attendanceDetailOptions.firstIn ? <td>{localTimeText(item.firstIn?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.inGate ? <td>{item.firstIn?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.lastOut ? <td>{localTimeText(item.lastOut?.timestamp)}</td> : null}
+                        {attendanceDetailOptions.outGate ? <td>{item.lastOut?.gateId ?? '-'}</td> : null}
+                        {attendanceDetailOptions.workHours ? <td>{formatHours(item.workHours)}</td> : null}
+                        {attendanceDetailOptions.anomalies ? <td className={item.anomalies.length > 0 ? 'danger-text' : undefined}>{anomalyText}</td> : null}
+                      </tr>
+                    )
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={4 + Object.values(attendanceDetailOptions).filter(Boolean).length} className="text-secondary text-center py-4">
+                      {isLoading ? '載入中...' : '這段期間沒有出勤明細'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {showEventMetrics && Object.values(eventMetricOptions).some(Boolean) ? (
         <section className="panel-card report-event-metrics-panel mb-3">
-          <h2 className="report-static-section-title">刷卡事件指標</h2>
+          <h2 className="report-static-section-title">刷卡事件統計</h2>
           <div className="report-event-metrics-grid">
-            <div>
-              <span>事件總數</span>
-              <strong>{metrics.total.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>允許通行</span>
-              <strong>{metrics.granted.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>拒絕通行</span>
-              <strong>{metrics.denied.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>拒絕率</span>
-              <strong>{formatDeniedRate(metrics.deniedRate, metrics.denied)}</strong>
-            </div>
-            <div>
-              <span>刷進</span>
-              <strong>{metrics.inCount.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>刷出</span>
-              <strong>{metrics.outCount.toLocaleString()}</strong>
-            </div>
-            <div>
-              <span>刷卡平均延遲</span>
-              <strong>{metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs.toLocaleString()} ms`}</strong>
-            </div>
-            <div>
-              <span>頁面資料產製耗時</span>
-              <strong>{reportData?.generationLatencyMs == null ? '-' : `${reportData.generationLatencyMs.toFixed(1)} ms`}</strong>
-            </div>
+            {eventMetricOptions.total ? (
+              <div>
+                <span>期間事件總數</span>
+                <strong>{metrics.total.toLocaleString()}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.granted ? (
+              <div>
+                <span>允許通行數</span>
+                <strong>{metrics.granted.toLocaleString()}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.denied ? (
+              <div>
+                <span>拒絕通行數</span>
+                <strong>{metrics.denied.toLocaleString()}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.deniedRate ? (
+              <div>
+                <span>拒絕率</span>
+                <strong>{formatDeniedRate(metrics.deniedRate, metrics.denied)}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.inCount ? (
+              <div>
+                <span>刷進次數</span>
+                <strong>{metrics.inCount.toLocaleString()}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.outCount ? (
+              <div>
+                <span>刷出次數</span>
+                <strong>{metrics.outCount.toLocaleString()}</strong>
+              </div>
+            ) : null}
+            {eventMetricOptions.avgLatency ? (
+              <div>
+                <span>刷卡平均延遲</span>
+                <strong>{metrics.avgLatencyMs === null ? '-' : `${metrics.avgLatencyMs.toLocaleString()} ms`}</strong>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}
 
-      {showWorkTrend ? (
+      {showTrendAnalysis && showAttendanceTrend ? (
+        <section className="panel-card work-trend-panel mb-3">
+          <div className="report-section-toolbar">
+            <h2 className="h6 m-0">期間出勤人數趨勢</h2>
+            <span className="small text-secondary">每日不重複出勤人數</span>
+          </div>
+          <div className="work-trend-chart">
+            {dailyAttendanceTrend.length > 0 ? (
+              <svg className="work-trend-line" viewBox={`0 0 ${trendChartWidth} ${trendChartHeight}`} role="img" aria-label="期間出勤人數趨勢">
+                {[0, 0.5, 1].map((ratio) => {
+                  const y = trendChartPadding.top + trendInnerHeight - ratio * trendInnerHeight
+                  return <line className="work-trend-grid-line" key={ratio} x1={trendChartPadding.left} x2={trendChartWidth - trendChartPadding.right} y1={y} y2={y} />
+                })}
+                {attendanceTrendPoints.length > 1 ? <path className="work-trend-path" d={attendanceTrendPath} /> : null}
+                {attendanceTrendPoints.map((point: DailyAttendanceTrendPoint & { x: number; y: number }) => (
+                  <g key={point.label}>
+                    <circle className="work-trend-point" cx={point.x} cy={point.y} r="4" />
+                    <text className="work-trend-value" x={point.x} y={Math.max(14, point.y - 10)}>
+                      {point.count.toLocaleString()}
+                    </text>
+                    <text className="work-trend-label" x={point.x} y={trendChartHeight - 16}>
+                      {point.label.slice(5)}
+                    </text>
+                  </g>
+                ))}
+              </svg>
+            ) : (
+              <div className="work-trend-empty text-secondary small">目前沒有可計算的出勤趨勢資料。</div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {showTrendAnalysis && showWorkTrend ? (
         <section className="panel-card work-trend-panel mb-3">
           <div className="report-section-toolbar">
             <h2 className="h6 m-0">{trendTitle(trendMode)}</h2>
@@ -1410,11 +1853,11 @@ function Reports() {
         </section>
       ) : null}
 
-      {!isEmployee && showDepartmentDistribution ? (
+      {!isEmployee && showOrganizationAnalysis && showDepartmentDistribution ? (
         <section className="panel-grid mb-3">
           <div className="panel-card">
           <div className="report-section-toolbar">
-            <h2 className="h6 m-0">部門事件分布</h2>
+            <h2 className="h6 m-0">部門刷卡事件分布</h2>
             <span className="small text-secondary">Top {metrics.topDepartments.length}</span>
           </div>
           <div className="report-chart-list">
@@ -1436,11 +1879,11 @@ function Reports() {
         </section>
       ) : null}
 
-      {showHourlyActivity ? (
+      {showTrendAnalysis && showHourlyActivity ? (
         <section className="panel-card report-event-metrics-panel mb-3">
           <div className="report-section-toolbar">
-            <h2 className="report-static-section-title">時段活動量</h2>
-            <span className="small text-secondary">台北時間</span>
+            <h2 className="report-static-section-title">時段刷卡活動量</h2>
+            <span className="small text-secondary">所選期間，台北時間</span>
           </div>
           <div className="report-hourly-chart">
           {metrics.hourlyActivity.length > 0 ? (
@@ -1522,59 +1965,6 @@ function Reports() {
         </section>
       ) : null}
 
-      {showAttendanceDetails ? (
-        <section className="panel-card">
-          <div className="d-flex justify-content-between align-items-center mb-3">
-            <h2 className="h6 m-0">出勤日明細</h2>
-            <span className="small text-secondary">依日期與員工彙整</span>
-          </div>
-          <div className="table-responsive">
-            <table className="table-clean">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>員工編號</th>
-                  <th>姓名</th>
-                  <th>部門</th>
-                  {attendanceDetailOptions.firstIn ? <th>上班</th> : null}
-                  {attendanceDetailOptions.inGate ? <th>刷入門禁</th> : null}
-                  {attendanceDetailOptions.lastOut ? <th>下班</th> : null}
-                  {attendanceDetailOptions.outGate ? <th>刷出門禁</th> : null}
-                  {attendanceDetailOptions.workHours ? <th>工時</th> : null}
-                  {attendanceDetailOptions.anomalies ? <th>異常事件</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {attendanceDetails.length > 0 ? (
-                  attendanceDetails.slice(0, 20).map((item) => {
-                    const anomalyText = item.anomalies.length > 0 ? item.anomalies.slice(0, 2).map((event) => `${localTimeText(event.timestamp)} ${event.reason || event.decision}`).join('；') : '-'
-                    return (
-                      <tr key={item.key}>
-                        <td>{item.date}</td>
-                        <td>{item.employeeId}</td>
-                        <td>{item.displayName || '-'}</td>
-                        <td>{item.departmentId}</td>
-                        {attendanceDetailOptions.firstIn ? <td>{localTimeText(item.firstIn?.timestamp)}</td> : null}
-                        {attendanceDetailOptions.inGate ? <td>{item.firstIn?.gateId ?? '-'}</td> : null}
-                        {attendanceDetailOptions.lastOut ? <td>{localTimeText(item.lastOut?.timestamp)}</td> : null}
-                        {attendanceDetailOptions.outGate ? <td>{item.lastOut?.gateId ?? '-'}</td> : null}
-                        {attendanceDetailOptions.workHours ? <td>{formatHours(item.workHours)}</td> : null}
-                        {attendanceDetailOptions.anomalies ? <td className={item.anomalies.length > 0 ? 'danger-text' : undefined}>{anomalyText}</td> : null}
-                      </tr>
-                    )
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={4 + Object.values(attendanceDetailOptions).filter(Boolean).length} className="text-secondary text-center py-4">
-                      {isLoading ? '載入中...' : '這段期間沒有出勤明細'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
     </AppShell>
   )
 }
