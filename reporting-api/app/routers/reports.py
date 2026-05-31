@@ -102,6 +102,7 @@ def access_events(
     decision: str | None = None,
     direction: str | None = None,
     reason: str | None = None,
+    q: str | None = Query(default=None),
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -121,6 +122,7 @@ def access_events(
         to_time=parse_optional_datetime(to),
         limit=limit,
         offset=offset,
+        q=q,
     )
     return {"events": result["items"], **result}
 
@@ -322,6 +324,7 @@ def _stream_events_csv(
     to_time: object,
     decision: str | None = None,
     direction: str | None = None,
+    q: str | None = None,
 ) -> Generator[str, None, None]:
     """Yield CSV rows in batches — no row limit, no full-dataset RAM spike."""
     headers = [
@@ -350,6 +353,7 @@ def _stream_events_csv(
             to_time=to_time,
             limit=batch_size,
             offset=offset,
+            q=q,
         )
         for event in result["items"]:
             writer.writerow([
@@ -380,6 +384,7 @@ def export_events_csv(
     to: str | None = None,
     decision: str | None = None,
     direction: str | None = None,
+    q: str | None = Query(default=None),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
@@ -387,7 +392,7 @@ def export_events_csv(
     to_time = parse_optional_datetime(to)
     filename = "access-events.csv"
     return StreamingResponse(
-        _stream_events_csv(db, current_user, employee_id, department_ids or None, from_time, to_time, decision, direction),
+        _stream_events_csv(db, current_user, employee_id, department_ids or None, from_time, to_time, decision, direction, q),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

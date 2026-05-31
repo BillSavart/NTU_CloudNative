@@ -1102,6 +1102,7 @@ def query_access_events(
     to_time: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
+    q: str | None = None,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
@@ -1131,6 +1132,16 @@ def query_access_events(
         query = query.where(AccessEvent.direction == direction)
     if reason:
         query = query.where(AccessEvent.reason == reason)
+    if q:
+        q_pat = f"%{q}%"
+        query = query.where(
+            or_(
+                AccessEvent.employee_id.ilike(q_pat),
+                AccessEvent.employee_id.in_(
+                    select(Employee.employee_id).where(Employee.display_name.ilike(q_pat))
+                ),
+            )
+        )
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     events = db.scalars(query.order_by(AccessEvent.occurred_at.desc()).limit(limit).offset(offset)).all()

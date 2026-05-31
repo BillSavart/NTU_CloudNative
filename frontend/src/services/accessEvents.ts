@@ -247,6 +247,7 @@ export type AccessEventFilters = {
   offset?: number
   decision?: 'GRANTED' | 'DENIED'
   direction?: 'IN' | 'OUT'
+  q?: string
 }
 
 function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
@@ -273,6 +274,7 @@ function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
   }
   if (filters.decision) params.set('decision', filters.decision)
   if (filters.direction) params.set('direction', filters.direction)
+  if (filters.q) params.set('q', filters.q)
 
   return params.toString()
 }

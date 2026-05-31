@@ -140,6 +140,7 @@ function AttendanceRecords() {
     if (departmentId !== 'ALL') params.set('departmentId', departmentId)
     if (direction !== 'ALL') params.set('direction', direction)
     if (decision !== 'ALL') params.set('decision', decision)
+    if (keyword.trim()) params.set('q', keyword.trim())
     const link = document.createElement('a')
     link.href = `/api/reports/export/events.csv?${params.toString()}`
     link.download = `swipe-records-${range.from}-to-${range.to}.csv`
