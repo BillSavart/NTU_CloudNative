@@ -378,6 +378,19 @@ K6_VUS=50 K6_STEADY=5m K6_TEST_ID=reporting-api-50vus ./scripts/run-k6-reporting
 
 測試預設都會用 `rd_1_manager / demo123` 登入。若 Grafana 有些 panels 顯示 `No data`，請先確認跑的是 full-stack 或 chaos 腳本、Grafana 右上角 `k6_testid` 已切到本次 `K6_TEST_ID`，並且時間範圍包含壓測執行時間；k6 panels 會用目前 Grafana 時間範圍統計整次壓測。一般 full-stack 的預設 p95 threshold 是 `15000ms`，chaos 預設放寬為 `30000ms`，且允許故障視窗內的短暫 failure。若你想手動重跑清理，可執行 `./scripts/cleanup-k6-load-test-data.sh <K6_EMPLOYEE_PREFIX>`。
 
+#### 從外部機器（筆電）安全壓測 prod VM
+
+要量真實的 max QPS（不被 VM 上的 k6 搶 CPU），可從筆電用原生 k6 透過 SSH tunnel 打 prod VM，指標一樣進現有 Grafana，全程不對公網開 port。提供固定 QPS、ramp-up 找上限、以及斷 DB+Kafka 的 chaos 三種測試：
+
+```bash
+VM_HOST=YOUR.VM.IP VM_USER=ubuntu DEPLOY_PATH=/opt/ntu_cloudnative \
+  ./scripts/k6_remote.sh constant   # 固定 500 req/s 5 分鐘
+  ./scripts/k6_remote.sh rampup     # 階梯爬升找飽和點
+  ./scripts/k6_remote.sh chaos      # 斷 DB+Kafka，自動驗證 Redis 撐決策 + 恢復回寫
+```
+
+完整說明（tunnel 原理、參數、成本、疑難排解）見 [docs/remote-load-testing.md](docs/remote-load-testing.md)。
+
 ### 6. 登入與 demo 密碼重設
 登入頁面使用「登入帳號」作為欄位名稱；API 仍維持相容舊欄位 `employeeId`，內容可填 username 或 employee id。勾選「記住我」會保存登入帳號並延長 session cookie。
 
