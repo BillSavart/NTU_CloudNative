@@ -269,7 +269,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (endpoint) (increase(k6_http_reqs_total{testid=~\"$k6_testid\"}[$__range])) / $__range_s",
+          "expr": "sum by (endpoint) (rate(k6_http_reqs_total{testid=~\"$k6_testid\"}[$__rate_interval]))",
           "legendFormat": "{{endpoint}}",
           "refId": "A"
         }
@@ -308,7 +308,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (endpoint) (increase(k6_http_req_duration_seconds{testid=~\"$k6_testid\"}[$__range])))",
+          "expr": "histogram_quantile(0.95, sum by (endpoint) (rate(k6_http_req_duration_seconds{testid=~\"$k6_testid\"}[$__rate_interval])))",
           "legendFormat": "p95 {{endpoint}}",
           "refId": "A"
         }
