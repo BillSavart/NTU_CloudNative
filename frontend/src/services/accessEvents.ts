@@ -150,6 +150,29 @@ export type HourlyActivityItem = {
   outCount: number
 }
 
+export type DepartmentStayStat = {
+  departmentId: string
+  totalHours: number
+  averageHours: number | null
+  workDays: number
+  employeeCount: number
+  normalAttendanceRate: number | null
+}
+
+export type AttendanceSummary = {
+  attendanceRate: number | null
+  normalAttendanceRate: number | null
+  periodAttendanceCount: number
+  anomalyDays: number
+  averageStayHours: number | null
+  departmentStayStats: DepartmentStayStat[]
+}
+
+export type DailyAttendanceTrendPoint = {
+  label: string
+  count: number
+}
+
 export type ReportCenterResponse = {
   metrics: ReportCenterMetrics
   topDepartments: Array<{ departmentId: string; count: number }>
@@ -158,6 +181,10 @@ export type ReportCenterResponse = {
   events: AccessEvent[]
   previewLimit: number
   generationLatencyMs: number
+  // Server-side aggregates over the whole window. Null when an older backend
+  // didn't send them, so the client can fall back to deriving from `events`.
+  attendanceSummary: AttendanceSummary | null
+  attendanceTrend: DailyAttendanceTrendPoint[] | null
 }
 
 export type AccessEventsResponse = {
@@ -331,6 +358,17 @@ export async function fetchReportCenterData(filters: AccessEventFilters = {}): P
     events: Array.isArray(result.events) ? result.events : [],
     previewLimit: Number(result.previewLimit ?? filters.limit ?? 0),
     generationLatencyMs: Number(result.generationLatencyMs ?? 0),
+    attendanceSummary: result.attendanceSummary
+      ? {
+          attendanceRate: typeof result.attendanceSummary.attendanceRate === 'number' ? result.attendanceSummary.attendanceRate : null,
+          normalAttendanceRate: typeof result.attendanceSummary.normalAttendanceRate === 'number' ? result.attendanceSummary.normalAttendanceRate : null,
+          periodAttendanceCount: Number(result.attendanceSummary.periodAttendanceCount ?? 0),
+          anomalyDays: Number(result.attendanceSummary.anomalyDays ?? 0),
+          averageStayHours: typeof result.attendanceSummary.averageStayHours === 'number' ? result.attendanceSummary.averageStayHours : null,
+          departmentStayStats: Array.isArray(result.attendanceSummary.departmentStayStats) ? result.attendanceSummary.departmentStayStats : [],
+        }
+      : null,
+    attendanceTrend: Array.isArray(result.attendanceTrend) ? result.attendanceTrend : null,
   }
 }
 
