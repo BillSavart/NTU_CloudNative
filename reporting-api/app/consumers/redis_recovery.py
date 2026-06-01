@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -129,7 +130,7 @@ class RedisRecoveryConsumerService:
         processed_any = False
         for _, messages in streams:
             for message_id, fields in messages:
-                should_ack = await self._handle_message(fields)
+                should_ack = await self._process_entry(redis, message_id, fields)
                 if should_ack:
                     await redis.xack(
                         self.settings.redis_event_stream_key,
@@ -138,6 +139,57 @@ class RedisRecoveryConsumerService:
                     )
                 processed_any = True
         return processed_any
+
+    async def _process_entry(
+        self, redis: Redis, message_id: str, fields: dict[str, Any]
+    ) -> bool:
+        """Back-fill a streamed event only if the Kafka consumer did not handle it.
+
+        Kafka is the primary persister. We wait a grace period so it has a chance
+        to persist the event and set its "persisted" marker, then skip the entry
+        when the marker is present. In steady state (Kafka keeping up) every entry
+        is skipped here, so recovery does no DB work; it only persists events
+        Kafka has not handled within the window (Kafka down or badly lagging).
+
+        Returns True when the entry may be XACK'd (skipped or persisted), False
+        when a DB write failed and it must stay pending for retry.
+        """
+        await self._await_grace(message_id)
+        request_id = str(fields.get("requestId", "")) if fields else ""
+        if request_id and await self._already_persisted(redis, request_id):
+            return True
+        return await self._handle_message(fields)
+
+    async def _await_grace(self, message_id: str) -> None:
+        """Wait until the entry is at least ``grace`` seconds old (it may already
+        be, e.g. a startup backlog), waking early if shutdown is requested."""
+        grace = self.settings.redis_recovery_grace_seconds
+        if grace <= 0:
+            return
+        wait = grace - self._entry_age_seconds(message_id)
+        if wait > 0:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._stop_event.wait(), timeout=min(wait, grace))
+
+    @staticmethod
+    def _entry_age_seconds(message_id: str) -> float:
+        """Age of a Redis stream id (``<ms>-<seq>``). Unparseable ids are treated
+        as old so we never block on them."""
+        try:
+            created_ms = int(str(message_id).split("-", 1)[0])
+        except (ValueError, AttributeError):
+            return float("inf")
+        return max(0.0, time.time() - created_ms / 1000.0)
+
+    async def _already_persisted(self, redis: Redis, request_id: str) -> bool:
+        key = self.settings.redis_persisted_marker_prefix + request_id
+        try:
+            return bool(await redis.exists(key))
+        except Exception:
+            # On a marker lookup failure, fall through and persist; the DB-level
+            # request_id dedup still prevents a duplicate row.
+            logger.warning("persisted-marker lookup failed for %s; will persist", request_id)
+            return False
 
     async def _handle_message(self, fields: dict[str, Any]) -> bool:
         try:
