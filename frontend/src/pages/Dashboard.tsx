@@ -218,25 +218,26 @@ function Dashboard() {
                 <th>時間</th>
                 <th>員工</th>
                 <th>部門</th>
-                <th>狀態</th>
+                <th>方向</th>
+                <th>結果</th>
               </tr>
             </thead>
             <tbody>
               {eventsLoading ? (
                 <tr>
-                  <td colSpan={4} className="text-secondary">
+                  <td colSpan={5} className="text-secondary">
                     載入中…
                   </td>
                 </tr>
               ) : eventsError ? (
                 <tr>
-                  <td colSpan={4} className="text-danger">
+                  <td colSpan={5} className="text-danger">
                     {eventsError}
                   </td>
                 </tr>
               ) : events.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="text-secondary">
+                  <td colSpan={5} className="text-secondary">
                     目前沒有刷卡事件
                   </td>
                 </tr>
@@ -250,7 +251,14 @@ function Dashboard() {
                       <td>{timeText}</td>
                       <td>{employeeText}</td>
                       <td>{event.departmentId ?? '-'}</td>
-                      <td>{event.direction}</td>
+                      <td>
+                        <span className={event.direction === 'IN' ? 'status-pill status-pill-in' : 'status-pill status-pill-out'}>
+                          {event.direction}
+                        </span>
+                      </td>
+                      <td className={event.decision === 'DENIED' ? 'danger-text' : undefined}>
+                        {event.decision === 'GRANTED' ? '通行' : '拒絕'}
+                      </td>
                     </tr>
                   )
                 })
