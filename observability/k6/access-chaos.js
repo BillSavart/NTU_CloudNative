@@ -35,18 +35,62 @@ const gateCount = Number(__ENV.GATES || '8')
 
 const bufferedDuringTest = new Counter('buffered_during_test')
 
-export const options = {
-  scenarios: {
+const executor = __ENV.K6_EXECUTOR || 'constant-arrival-rate'
+const timeUnit = __ENV.TIME_UNIT || '1s'
+const preAllocatedVUs = Number(__ENV.PRE_VUS || '200')
+const maxVUs = Number(__ENV.MAX_VUS || '2000')
+
+// Explicit "rate:duration,rate:duration,..." staircase via STAGES (used by the
+// remote runner to drive an up -> peak -> ramp-down profile so we can read the
+// max sustainable QPS *under outage* and then watch it re-settle as load eases).
+// Falls back to a generated START_RATE -> MAX_RATE up-ramp if STAGES is unset.
+function buildRampingStages() {
+  if (__ENV.STAGES) {
+    return __ENV.STAGES.split(',').map((part) => {
+      const [target, duration] = part.split(':')
+      return { target: Number(target), duration }
+    })
+  }
+  const start = Number(__ENV.START_RATE || '100')
+  const step = Number(__ENV.STEP || '200')
+  const stepDuration = __ENV.STEP_DURATION || '30s'
+  const max = Number(__ENV.MAX_RATE || '1500')
+  const stages = []
+  for (let rate = start; rate <= max; rate += step) {
+    stages.push({ target: rate, duration: stepDuration })
+  }
+  return stages
+}
+
+function buildScenario() {
+  if (executor === 'ramping-arrival-rate') {
+    return {
+      access_chaos: {
+        executor: 'ramping-arrival-rate',
+        exec: 'accessSwipe',
+        startRate: Number(__ENV.START_RATE || '100'),
+        timeUnit,
+        preAllocatedVUs,
+        maxVUs,
+        stages: buildRampingStages(),
+      },
+    }
+  }
+  return {
     access_chaos: {
       executor: 'constant-arrival-rate',
       exec: 'accessSwipe',
       rate: Number(__ENV.RATE || '50'),
-      timeUnit: __ENV.TIME_UNIT || '1s',
+      timeUnit,
       duration: __ENV.DURATION || '3m',
       preAllocatedVUs: Number(__ENV.PRE_VUS || '50'),
       maxVUs: Number(__ENV.MAX_VUS || '300'),
     },
-  },
+  }
+}
+
+export const options = {
+  scenarios: buildScenario(),
   // Tolerant thresholds: failures are expected to dip during the outage. We do
   // not want the run aborted — the recovery/backfill is what we are measuring.
   thresholds: {

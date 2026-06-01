@@ -13,13 +13,20 @@
 #
 # Usage:
 #   VM_HOST=1.2.3.4 VM_USER=ubuntu DEPLOY_PATH=/opt/ntu_cloudnative \
-#     ./scripts/k6_remote.sh constant   # test 1: hold 500 req/s for 5m
-#     ./scripts/k6_remote.sh rampup     # test 2: climb until saturation
-#     ./scripts/k6_remote.sh chaos      # test 3: cut DB+Kafka, verify backfill
+#     ./scripts/k6_remote.sh constant   # test 1: hold 500 req/s for 10m
+#     ./scripts/k6_remote.sh rampup     # test 2: climb to max, then ramp down to settle
+#     ./scripts/k6_remote.sh chaos      # test 3: cut DB+Kafka, ramp to find max-under-
+#                                       #         outage, ease down, verify backfill
 #
 # Common env: VM_SSH_KEY (path to key), LOCAL_ACCESS_PORT (18080),
-#   LOCAL_PROM_PORT (19090), RATE, DURATION, START_RATE/STEP/STEP_DURATION/MAX_RATE,
-#   CHAOS_START_DELAY (40), CHAOS_OUTAGE (45), CHAOS_SETTLE (30), TEST_ID.
+#   LOCAL_PROM_PORT (19090), RATE, DURATION, TEST_ID.
+# Ramp profile (rampup + chaos), all numeric SECONDS unless noted:
+#   START_RATE, STEP, STEP_DURATION, MAX_RATE   -> the climb
+#   PEAK_HOLD                                   -> hold at the peak
+#   DOWN_TO, DOWN_STEP, DOWN_STEP_DURATION      -> the stepped ramp-down
+#   FLOOR_HOLD                                  -> hold at the floor to confirm it settles
+# Chaos timing: CHAOS_START_DELAY (15), CHAOS_OUTAGE (auto: spans the ramp),
+#   CHAOS_SETTLE (60).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -117,13 +124,41 @@ cleanup_prefix() {
   vm_ssh "cd '${DEPLOY_PATH}' && ./scripts/chaos_db_kafka_ctl.sh cleanup '${prefix}'" || true
 }
 
+# Build an "up -> peak hold -> stepped ramp-down -> floor hold" staircase for
+# k6 ramping-arrival-rate, expressed as the STAGES env the k6 scripts consume
+# ("rate:dur,rate:dur,..."). Sets two globals:
+#   STAGES_STR             the comma-joined stage list
+#   STAGES_TOTAL_SECONDS   total wall-clock duration of the whole profile
+# All knobs are numeric SECONDS (no trailing s) and overridable via env.
+build_stages() {
+  local start="${START_RATE:-200}" step="${STEP:-200}" max="${MAX_RATE:-3000}"
+  local step_dur="${STEP_DURATION:-20}" peak_hold="${PEAK_HOLD:-30}"
+  local floor="${DOWN_TO:-800}" down_step="${DOWN_STEP:-400}" down_dur="${DOWN_STEP_DURATION:-30}"
+  local floor_hold="${FLOOR_HOLD:-180}"
+  local parts=() total=0 r
+  for ((r = start; r <= max; r += step)); do
+    parts+=("${r}:${step_dur}s"); total=$((total + step_dur))
+  done
+  if (( (max - start) % step != 0 )); then
+    parts+=("${max}:${step_dur}s"); total=$((total + step_dur))
+  fi
+  parts+=("${max}:${peak_hold}s"); total=$((total + peak_hold))      # hold at the peak
+  for ((r = max - down_step; r > floor; r -= down_step)); do
+    parts+=("${r}:${down_dur}s"); total=$((total + down_dur))
+  done
+  parts+=("${floor}:${down_dur}s"); total=$((total + down_dur))
+  parts+=("${floor}:${floor_hold}s"); total=$((total + floor_hold))  # settle at the floor
+  STAGES_STR="$(IFS=,; echo "${parts[*]}")"
+  STAGES_TOTAL_SECONDS="${total}"
+}
+
 run_constant() {
   open_tunnels
   local prefix="K6CONST$(date +%s)"
-  echo "==> Test 1: constant ${RATE:-500} req/s for ${DURATION:-5m} against access-api"
+  echo "==> Test 1: constant ${RATE:-500} req/s for ${DURATION:-10m} against access-api"
   TEST_ID="${TEST_ID:-access-constant-500}" \
   K6_EXECUTOR="constant-arrival-rate" \
-  RATE="${RATE:-500}" DURATION="${DURATION:-5m}" \
+  RATE="${RATE:-500}" DURATION="${DURATION:-10m}" \
   EMPLOYEE_PREFIX="${prefix}" \
     k6 run --out experimental-prometheus-rw observability/k6/access-throughput.js
   echo "==> Done. Filter Grafana by testid=${TEST_ID:-access-constant-500} over the run window."
@@ -133,14 +168,16 @@ run_constant() {
 run_rampup() {
   open_tunnels
   local prefix="K6RAMP$(date +%s)"
-  echo "==> Test 2: ramping arrival rate ${START_RATE:-100} -> ${MAX_RATE:-3000} req/s (step ${STEP:-200}/${STEP_DURATION:-30s})"
+  build_stages
+  echo "==> Test 2: ramp ${START_RATE:-200} -> ${MAX_RATE:-3000} -> settle at ${DOWN_TO:-800} req/s (~$((STAGES_TOTAL_SECONDS / 60))m)"
+  echo "    stages=${STAGES_STR}"
   TEST_ID="${TEST_ID:-access-rampup}" \
   K6_EXECUTOR="ramping-arrival-rate" \
-  START_RATE="${START_RATE:-100}" STEP="${STEP:-200}" \
-  STEP_DURATION="${STEP_DURATION:-30s}" MAX_RATE="${MAX_RATE:-3000}" \
+  START_RATE="${START_RATE:-200}" STAGES="${STAGES_STR}" \
   EMPLOYEE_PREFIX="${prefix}" \
     k6 run --out experimental-prometheus-rw observability/k6/access-throughput.js
-  echo "==> Done. Max QPS = where Grafana 'k6 Requests/sec' plateaus and p95 / failed ratio climb."
+  echo "==> Done. Max QPS = where 'k6 Requests/sec' plateaus and p95 / failed ratio climb on the way up;"
+  echo "    the sustainable rate = the lowest ramp-down step where failed ratio returns to ~0 and p95 settles."
   cleanup_prefix "${prefix}"
 }
 
@@ -148,16 +185,25 @@ run_chaos() {
   open_tunnels
   local prefix="K6CHAOS$(date +%s)"
   local summary; summary="$(mktemp)"
-  local start_delay="${CHAOS_START_DELAY:-40}"
-  local outage="${CHAOS_OUTAGE:-45}"
-  local settle="${CHAOS_SETTLE:-30}"
+  # Chaos-tuned ramp defaults (lighter than rampup so the Redis recovery buffer
+  # and the post-outage backfill stay bounded). Override any of these via env.
+  : "${MAX_RATE:=1500}" "${STEP_DURATION:=15}" "${DOWN_TO:=400}" "${FLOOR_HOLD:=60}"
+  build_stages
+  local start_delay="${CHAOS_START_DELAY:-15}"
+  # Keep DB+Kafka down for the WHOLE ramp so the max QPS we read is genuinely the
+  # disconnected ceiling; reconnect right as the k6 ramp ends, then backfill.
+  local outage="${CHAOS_OUTAGE:-$((STAGES_TOTAL_SECONDS - start_delay))}"
+  local settle="${CHAOS_SETTLE:-60}"
   CHAOS_PREFIX="${prefix}"
 
-  echo "==> Test 3: chaos (cut DB + Kafka, Redis stays up). prefix=${prefix}"
-  echo "    rate=${RATE:-50}/s duration=${DURATION:-3m} start_delay=${start_delay}s outage=${outage}s settle=${settle}s"
+  echo "==> Test 3: chaos ramp (cut DB + Kafka, Redis stays up). prefix=${prefix}"
+  echo "    ramp ${START_RATE:-200} -> ${MAX_RATE} -> settle at ${DOWN_TO}/s over ~$((STAGES_TOTAL_SECONDS / 60))m"
+  echo "    start_delay=${start_delay}s outage=${outage}s settle=${settle}s"
+  echo "    stages=${STAGES_STR}"
 
   TEST_ID="${TEST_ID:-chaos-db-kafka}" \
-  RATE="${RATE:-50}" DURATION="${DURATION:-3m}" \
+  K6_EXECUTOR="ramping-arrival-rate" \
+  START_RATE="${START_RATE:-200}" STAGES="${STAGES_STR}" \
   EMPLOYEE_PREFIX="${prefix}" \
     k6 run --summary-export="${summary}" \
       --out experimental-prometheus-rw observability/k6/access-chaos.js &
@@ -168,7 +214,8 @@ run_chaos() {
   CHAOS_ACTIVE=1
   vm_ssh "cd '${DEPLOY_PATH}' && ./scripts/chaos_db_kafka_ctl.sh down"
 
-  echo "==> Outage in effect for ${outage}s (access-api should keep deciding via Redis)..."
+  echo "==> Outage in effect for ${outage}s — access-api keeps deciding via Redis"
+  echo "    while k6 ramps up to find the max sustainable QPS, then eases back down."
   sleep "${outage}"
 
   echo "==> Restoring DB + Kafka on the VM..."
