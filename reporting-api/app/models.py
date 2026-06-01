@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -213,4 +214,62 @@ class AccessEvent(Base):
         Index("ix_access_events_occurred_at", "occurred_at"),
         Index("ix_access_events_employee_occurred", "employee_id", "occurred_at"),
         Index("ix_access_events_decision_occurred", "decision", "occurred_at"),
+    )
+
+
+class ReportCenterSnapshot(Base):
+    __tablename__ = "report_center_snapshots"
+
+    id: Mapped[int] = mapped_column(sqlite_autoincrement_id, primary_key=True, autoincrement=True)
+    cache_user_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        sqlite_autoincrement_id,
+        ForeignKey("user_accounts.user_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    range_preset: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, default="department")
+    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_key: Mapped[str] = mapped_column(Text, nullable=False)
+    period_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    preview_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=500)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped[UserAccount | None] = relationship("UserAccount")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "cache_user_key",
+            "range_preset",
+            "target_type",
+            "target_id",
+            "scope_hash",
+            "period_from",
+            "period_to",
+            "preview_limit",
+            name="uq_report_center_snapshots_lookup",
+        ),
+        Index(
+            "ix_report_center_snapshots_lookup",
+            "cache_user_key",
+            "range_preset",
+            "target_type",
+            "target_id",
+            "scope_hash",
+        ),
     )

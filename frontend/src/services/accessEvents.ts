@@ -173,6 +173,16 @@ export type DailyAttendanceTrendPoint = {
   count: number
 }
 
+export type ReportCenterSnapshotMeta = {
+  hit: boolean
+  generatedAt?: string | null
+  periodFrom?: string | null
+  periodTo?: string | null
+  rangePreset?: string | null
+  targetType?: string | null
+  targetId?: string | null
+}
+
 export type ReportCenterResponse = {
   metrics: ReportCenterMetrics
   topDepartments: Array<{ departmentId: string; count: number }>
@@ -185,6 +195,7 @@ export type ReportCenterResponse = {
   // didn't send them, so the client can fall back to deriving from `events`.
   attendanceSummary: AttendanceSummary | null
   attendanceTrend: DailyAttendanceTrendPoint[] | null
+  snapshot: ReportCenterSnapshotMeta | null
 }
 
 export type AccessEventsResponse = {
@@ -248,6 +259,8 @@ export type AccessEventFilters = {
   decision?: 'GRANTED' | 'DENIED'
   direction?: 'IN' | 'OUT'
   q?: string
+  rangePreset?: 'today' | 'last3d' | 'last7d' | 'thisMonth' | 'last3m' | 'custom'
+  targetMode?: 'department' | 'employee'
 }
 
 function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
@@ -275,6 +288,8 @@ function buildAccessEventsQuery(filters: AccessEventFilters = {}) {
   if (filters.decision) params.set('decision', filters.decision)
   if (filters.direction) params.set('direction', filters.direction)
   if (filters.q) params.set('q', filters.q)
+  if (filters.rangePreset) params.set('rangePreset', filters.rangePreset)
+  if (filters.targetMode) params.set('targetMode', filters.targetMode)
 
   return params.toString()
 }
@@ -389,6 +404,17 @@ export async function fetchReportCenterData(filters: AccessEventFilters = {}): P
         }
       : null,
     attendanceTrend: Array.isArray(result.attendanceTrend) ? result.attendanceTrend : null,
+    snapshot: result.snapshot
+      ? {
+          hit: Boolean(result.snapshot.hit),
+          generatedAt: result.snapshot.generatedAt ?? null,
+          periodFrom: result.snapshot.periodFrom ?? null,
+          periodTo: result.snapshot.periodTo ?? null,
+          rangePreset: result.snapshot.rangePreset ?? null,
+          targetType: result.snapshot.targetType ?? null,
+          targetId: result.snapshot.targetId ?? null,
+        }
+      : null,
   }
 }
 

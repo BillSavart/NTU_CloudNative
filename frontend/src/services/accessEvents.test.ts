@@ -89,7 +89,7 @@ describe('access events service', () => {
   })
 
   it('normalizes report center data when optional arrays are missing', async () => {
-    mockFetchOnce({
+    const fetchMock = mockFetchOnce({
       metrics: {
         totalEvents: '8',
         grantedEvents: '7',
@@ -102,9 +102,10 @@ describe('access events service', () => {
       hourlyActivity: [{ hour: '09', count: '6' }],
       previewLimit: '20',
       generationLatencyMs: '15',
+      snapshot: { hit: true, generatedAt: '2026-06-01T10:00:00+08:00' },
     })
 
-    await expect(fetchReportCenterData({ limit: 20 })).resolves.toMatchObject({
+    await expect(fetchReportCenterData({ limit: 20, rangePreset: 'last7d', targetMode: 'department' })).resolves.toMatchObject({
       metrics: {
         totalEvents: 8,
         grantedEvents: 7,
@@ -126,7 +127,11 @@ describe('access events service', () => {
       events: [],
       previewLimit: 20,
       generationLatencyMs: 15,
+      snapshot: { hit: true, generatedAt: '2026-06-01T10:00:00+08:00' },
     })
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? '')
+    expect(url).toContain('rangePreset=last7d')
+    expect(url).toContain('targetMode=department')
   })
 
   it('loads department and employee analytics endpoints', async () => {

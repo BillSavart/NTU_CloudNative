@@ -76,6 +76,8 @@ def report_center(
     to: str | None = None,
     employee_id: str | None = Query(default=None, alias="employeeId"),
     department_ids: List[str] = Query(default=[], alias="departmentId"),
+    range_preset: str | None = Query(default=None, alias="rangePreset"),
+    target_mode: str | None = Query(default=None, alias="targetMode"),
     limit: int = Query(default=500, ge=1, le=1000),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
@@ -91,6 +93,8 @@ def report_center(
         employee_id=employee_id,
         department_id=dept_id,
         department_ids=dept_ids,
+        range_preset=range_preset,
+        target_mode=target_mode,
         limit=limit,
     )
 

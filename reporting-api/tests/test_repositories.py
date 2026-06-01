@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import AccessEvent, Department, Employee, UserAccount, UserDepartmentScope
+from app.models import AccessEvent, Department, Employee, ReportCenterSnapshot, UserAccount, UserDepartmentScope
 from tests.support import create_test_engine
 import app.repositories as repositories
 from app.repositories import (
@@ -22,6 +22,7 @@ from app.repositories import (
     parse_access_event,
     parse_event_timestamp,
     query_access_events,
+    refresh_report_center_snapshot,
     save_access_event_with_session,
 )
 
@@ -407,6 +408,114 @@ class RepositoryTestCase(unittest.TestCase):
                     limit=2,
                 )
             self.assertLessEqual(len(repositories._report_center_cache), 3)
+
+    def test_report_center_snapshot_serves_previous_ready_payload_until_refresh(self) -> None:
+        repositories._report_center_cache.clear()
+        window = (
+            datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+            datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
+        )
+        with self.SessionLocal() as db, patch.object(
+            repositories,
+            "resolve_report_center_preset_window",
+            return_value=window,
+        ):
+            manager = self._user(db, "manager")
+            first = get_report_center(
+                db,
+                current_user=manager,
+                range_preset="last7d",
+                target_mode="department",
+                limit=2,
+            )
+            self.assertFalse(first["snapshot"]["hit"])
+            self.assertEqual(first["metrics"]["totalEvents"], 2)
+
+            db.add(
+                AccessEvent(
+                    request_id="req-after-snapshot",
+                    employee_id="EMP001",
+                    gate_id="GATE_04",
+                    direction="OUT",
+                    decision="GRANTED",
+                    reason="ACCESS_ALLOWED",
+                    previous_state="IN",
+                    current_state="OUT",
+                    latency_ms=11,
+                    occurred_at=datetime(2026, 5, 20, 17, 30, tzinfo=TAIPEI),
+                )
+            )
+            db.commit()
+
+            second = get_report_center(
+                db,
+                current_user=manager,
+                range_preset="last7d",
+                target_mode="department",
+                limit=2,
+            )
+            self.assertTrue(second["snapshot"]["hit"])
+            self.assertEqual(second["metrics"]["totalEvents"], 2)
+
+            refresh_report_center_snapshot(db, manager, "last7d", limit=2)
+            refreshed = get_report_center(
+                db,
+                current_user=manager,
+                range_preset="last7d",
+                target_mode="department",
+                limit=2,
+            )
+            self.assertTrue(refreshed["snapshot"]["hit"])
+            self.assertEqual(refreshed["metrics"]["totalEvents"], 3)
+
+    def test_report_precompute_targets_only_concrete_departments(self) -> None:
+        from app.report_precompute_worker import active_report_user_ids, snapshot_display_name, target_department_ids
+
+        with patch("app.report_precompute_worker.SessionLocal", self.SessionLocal):
+            self.assertEqual(active_report_user_ids(["manager"]), [2])
+            self.assertEqual(active_report_user_ids(["fab_1_manager"]), [])
+            self.assertEqual(target_department_ids(2, 10), ["FAB_A", "OPS_A"])
+            self.assertNotIn(None, target_department_ids(1, 10))
+        self.assertEqual(snapshot_display_name("OPS_A", "last7d"), "OPS_A_last7d")
+
+    def test_report_center_reuses_newer_executive_department_snapshot(self) -> None:
+        repositories._report_center_cache.clear()
+        window = (
+            datetime(2026, 5, 20, 16, 0, tzinfo=TAIPEI),
+            datetime(2026, 5, 20, 18, 0, tzinfo=TAIPEI),
+        )
+        with self.SessionLocal() as db, patch.object(
+            repositories,
+            "resolve_report_center_preset_window",
+            return_value=window,
+        ):
+            executive = UserAccount(user_id=3, username="executive", role="EXECUTIVE", is_active=True)
+            db.add(executive)
+            db.commit()
+
+            manager = self._user(db, "manager")
+            refresh_report_center_snapshot(db, executive, "last7d", department_id="FAB_A", limit=2)
+
+            report = get_report_center(
+                db,
+                current_user=manager,
+                department_id="FAB_A",
+                range_preset="last7d",
+                target_mode="department",
+                limit=2,
+            )
+
+            self.assertTrue(report["snapshot"]["hit"])
+            self.assertEqual(report["snapshot"]["targetId"], "FAB_A")
+            self.assertIsNone(
+                db.scalar(
+                    select(ReportCenterSnapshot).where(
+                        ReportCenterSnapshot.cache_user_key == "user:2",
+                        ReportCenterSnapshot.range_preset == "last7d",
+                        ReportCenterSnapshot.target_id == "FAB_A",
+                    )
+                )
+            )
 
     def test_report_center_attendance_spans_window_not_capped_preview(self) -> None:
         repositories._report_center_cache.clear()

@@ -1,9 +1,12 @@
 import json
 import os
 import re
+from calendar import monthrange
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
+from copy import deepcopy
 from functools import lru_cache
+from hashlib import sha256
 from time import perf_counter
 from collections.abc import Iterable
 from typing import Any
@@ -14,7 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import AccessEvent, Department, Employee, UserAccount
+from app.models import AccessEvent, Department, Employee, ReportCenterSnapshot, UserAccount
 from app.permissions import get_descendant_department_ids, get_visible_department_ids
 from app.serializers import serialize_access_event, serialize_department_tree
 
@@ -129,6 +132,10 @@ _dashboard_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 # dashboard TTL.
 _report_center_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _REPORT_CENTER_CACHE_MAX = 128
+
+REPORT_CENTER_PRECOMPUTE_PRESETS = {"today", "last3d", "last7d", "thisMonth", "last3m"}
+REPORT_CENTER_TARGET_ALL = "ALL"
+REPORT_CENTER_TARGET_TYPE_DEPARTMENT = "department"
 
 REQUIRED_EVENT_FIELDS = {
     "requestId",
@@ -358,6 +365,278 @@ def get_dashboard(
     return result
 
 
+def normalize_report_center_range_preset(range_preset: str | None) -> str | None:
+    if not range_preset:
+        return None
+    normalized = range_preset.strip()
+    if normalized in REPORT_CENTER_PRECOMPUTE_PRESETS or normalized == "custom":
+        return normalized
+    return None
+
+
+def _subtract_months(value: date, months: int) -> date:
+    month = value.month - months
+    year = value.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    day = min(value.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def resolve_report_center_preset_window(
+    range_preset: str,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    local_now = _local_datetime(now or datetime.now(TAIPEI))
+    today = local_now.date()
+    if range_preset == "today":
+        from_date = today
+    elif range_preset == "last3d":
+        from_date = today - timedelta(days=3)
+    elif range_preset == "last7d":
+        from_date = today - timedelta(days=7)
+    elif range_preset == "thisMonth":
+        from_date = date(today.year, today.month, 1)
+    elif range_preset == "last3m":
+        from_date = _subtract_months(today, 3)
+    else:
+        raise ValueError(f"unsupported report center range preset: {range_preset}")
+
+    from_time = datetime.combine(from_date, time.min, tzinfo=TAIPEI)
+    to_time = datetime.combine(today, time(23, 59, 59), tzinfo=TAIPEI)
+    return from_time, to_time
+
+
+def _report_center_snapshot_user_key(current_user: UserAccount | None) -> str:
+    return f"user:{current_user.user_id}" if current_user is not None else "anonymous"
+
+
+def _requested_department_ids(db: Session, department_id: str) -> list[str]:
+    return sorted({department_id, *get_descendant_department_ids(db, department_id)})
+
+
+def _can_use_shared_department_snapshot(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+) -> bool:
+    if current_user is None or department_id is None:
+        return False
+    requested_ids = set(_requested_department_ids(db, department_id))
+    visible_ids = get_visible_department_ids(db, current_user)
+    return visible_ids is None or requested_ids.issubset(set(visible_ids))
+
+
+def _shared_department_snapshot_user_key(department_id: str) -> str:
+    return f"department:{department_id}"
+
+
+def _report_center_snapshot_scope(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+    shared_department_snapshot: bool = False,
+) -> tuple[str, str]:
+    if shared_department_snapshot and department_id is not None:
+        scope_payload = {
+            "sharedDepartmentSnapshot": True,
+            "departmentIds": _requested_department_ids(db, department_id),
+        }
+    else:
+        visible_ids = _visible_department_ids(db, current_user, department_id)
+        scope_payload = {
+            "role": current_user.role if current_user is not None else None,
+            "employeeId": current_user.employee_id if current_user is not None else None,
+            "visibleDepartmentIds": visible_ids,
+            "excludedDepartmentIds": sorted(_report_center_excluded_department_ids(current_user)),
+        }
+    scope_key = json.dumps(scope_payload, sort_keys=True, separators=(",", ":"))
+    return scope_key, sha256(scope_key.encode("utf-8")).hexdigest()
+
+
+def _report_center_snapshot_lookup(
+    db: Session,
+    current_user: UserAccount | None,
+    range_preset: str,
+    department_id: str | None,
+    from_time: datetime,
+    to_time: datetime,
+    limit: int,
+) -> dict[str, Any]:
+    shared_department_snapshot = _can_use_shared_department_snapshot(db, current_user, department_id)
+    scope_key, scope_hash = _report_center_snapshot_scope(
+        db,
+        current_user,
+        department_id,
+        shared_department_snapshot=shared_department_snapshot,
+    )
+    return {
+        "cache_user_key": _shared_department_snapshot_user_key(department_id)
+        if shared_department_snapshot and department_id is not None
+        else _report_center_snapshot_user_key(current_user),
+        "user_id": None if shared_department_snapshot else (current_user.user_id if current_user is not None else None),
+        "range_preset": range_preset,
+        "target_type": REPORT_CENTER_TARGET_TYPE_DEPARTMENT,
+        "target_id": department_id or REPORT_CENTER_TARGET_ALL,
+        "scope_hash": scope_hash,
+        "scope_key": scope_key,
+        "period_from": from_time,
+        "period_to": to_time,
+        "preview_limit": limit,
+    }
+
+
+def _report_center_snapshot_compute_user(
+    db: Session,
+    current_user: UserAccount | None,
+    department_id: str | None,
+) -> UserAccount | None:
+    if not _can_use_shared_department_snapshot(db, current_user, department_id):
+        return current_user
+
+    executive_user = db.scalar(
+        select(UserAccount)
+        .where(
+            UserAccount.is_active.is_(True),
+            UserAccount.role == "EXECUTIVE",
+        )
+        .order_by(UserAccount.user_id)
+        .limit(1)
+    )
+    return executive_user or current_user
+
+
+def _snapshot_filters(lookup: dict[str, Any]):
+    return (
+        ReportCenterSnapshot.cache_user_key == lookup["cache_user_key"],
+        ReportCenterSnapshot.range_preset == lookup["range_preset"],
+        ReportCenterSnapshot.target_type == lookup["target_type"],
+        ReportCenterSnapshot.target_id == lookup["target_id"],
+        ReportCenterSnapshot.scope_hash == lookup["scope_hash"],
+        ReportCenterSnapshot.period_from == lookup["period_from"],
+        ReportCenterSnapshot.period_to == lookup["period_to"],
+        ReportCenterSnapshot.preview_limit == lookup["preview_limit"],
+    )
+
+
+def _attach_report_center_snapshot_meta(
+    payload: dict[str, Any],
+    snapshot: ReportCenterSnapshot,
+    hit: bool,
+) -> dict[str, Any]:
+    result = deepcopy(payload)
+    result["snapshot"] = {
+        "hit": hit,
+        "generatedAt": _local_datetime(snapshot.generated_at).isoformat(),
+        "periodFrom": _local_datetime(snapshot.period_from).isoformat(),
+        "periodTo": _local_datetime(snapshot.period_to).isoformat(),
+        "rangePreset": snapshot.range_preset,
+        "targetType": snapshot.target_type,
+        "targetId": snapshot.target_id,
+    }
+    return result
+
+
+def _read_report_center_snapshot(
+    db: Session,
+    lookup: dict[str, Any],
+) -> ReportCenterSnapshot | None:
+    return db.scalar(
+        select(ReportCenterSnapshot)
+        .where(*_snapshot_filters(lookup))
+        .order_by(ReportCenterSnapshot.generated_at.desc())
+        .limit(1)
+    )
+
+
+def _read_any_department_snapshot(db: Session, lookup: dict[str, Any]) -> ReportCenterSnapshot | None:
+    if lookup["target_id"] == REPORT_CENTER_TARGET_ALL:
+        return None
+    return db.scalar(
+        select(ReportCenterSnapshot)
+        .where(
+            ReportCenterSnapshot.range_preset == lookup["range_preset"],
+            ReportCenterSnapshot.target_type == lookup["target_type"],
+            ReportCenterSnapshot.target_id == lookup["target_id"],
+            ReportCenterSnapshot.period_from == lookup["period_from"],
+            ReportCenterSnapshot.period_to == lookup["period_to"],
+            ReportCenterSnapshot.preview_limit == lookup["preview_limit"],
+        )
+        .order_by(ReportCenterSnapshot.generated_at.desc())
+        .limit(1)
+    )
+
+
+def _read_report_center_snapshot_for_request(
+    db: Session,
+    lookup: dict[str, Any],
+    current_user: UserAccount | None,
+    range_preset: str,
+    department_id: str | None,
+    from_time: datetime,
+    to_time: datetime,
+    limit: int,
+) -> ReportCenterSnapshot | None:
+    snapshot = _read_report_center_snapshot(db, lookup)
+    if snapshot is not None:
+        return snapshot
+    if _can_use_shared_department_snapshot(db, current_user, department_id):
+        return _read_any_department_snapshot(db, lookup)
+    return None
+
+
+def _store_report_center_snapshot(
+    db: Session,
+    lookup: dict[str, Any],
+    payload: dict[str, Any],
+) -> ReportCenterSnapshot:
+    clean_payload = deepcopy(payload)
+    clean_payload.pop("snapshot", None)
+    generated_at = datetime.now(TAIPEI)
+
+    snapshot = _read_report_center_snapshot(db, lookup)
+    if snapshot is None:
+        snapshot = ReportCenterSnapshot(
+            **lookup,
+            payload=clean_payload,
+            generated_at=generated_at,
+        )
+        db.add(snapshot)
+    else:
+        snapshot.scope_key = lookup["scope_key"]
+        snapshot.payload = clean_payload
+        snapshot.generated_at = generated_at
+        snapshot.updated_at = generated_at
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        snapshot = _read_report_center_snapshot(db, lookup)
+        if snapshot is None:
+            raise
+        snapshot.scope_key = lookup["scope_key"]
+        snapshot.payload = clean_payload
+        snapshot.generated_at = generated_at
+        snapshot.updated_at = generated_at
+        db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+def report_center_snapshot_is_supported(
+    range_preset: str | None,
+    employee_id: str | None,
+    department_ids: list[str] | None,
+) -> bool:
+    return (
+        normalize_report_center_range_preset(range_preset) in REPORT_CENTER_PRECOMPUTE_PRESETS
+        and employee_id is None
+        and not department_ids
+    )
+
+
 def _store_report_center_cache(cache_key: tuple[Any, ...], result: dict[str, Any]) -> None:
     """Cache a report-center result, evicting the oldest entry when full.
 
@@ -494,7 +773,7 @@ def _report_center_attendance_for_window(
     return _compute_report_center_attendance(rows)
 
 
-def get_report_center(
+def _compute_report_center_live(
     db: Session,
     current_user: UserAccount | None = None,
     from_time: datetime | None = None,
@@ -503,6 +782,7 @@ def get_report_center(
     department_id: str | None = None,
     department_ids: list[str] | None = None,
     limit: int = 500,
+    use_runtime_cache: bool = True,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     limit = max(1, min(limit, 1000))
@@ -515,7 +795,7 @@ def get_report_center(
     # Cache by scope *and* window so the recent-window live preview (and any
     # repeated download window) stays responsive after the first load. The
     # window is part of the key, so explicit ranges no longer bypass the cache.
-    use_cache = DASHBOARD_CACHE_TTL_SECONDS > 0
+    use_cache = use_runtime_cache and DASHBOARD_CACHE_TTL_SECONDS > 0
     cache_key = None
     if use_cache:
         if effective_override is not None:
@@ -638,6 +918,118 @@ def get_report_center(
     if cache_key is not None:
         _store_report_center_cache(cache_key, result)
     return result
+
+
+def get_report_center(
+    db: Session,
+    current_user: UserAccount | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    employee_id: str | None = None,
+    department_id: str | None = None,
+    department_ids: list[str] | None = None,
+    limit: int = 500,
+    range_preset: str | None = None,
+    target_mode: str | None = None,
+    use_snapshots: bool = True,
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 1000))
+    preset = normalize_report_center_range_preset(range_preset)
+    if preset in REPORT_CENTER_PRECOMPUTE_PRESETS:
+        from_time, to_time = resolve_report_center_preset_window(preset)
+
+    if (
+        use_snapshots
+        and preset in REPORT_CENTER_PRECOMPUTE_PRESETS
+        and target_mode != "employee"
+        and employee_id is None
+        and not department_ids
+    ):
+        lookup = _report_center_snapshot_lookup(
+            db,
+            current_user=current_user,
+            range_preset=preset,
+            department_id=department_id,
+            from_time=from_time,
+            to_time=to_time,
+            limit=limit,
+        )
+        snapshot = _read_report_center_snapshot_for_request(
+            db,
+            lookup,
+            current_user=current_user,
+            range_preset=preset,
+            department_id=department_id,
+            from_time=from_time,
+            to_time=to_time,
+            limit=limit,
+        )
+        if snapshot is not None:
+            return _attach_report_center_snapshot_meta(snapshot.payload, snapshot, hit=True)
+
+        compute_user = _report_center_snapshot_compute_user(db, current_user, department_id)
+        result = _compute_report_center_live(
+            db,
+            current_user=compute_user,
+            from_time=from_time,
+            to_time=to_time,
+            employee_id=None,
+            department_id=department_id,
+            department_ids=None,
+            limit=limit,
+            use_runtime_cache=False,
+        )
+        snapshot = _store_report_center_snapshot(db, lookup, result)
+        return _attach_report_center_snapshot_meta(result, snapshot, hit=False)
+
+    return _compute_report_center_live(
+        db,
+        current_user=current_user,
+        from_time=from_time,
+        to_time=to_time,
+        employee_id=employee_id,
+        department_id=department_id,
+        department_ids=department_ids,
+        limit=limit,
+    )
+
+
+def refresh_report_center_snapshot(
+    db: Session,
+    current_user: UserAccount | None,
+    range_preset: str,
+    department_id: str | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    preset = normalize_report_center_range_preset(range_preset)
+    if preset not in REPORT_CENTER_PRECOMPUTE_PRESETS:
+        raise ValueError(f"unsupported report center range preset: {range_preset}")
+
+    limit = max(1, min(limit, 1000))
+    from_time, to_time = resolve_report_center_preset_window(preset)
+    lookup = _report_center_snapshot_lookup(
+        db,
+        current_user=current_user,
+        range_preset=preset,
+        department_id=department_id,
+        from_time=from_time,
+        to_time=to_time,
+        limit=limit,
+    )
+    compute_user = _report_center_snapshot_compute_user(db, current_user, department_id)
+    result = _compute_report_center_live(
+        db,
+        current_user=compute_user,
+        from_time=from_time,
+        to_time=to_time,
+        employee_id=None,
+        department_id=department_id,
+        department_ids=None,
+        limit=limit,
+        use_runtime_cache=False,
+    )
+    snapshot = _store_report_center_snapshot(db, lookup, result)
+    return _attach_report_center_snapshot_meta(result, snapshot, hit=False)
 
 
 def _get_report_center_sql(

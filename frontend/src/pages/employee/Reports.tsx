@@ -118,6 +118,15 @@ type DepartmentOption = {
   depth: number
 }
 
+function resolveDefaultDepartmentId(user: CurrentUser | null, options: DepartmentOption[]) {
+  if (user?.departmentId && options.some((option) => option.departmentId === user.departmentId)) {
+    return user.departmentId
+  }
+  const visibleDepartmentIds = user?.visibleDepartmentIds ?? []
+  const visibleOption = options.find((option) => visibleDepartmentIds.includes(option.departmentId))
+  return visibleOption?.departmentId ?? options[0]?.departmentId ?? ''
+}
+
 function localDateInputValue(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -664,6 +673,22 @@ function formatHours(value: number | null | undefined) {
   return typeof value === 'number' ? `${value.toFixed(1)}h` : '-'
 }
 
+function formatDateTimeText(value?: string | null) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-TW', { hour12: false })
+}
+
+function reportTimingText(snapshot: ReportCenterResponse['snapshot'] | null | undefined, generationLatencyMs?: number | null) {
+  if (snapshot?.hit && snapshot.generatedAt) {
+    return { label: '製表時刻', value: formatDateTimeText(snapshot.generatedAt) }
+  }
+  return {
+    label: '頁面資料產製耗時',
+    value: typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)} ms` : '-',
+  }
+}
+
 function buildVisualReport(
   events: AccessEvent[],
   metrics: ReportMetrics,
@@ -678,12 +703,13 @@ function buildVisualReport(
   sectionOptions: ReportSectionOptions,
   attendanceOptions: AttendanceDetailOptions,
   generationLatencyMs?: number,
+  snapshot?: ReportCenterResponse['snapshot'] | null,
   attendanceTrend?: DailyAttendanceTrendPoint[] | null,
 ) {
   const generatedAt = new Date().toLocaleString('zh-TW', { hour12: false })
   const deptPart = departmentId === 'ALL' ? '全部部門' : departmentId
   const targetPart = targetLabel && targetLabel !== deptPart ? ` | 報表對象：${htmlEscape(targetLabel)}` : ''
-  const generationLatencyText = typeof generationLatencyMs === 'number' ? `${generationLatencyMs.toFixed(1)}ms` : '-'
+  const timing = reportTimingText(snapshot, generationLatencyMs)
   // Use the server's window-wide trend when provided; otherwise derive locally.
   const dailyAttendanceTrend = attendanceTrend ?? buildDailyAttendanceTrend(attendanceDetails)
 
@@ -713,7 +739,7 @@ function buildVisualReport(
       .hour-track { background: #edf2f7; display: flex; height: 12px; overflow: hidden; }
       .hour-segment { height: 100%; }
       .hour-in { background: #1d4f73; }
-      .hour-out { background: #17663a; }
+      .hour-out { background: #7dd3fc; }
       .hour-axis { border-bottom: 1px solid #d8dee6; height: 22px; margin-left: 82px; margin-right: 68px; position: relative; }
       .hour-axis span { color: #5f6b7a; font-size: 10px; position: absolute; top: 2px; transform: translateX(-50%); }
       .trend-line-chart { display: block; height: 174px; width: 100%; }
@@ -732,7 +758,7 @@ function buildVisualReport(
   </head>
   <body>
     <h1>出勤報表</h1>
-    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)}${targetPart} | 製表人：${htmlEscape(preparerName)} | 產生時間：${htmlEscape(generatedAt)} | 此次報表產製耗時：${htmlEscape(generationLatencyText)}</div>
+    <div class="meta">期間：${htmlEscape(from)} 至 ${htmlEscape(to)} | 範圍：${htmlEscape(deptPart)}${targetPart} | 製表人：${htmlEscape(preparerName)} | 產生時間：${htmlEscape(generatedAt)} | ${htmlEscape(timing.label)}：${htmlEscape(timing.value)}</div>
     ${
       sectionOptions.coreKpi && (sectionOptions.attendanceRate || sectionOptions.periodAttendanceCount || sectionOptions.averageWorkHours || sectionOptions.anomalySummary)
         ? `<h2>核心出勤 KPI</h2><div class="metrics">
@@ -860,7 +886,7 @@ function Reports() {
   const [customFrom, setCustomFrom] = useState(defaultFromDate)
   const [customTo, setCustomTo] = useState(() => localDateInputValue(new Date()))
   const [targetMode, setTargetMode] = useState<ReportTargetMode>('department')
-  const [departmentId, setDepartmentId] = useState('ALL')
+  const [departmentId, setDepartmentId] = useState('')
   const [employeeSearch, setEmployeeSearch] = useState('')
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('')
   const [trendMode, setTrendMode] = useState<TrendMode>('monthly')
@@ -914,6 +940,7 @@ function Reports() {
   const [eventTableItems, setEventTableItems] = useState<AccessEvent[]>([])
   const [eventTableTotal, setEventTableTotal] = useState(0)
   const [eventTableLoading, setEventTableLoading] = useState(false)
+  const isEmployee = currentUser?.role === 'EMPLOYEE'
   const activeEmployeeId = targetMode === 'employee' && selectedEmployeeId.trim() ? selectedEmployeeId.trim() : undefined
   const activeDepartmentId = targetMode === 'department' ? departmentId : 'ALL'
   const todayValue = localDateInputValue(new Date())
@@ -926,27 +953,63 @@ function Reports() {
     let cancelled = false
     setIsLoading(true)
     setMessage(null)
+
+    Promise.all([fetchDepartmentTree(), fetchCurrentUser()])
+      .then(([departments, user]) => {
+        if (cancelled) return
+        const options = flattenDepartments(departments)
+        setCurrentUser(user)
+        setDepartmentOptions(options)
+        setDepartmentId((current) => {
+          if (current && options.some((option) => option.departmentId === current)) return current
+          return resolveDefaultDepartmentId(user, options)
+        })
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setCurrentUser(null)
+        setDepartmentOptions([])
+        setMessage(error instanceof Error ? error.message : '?梯”鞈?頛憭望?')
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (targetMode !== 'department') return
+    if (departmentId && departmentOptions.some((option) => option.departmentId === departmentId)) return
+    const nextDepartmentId = resolveDefaultDepartmentId(currentUser, departmentOptions)
+    if (nextDepartmentId) setDepartmentId(nextDepartmentId)
+  }, [currentUser, departmentId, departmentOptions, targetMode])
+
+  useEffect(() => {
+    if (targetMode === 'department' && !activeDepartmentId) return
+
+    let cancelled = false
+    setIsLoading(true)
+    setMessage(null)
     setAttendancePage(0)
     setEventTableOffset(0)
 
-    Promise.all([
-      fetchReportCenterData({
-        from: liveFrom,
-        to,
-        departmentId: activeDepartmentId,
-        employeeId: activeEmployeeId,
-        limit: 500,
-        offset: 0,
-      }),
-      fetchDepartmentTree(),
-      fetchCurrentUser(),
-    ])
-      .then(([report, departments, user]) => {
+    fetchReportCenterData({
+      from: liveFrom,
+      to,
+      departmentId: activeDepartmentId,
+      employeeId: activeEmployeeId,
+      rangePreset,
+      targetMode,
+      limit: 500,
+      offset: 0,
+    })
+      .then((report) => {
         if (cancelled) return
         setReportData(report)
         setEvents(report.events)
-        setCurrentUser(user)
-        setDepartmentOptions(flattenDepartments(departments))
       })
       .catch((error) => {
         if (cancelled) return
@@ -961,10 +1024,16 @@ function Reports() {
     return () => {
       cancelled = true
     }
-  }, [activeDepartmentId, activeEmployeeId, liveFrom, to])
+  }, [activeDepartmentId, activeEmployeeId, liveFrom, rangePreset, targetMode, to])
 
   // Independent server-side pagination for event details table
   useEffect(() => {
+    if (targetMode === 'department' && !activeDepartmentId) {
+      setEventTableItems([])
+      setEventTableTotal(0)
+      return
+    }
+
     let cancelled = false
     setEventTableLoading(true)
     fetchAccessEvents({
@@ -983,7 +1052,7 @@ function Reports() {
       .catch(() => { if (!cancelled) setEventTableItems([]) })
       .finally(() => { if (!cancelled) setEventTableLoading(false) })
     return () => { cancelled = true }
-  }, [activeDepartmentId, activeEmployeeId, liveFrom, to, eventTableOffset])
+  }, [activeDepartmentId, activeEmployeeId, liveFrom, targetMode, to, eventTableOffset])
 
   const metrics = useMemo<ReportMetrics>(() => {
     if (!reportData) {
@@ -1025,7 +1094,7 @@ function Reports() {
   )
   const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
-  const isEmployee = currentUser?.role === 'EMPLOYEE'
+  const reportTiming = reportTimingText(reportData?.snapshot, reportData?.generationLatencyMs)
 
   useEffect(() => {
     if (isEmployee || targetMode !== 'employee') return
@@ -1068,13 +1137,14 @@ function Reports() {
   const hourlyAxis = buildCountAxis(maxHourlyCount)
   const preparerName = currentUser?.displayName?.trim() || currentUser?.username || currentUser?.employeeId || '未知'
   const selectedEmployee = visibleEmployeeOptions.find((employee) => employee.employeeId === selectedEmployeeId)
+  const selectedDepartment = departmentOptions.find((department) => department.departmentId === departmentId)
   const targetLabel =
     targetMode === 'employee'
       ? selectedEmployee
         ? `${selectedEmployee.displayName} (${selectedEmployee.employeeId})`
         : selectedEmployeeId || '指定對象'
-      : departmentId === 'ALL'
-        ? '全部部門'
+      : selectedDepartment
+        ? `${selectedDepartment.name} (${selectedDepartment.departmentId})`
         : departmentId
   const reportSectionOptions: ReportSectionOptions = {
     coreKpi: showCoreKpi,
@@ -1203,6 +1273,8 @@ function Reports() {
         to,
         departmentId: activeDepartmentId,
         employeeId: activeEmployeeId,
+        rangePreset,
+        targetMode,
         limit: 500,
         offset: 0,
       })
@@ -1232,6 +1304,7 @@ function Reports() {
         reportSectionOptions,
         attendanceDetailOptions,
         result.generationLatencyMs,
+        result.snapshot,
         result.attendanceTrend,
       )
       const reportUrl = URL.createObjectURL(new Blob([reportHtml], { type: 'text/html;charset=utf-8' }))
@@ -1328,7 +1401,6 @@ function Reports() {
                 }}
               >
                 <option value="__EMPLOYEE__">指定對象</option>
-                <option value="ALL">全部部門</option>
                 {departmentOptions.map((option) => (
                   <option key={option.departmentId} value={option.departmentId}>
                     {' '.repeat(option.depth * 2)}
@@ -1523,7 +1595,7 @@ function Reports() {
           <div className="col-12 report-condition-footer">
             {message ? <div className="small text-secondary">{message}</div> : <div />}
             <div className="small text-secondary">
-              頁面資料產製耗時：{reportData?.generationLatencyMs == null ? '-' : `${reportData.generationLatencyMs.toFixed(1)} ms`}
+              {reportTiming.label}：{reportTiming.value}
             </div>
           </div>
         </div>

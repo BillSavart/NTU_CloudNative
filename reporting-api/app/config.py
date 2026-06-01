@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     # Worked hours above this threshold count as overtime.
     attendance_overtime_hours: float = 12.0
 
+    # --- Report-center precomputation ---
+    report_center_precompute_enabled: bool = True
+    report_center_precompute_interval_seconds: int = 300
+    report_center_precompute_presets: str = "today,last3d,last7d,thisMonth,last3m"
+    report_center_precompute_limit: int = 500
+    report_center_precompute_department_limit: int = 200
+    report_center_precompute_usernames: str = ""
+
     @computed_field
     @property
     def database_url(self) -> str:
@@ -88,6 +96,16 @@ class Settings(BaseSettings):
     @property
     def attendance_late_threshold_time(self) -> time:
         return time.fromisoformat(self.attendance_late_threshold)
+
+    @computed_field
+    @property
+    def report_center_precompute_preset_list(self) -> list[str]:
+        return [preset.strip() for preset in self.report_center_precompute_presets.split(",") if preset.strip()]
+
+    @computed_field
+    @property
+    def report_center_precompute_username_list(self) -> list[str]:
+        return [username.strip() for username in self.report_center_precompute_usernames.split(",") if username.strip()]
 
 
 @lru_cache
