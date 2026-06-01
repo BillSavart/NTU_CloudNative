@@ -301,9 +301,14 @@
           "expr": "histogram_quantile(0.95, sum by (endpoint) (rate(k6_http_req_duration_seconds{testid=~\"$k6_testid\", endpoint=~\"access_swipe|reporting_report_center|frontend_proxy_dashboard\"}[$__rate_interval])))",
           "legendFormat": "p95 {{endpoint}}",
           "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (endpoint) (rate(k6_http_req_duration_seconds{testid=~\"$k6_testid\", endpoint=~\"access_swipe|reporting_report_center|frontend_proxy_dashboard\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{endpoint}}",
+          "refId": "B"
         }
       ],
-      "title": "k6 p95 Latency",
+      "title": "k6 p95 / p99 Latency",
       "type": "timeseries"
     },
     {
@@ -476,6 +481,125 @@
       ],
       "title": "Access API Runtime Load",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "id": 12,
+      "panels": [],
+      "title": "Chaos / Recovery",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "description": "Resilience signal during DB/Kafka chaos. Buffered/sec should SPIKE while Kafka is down (events safely held in the Redis recovery stream). Dropped/sec must stay at 0 — any non-zero value means real data loss.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Dropped/sec"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(access_api_events_buffered_total[1m])) or vector(0)",
+          "legendFormat": "Buffered/sec",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(access_api_events_dropped_total[1m])) or vector(0)",
+          "legendFormat": "Dropped/sec",
+          "refId": "B"
+        }
+      ],
+      "title": "Access Events: Buffered vs Dropped",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "description": "Cumulative buffered events held during the outage. After recovery, compare this total against the access_events row count (scripts/chaos_db_kafka_ctl.sh count <prefix>) to prove every buffered event was backfilled — zero data loss.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(access_api_events_buffered_total) or vector(0)",
+          "legendFormat": "Buffered total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(access_api_events_dropped_total) or vector(0)",
+          "legendFormat": "Dropped total",
+          "refId": "B"
+        }
+      ],
+      "title": "Access Events Buffered/Dropped (cumulative)",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -524,6 +648,6 @@
   "timezone": "browser",
   "title": "Access Control Observability",
   "uid": "access-control-observability",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }
