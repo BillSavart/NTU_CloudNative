@@ -14,6 +14,7 @@ services:
       - "--enable-feature=native-histograms"
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheusdata:/prometheus
     depends_on:
       - access-lb

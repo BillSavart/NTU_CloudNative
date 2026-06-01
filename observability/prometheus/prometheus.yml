@@ -2,6 +2,13 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+# Shared with the Docker base + k8s Kustomize stacks. The prod overlay
+# (observability/docker-compose.observability.yml) mounts the same
+# infra/prometheus/alert_rules.yml into /etc/prometheus so alerting is
+# identical across all run modes.
+rule_files:
+  - "alert_rules.yml"
+
 scrape_configs:
   - job_name: prometheus
     static_configs:
