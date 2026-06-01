@@ -39,7 +39,7 @@
       },
       "targets": [
         {
-          "expr": "rate(access_api_swipes_total[1m]) or vector(0)",
+          "expr": "sum(rate(access_api_swipes_total[1m])) or vector(0)",
           "legendFormat": "Access swipes/sec",
           "refId": "A"
         },
@@ -83,34 +83,19 @@
       },
       "targets": [
         {
-          "expr": "access_api_event_queue_depth or vector(0)",
-          "legendFormat": "Access publisher queue",
+          "expr": "sum(access_api_event_queue_depth) or vector(0)",
+          "legendFormat": "Access event backlog",
           "refId": "A"
         },
         {
-          "expr": "rate(access_api_events_published_total[1m])",
-          "legendFormat": "Access published/sec",
+          "expr": "clamp_min(sum(delta(kafka_topic_partition_current_offset{topic=\"access-events\"}[1m])) / 60, 0)",
+          "legendFormat": "Kafka events appended/sec",
           "refId": "B"
         },
         {
-          "expr": "clamp_min(sum(delta(kafka_topic_partition_current_offset{topic=\"access-events\"}[1m])) / 60, 0)",
-          "legendFormat": "Kafka access-events appended/sec",
+          "expr": "sum(rate(reporting_api_consumer_processed_total[1m])) or vector(0)",
+          "legendFormat": "Reporting consumed/sec",
           "refId": "C"
-        },
-        {
-          "expr": "sum by (consumer) (rate(reporting_api_consumer_processed_total[1m]))",
-          "legendFormat": "{{consumer}} processed/sec",
-          "refId": "D"
-        },
-        {
-          "expr": "sum by (consumer) (rate(reporting_api_consumer_inserted_total[1m]))",
-          "legendFormat": "{{consumer}} inserted/sec",
-          "refId": "E"
-        },
-        {
-          "expr": "reporting_api_consumer_running",
-          "legendFormat": "{{consumer}} running",
-          "refId": "F"
         }
       ],
       "title": "Event Pipeline",
@@ -147,7 +132,7 @@
       },
       "targets": [
         {
-          "expr": "rate(access_api_events_failed_total[1m]) or vector(0)",
+          "expr": "sum(rate(access_api_events_failed_total[1m])) or vector(0)",
           "legendFormat": "Access publish failures/sec",
           "refId": "A"
         },
@@ -191,12 +176,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket[5m])) by (le, path))",
-          "legendFormat": "p95 {{path}}",
+          "expr": "histogram_quantile(0.95, sum(rate(access_api_swipe_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "Access swipe p95",
           "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket{path=~\"/api/reports/dashboard|/api/reports/report-center\"}[5m])) by (le, path))",
+          "legendFormat": "Reporting p95 {{path}}",
+          "refId": "B"
         }
       ],
-      "title": "Reporting API p95 Latency",
+      "title": "API p95 Latency",
       "type": "timeseries"
     },
     {
@@ -230,7 +220,7 @@
       },
       "targets": [
         {
-          "expr": "(rate(access_api_swipes_denied_total[5m]) or vector(0)) / clamp_min((rate(access_api_swipes_total[5m]) or vector(0)), 1)",
+          "expr": "(sum(rate(access_api_swipes_denied_total[5m])) or vector(0)) / clamp_min((sum(rate(access_api_swipes_total[5m])) or vector(0)), 1)",
           "legendFormat": "Denied ratio",
           "refId": "A"
         }
@@ -269,7 +259,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (endpoint) (rate(k6_http_reqs_total{testid=~\"$k6_testid\"}[$__rate_interval]))",
+          "expr": "sum by (endpoint) (rate(k6_http_reqs_total{testid=~\"$k6_testid\", endpoint=~\"access_swipe|reporting_report_center|frontend_proxy_dashboard\"}[$__rate_interval]))",
           "legendFormat": "{{endpoint}}",
           "refId": "A"
         }
@@ -308,7 +298,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (endpoint) (rate(k6_http_req_duration_seconds{testid=~\"$k6_testid\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (endpoint) (rate(k6_http_req_duration_seconds{testid=~\"$k6_testid\", endpoint=~\"access_swipe|reporting_report_center|frontend_proxy_dashboard\"}[$__rate_interval])))",
           "legendFormat": "p95 {{endpoint}}",
           "refId": "A"
         }
@@ -391,9 +381,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (status) (rate(reporting_api_http_requests_total{path=\"/api/login/\"}[1m])) or vector(0)",
-          "legendFormat": "login status {{status}}/sec",
+          "expr": "sum(rate(reporting_api_http_requests_total{path=\"/api/login/\", status=~\"2..\"}[1m])) or vector(0)",
+          "legendFormat": "Login success/sec",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(reporting_api_http_requests_total{path=\"/api/login/\", status!~\"2..\"}[1m])) or vector(0)",
+          "legendFormat": "Login failed/sec",
+          "refId": "B"
         }
       ],
       "title": "Login Activity",
@@ -430,17 +425,12 @@
       },
       "targets": [
         {
-          "expr": "process_resident_memory_bytes{job=\"reporting-api\"} or vector(0)",
-          "legendFormat": "Reporting resident memory",
+          "expr": "sum(process_resident_memory_bytes{job=\"reporting-api\"}) or vector(0)",
+          "legendFormat": "Reporting memory in use",
           "refId": "A"
-        },
-        {
-          "expr": "process_virtual_memory_bytes{job=\"reporting-api\"} or vector(0)",
-          "legendFormat": "Reporting virtual memory",
-          "refId": "B"
         }
       ],
-      "title": "Reporting API Memory",
+      "title": "Reporting API Memory Usage",
       "type": "timeseries"
     },
     {
@@ -474,19 +464,14 @@
       },
       "targets": [
         {
-          "expr": "access_api_runtime_goroutines or vector(0)",
+          "expr": "sum(access_api_runtime_goroutines) or vector(0)",
           "legendFormat": "Access goroutines",
           "refId": "A"
         },
         {
-          "expr": "access_api_runtime_alloc_bytes / 1048576",
+          "expr": "sum(access_api_runtime_alloc_bytes) / 1048576",
           "legendFormat": "Access heap alloc MiB",
           "refId": "B"
-        },
-        {
-          "expr": "access_api_runtime_sys_bytes / 1048576",
-          "legendFormat": "Access sys memory MiB",
-          "refId": "C"
         }
       ],
       "title": "Access API Runtime Load",

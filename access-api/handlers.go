@@ -29,6 +29,10 @@ type App struct {
 	grantedSwipes  atomic.Int64
 	deniedSwipes   atomic.Int64
 	bufferedEvents atomic.Int64
+
+	swipeLatencyCount     atomic.Int64
+	swipeLatencySumMicros atomic.Int64
+	swipeLatencyBuckets   [accessLatencyBucketCount]atomic.Int64
 }
 
 type AccessStore interface {
@@ -39,6 +43,10 @@ type AccessStore interface {
 	AppendEventOnce(ctx context.Context, event AccessEvent) error
 	ListEvents(ctx context.Context, limit int64) ([]EventDTO, error)
 }
+
+const accessLatencyBucketCount = 9
+
+var accessLatencyBucketSeconds = [accessLatencyBucketCount]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5}
 
 func NewApp(cfg Config, store AccessStore, publisher EventPublisher) *App {
 	hostname, err := os.Hostname()
@@ -123,14 +131,15 @@ func (a *App) Swipe(c *gin.Context) {
 		return
 	}
 
-	latencyMs := durationToLatencyMs(time.Since(start))
+	latency := time.Since(start)
+	latencyMs := durationToLatencyMs(latency)
 	requestID := newRequestID(req.EmployeeID)
 	decisionText := DecisionDenied
 	if decision.Granted {
 		decisionText = DecisionGranted
 	}
 
-	a.recordMetrics(decision.Granted)
+	a.recordMetrics(decision.Granted, latency)
 
 	now := time.Now().UTC()
 	event := AccessEvent{
@@ -273,7 +282,7 @@ access_api_events_dropped_total %d
 # HELP access_api_event_queue_depth Current async publisher queue depth.
 # TYPE access_api_event_queue_depth gauge
 access_api_event_queue_depth %d
-# HELP access_api_runtime_alloc_bytes Bytes of allocated heap objects in the Access API process.
+%s# HELP access_api_runtime_alloc_bytes Bytes of allocated heap objects in the Access API process.
 # TYPE access_api_runtime_alloc_bytes gauge
 access_api_runtime_alloc_bytes %d
 # HELP access_api_runtime_sys_bytes Bytes of memory obtained from the OS by the Access API process.
@@ -293,19 +302,49 @@ access_api_runtime_goroutines %d
 		publisherStats.Retried.Load(),
 		publisherStats.Dropped.Load(),
 		publisherStats.QueueDepth.Load(),
+		a.formatSwipeLatencyHistogram(),
 		mem.Alloc,
 		mem.Sys,
 		runtime.NumGoroutine(),
 	))
 }
 
-func (a *App) recordMetrics(granted bool) {
+func (a *App) recordMetrics(granted bool, latency time.Duration) {
 	a.totalSwipes.Add(1)
+	a.observeSwipeLatency(latency)
 	if granted {
 		a.grantedSwipes.Add(1)
 		return
 	}
 	a.deniedSwipes.Add(1)
+}
+
+func (a *App) observeSwipeLatency(latency time.Duration) {
+	if latency < 0 {
+		latency = 0
+	}
+	a.swipeLatencyCount.Add(1)
+	a.swipeLatencySumMicros.Add(latency.Microseconds())
+	seconds := latency.Seconds()
+	for i, bucket := range accessLatencyBucketSeconds {
+		if seconds <= bucket {
+			a.swipeLatencyBuckets[i].Add(1)
+		}
+	}
+}
+
+func (a *App) formatSwipeLatencyHistogram() string {
+	var builder strings.Builder
+	builder.WriteString("# HELP access_api_swipe_latency_seconds Swipe decision latency in seconds.\n")
+	builder.WriteString("# TYPE access_api_swipe_latency_seconds histogram\n")
+	for i, bucket := range accessLatencyBucketSeconds {
+		fmt.Fprintf(&builder, "access_api_swipe_latency_seconds_bucket{le=\"%g\"} %d\n", bucket, a.swipeLatencyBuckets[i].Load())
+	}
+	count := a.swipeLatencyCount.Load()
+	fmt.Fprintf(&builder, "access_api_swipe_latency_seconds_bucket{le=\"+Inf\"} %d\n", count)
+	fmt.Fprintf(&builder, "access_api_swipe_latency_seconds_sum %.6f\n", float64(a.swipeLatencySumMicros.Load())/1000000)
+	fmt.Fprintf(&builder, "access_api_swipe_latency_seconds_count %d\n", count)
+	return builder.String()
 }
 
 func newRequestID(employeeID string) string {
