@@ -149,6 +149,10 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
+      # Cap TSDB on-disk size so repeated k6 load tests (high-cardinality
+      # per-run series) can't grow the volume unbounded and fill the disk.
+      - "--storage.tsdb.retention.size=8GB"
+      - "--storage.tsdb.retention.time=15d"
     volumes:
       - ./infra/prometheus:/etc/prometheus:ro
       - prometheusdata:/prometheus
@@ -293,6 +297,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Bound on-disk size so load tests can't fill the VM disk. retention.bytes
+      # caps each partition; small segments let retention trim closed segments
+      # quickly instead of waiting for a 1 GiB default segment to roll.
+      KAFKA_LOG_RETENTION_BYTES: "536870912"
+      KAFKA_LOG_RETENTION_MS: "21600000"
+      KAFKA_LOG_SEGMENT_BYTES: "134217728"
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: "60000"
     volumes:
       - kafka1data:/var/lib/kafka/data
 
@@ -314,6 +325,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Bound on-disk size so load tests can't fill the VM disk. retention.bytes
+      # caps each partition; small segments let retention trim closed segments
+      # quickly instead of waiting for a 1 GiB default segment to roll.
+      KAFKA_LOG_RETENTION_BYTES: "536870912"
+      KAFKA_LOG_RETENTION_MS: "21600000"
+      KAFKA_LOG_SEGMENT_BYTES: "134217728"
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: "60000"
     volumes:
       - kafka2data:/var/lib/kafka/data
 
@@ -335,6 +353,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Bound on-disk size so load tests can't fill the VM disk. retention.bytes
+      # caps each partition; small segments let retention trim closed segments
+      # quickly instead of waiting for a 1 GiB default segment to roll.
+      KAFKA_LOG_RETENTION_BYTES: "536870912"
+      KAFKA_LOG_RETENTION_MS: "21600000"
+      KAFKA_LOG_SEGMENT_BYTES: "134217728"
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: "60000"
     volumes:
       - kafka3data:/var/lib/kafka/data
 

@@ -20,8 +20,12 @@
 #
 # Common env: VM_SSH_KEY (path to key), LOCAL_ACCESS_PORT (18080),
 #   LOCAL_PROM_PORT (19090), RATE, DURATION, TEST_ID.
-# Ramp profile (rampup + chaos), all numeric SECONDS unless noted:
-#   START_RATE, STEP, STEP_DURATION, MAX_RATE   -> the climb
+# Ramp profile (rampup + chaos) is a STAIRCASE: each level is a quick ramp then
+# a flat HOLD, so every step is a mini constant-rate run you can read for
+# stability. All numeric SECONDS unless noted:
+#   START_RATE, STEP, MAX_RATE                  -> the climb levels
+#   RAMP_SECONDS                                -> quick transition onto each level
+#   STEP_DURATION                               -> flat hold at each level
 #   PEAK_HOLD                                   -> hold at the peak
 #   DOWN_TO, DOWN_STEP, DOWN_STEP_DURATION      -> the stepped ramp-down
 #   FLOOR_HOLD                                  -> hold at the floor to confirm it settles
@@ -132,22 +136,27 @@ cleanup_prefix() {
 # All knobs are numeric SECONDS (no trailing s) and overridable via env.
 build_stages() {
   local start="${START_RATE:-200}" step="${STEP:-200}" max="${MAX_RATE:-3000}"
-  local step_dur="${STEP_DURATION:-20}" peak_hold="${PEAK_HOLD:-30}"
-  local floor="${DOWN_TO:-800}" down_step="${DOWN_STEP:-400}" down_dur="${DOWN_STEP_DURATION:-30}"
+  local ramp="${RAMP_SECONDS:-3}" hold="${STEP_DURATION:-20}" peak_hold="${PEAK_HOLD:-30}"
+  local floor="${DOWN_TO:-800}" down_step="${DOWN_STEP:-400}" down_hold="${DOWN_STEP_DURATION:-20}"
   local floor_hold="${FLOOR_HOLD:-180}"
-  local parts=() total=0 r
-  for ((r = start; r <= max; r += step)); do
-    parts+=("${r}:${step_dur}s"); total=$((total + step_dur))
+  local parts=() total=0 r h lvl
+  # A real staircase: a quick `ramp` transition UP TO each level, then a FLAT
+  # `hold` at that level. Each held step is effectively a mini constant-rate run,
+  # so you can read whether the system sustains that exact QPS (failed ratio ~0,
+  # p95 flat) — unlike a single-stage ramp that never holds any rate and so looks
+  # "unstable" even well below the real ceiling.
+  local levels=()
+  for ((r = start; r < max; r += step)); do levels+=("$r"); done
+  levels+=("$max")
+  for lvl in "${levels[@]}"; do
+    h=$hold; [ "$lvl" -eq "$max" ] && h=$peak_hold
+    parts+=("${lvl}:${ramp}s" "${lvl}:${h}s"); total=$((total + ramp + h))
   done
-  if (( (max - start) % step != 0 )); then
-    parts+=("${max}:${step_dur}s"); total=$((total + step_dur))
-  fi
-  parts+=("${max}:${peak_hold}s"); total=$((total + peak_hold))      # hold at the peak
+  # Stepped ramp-DOWN, also holding each level so it can re-settle.
   for ((r = max - down_step; r > floor; r -= down_step)); do
-    parts+=("${r}:${down_dur}s"); total=$((total + down_dur))
+    parts+=("${r}:${ramp}s" "${r}:${down_hold}s"); total=$((total + ramp + down_hold))
   done
-  parts+=("${floor}:${down_dur}s"); total=$((total + down_dur))
-  parts+=("${floor}:${floor_hold}s"); total=$((total + floor_hold))  # settle at the floor
+  parts+=("${floor}:${ramp}s" "${floor}:${floor_hold}s"); total=$((total + ramp + floor_hold))
   STAGES_STR="$(IFS=,; echo "${parts[*]}")"
   STAGES_TOTAL_SECONDS="${total}"
 }

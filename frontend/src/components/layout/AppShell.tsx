@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { fetchCurrentUser, logout, type CurrentUser } from '../../services/auth'
+import { canAccessManagementReports } from '../../services/permissions'
 
 type AppShellProps = {
   title: string
@@ -14,9 +15,9 @@ const navItems = [
   { to: '/dashboard', label: '首頁總覽' },
   { to: '/employee/my-attendance', label: '我的出勤' },
   { to: '/attendance-records', label: '刷卡記錄' },
-  { to: '/analytics', label: '部門分析', staffOnly: true },
+  { to: '/analytics', label: '部門分析', requiresManagement: true },
   { to: '/alerts', label: '異常合規' },
-  { to: '/employee/reports', label: '報表中心' },
+  { to: '/employee/reports', label: '報表中心', requiresManagement: true },
 ]
 
 function AppShell({ title, subtitle, headerAction, children }: AppShellProps) {
@@ -24,6 +25,7 @@ function AppShell({ title, subtitle, headerAction, children }: AppShellProps) {
   const navigate = useNavigate()
   const [now, setNow] = useState(new Date())
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [hasLoadedCurrentUser, setHasLoadedCurrentUser] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
@@ -57,6 +59,9 @@ function AppShell({ title, subtitle, headerAction, children }: AppShellProps) {
       .catch(() => {
         if (!cancelled) setCurrentUser(null)
       })
+      .finally(() => {
+        if (!cancelled) setHasLoadedCurrentUser(true)
+      })
     return () => {
       cancelled = true
     }
@@ -64,7 +69,7 @@ function AppShell({ title, subtitle, headerAction, children }: AppShellProps) {
 
   const datetimeText = `${now.toLocaleDateString('zh-TW')} ${now.toLocaleDateString('zh-TW', { weekday: 'long' })} ${now.toLocaleTimeString('zh-TW', { hour12: false })}`
   const displayName = currentUser?.displayName?.trim() || currentUser?.username || '訪客'
-  const visibleNavItems = navItems.filter((item) => !item.staffOnly || currentUser?.role !== 'EMPLOYEE')
+  const visibleNavItems = navItems.filter((item) => !item.requiresManagement || (hasLoadedCurrentUser && canAccessManagementReports(currentUser)))
   const isActiveNavItem = (to: string) => location.pathname === to || location.pathname.startsWith(`${to}/`)
 
   const handleLogout = async () => {

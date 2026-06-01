@@ -1,9 +1,8 @@
 import csv
 import io
-from typing import Generator, List
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -22,6 +21,7 @@ from app.repositories import (
     get_employee_states,
     get_report_center,
     get_timeseries,
+    iter_access_events_for_export,
     list_anomalies,
     parse_optional_datetime,
     query_access_events,
@@ -319,7 +319,7 @@ def timeseries(
     }
 
 
-def _stream_events_csv(
+def _build_events_csv(
     db: Session,
     current_user: UserAccount | None,
     employee_id: str | None,
@@ -329,8 +329,8 @@ def _stream_events_csv(
     decision: str | None = None,
     direction: str | None = None,
     q: str | None = None,
-) -> Generator[str, None, None]:
-    """Yield CSV rows in batches — no row limit, no full-dataset RAM spike."""
+) -> str:
+    """Build CSV rows before returning so scoped exports keep the DB session open."""
     headers = [
         "requestId", "employeeId", "displayName", "departmentId",
         "gateId", "direction", "decision", "reason",
@@ -339,45 +339,33 @@ def _stream_events_csv(
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(headers)
-    yield buf.getvalue()
 
-    batch_size = 200  # matches query_access_events internal cap
-    offset = 0
-    while True:
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        result = query_access_events(
-            db,
-            current_user=current_user,
-            employee_id=employee_id,
-            department_ids=department_ids,
-            decision=decision,
-            direction=direction,
-            from_time=from_time,
-            to_time=to_time,
-            limit=batch_size,
-            offset=offset,
-            q=q,
-        )
-        for event in result["items"]:
-            writer.writerow([
-                event.get("requestId", ""),
-                event.get("employeeId", ""),
-                event.get("displayName", ""),
-                event.get("departmentId", ""),
-                event.get("gateId", ""),
-                event.get("direction", ""),
-                event.get("decision", ""),
-                event.get("reason", ""),
-                event.get("previousState", ""),
-                event.get("currentState", ""),
-                event.get("latencyMs", ""),
-                event.get("timestamp", ""),
-            ])
-        yield buf.getvalue()
-        if len(result["items"]) < batch_size:
-            break
-        offset += batch_size
+    for event in iter_access_events_for_export(
+        db,
+        current_user=current_user,
+        employee_id=employee_id,
+        department_ids=department_ids,
+        decision=decision,
+        direction=direction,
+        from_time=from_time,
+        to_time=to_time,
+        q=q,
+    ):
+        writer.writerow([
+            event.get("requestId", ""),
+            event.get("employeeId", ""),
+            event.get("displayName", ""),
+            event.get("departmentId", ""),
+            event.get("gateId", ""),
+            event.get("direction", ""),
+            event.get("decision", ""),
+            event.get("reason", ""),
+            event.get("previousState", ""),
+            event.get("currentState", ""),
+            event.get("latencyMs", ""),
+            event.get("timestamp", ""),
+        ])
+    return buf.getvalue()
 
 
 @router.get("/reports/export/events.csv")
@@ -391,12 +379,12 @@ def export_events_csv(
     q: str | None = Query(default=None),
     current_user: UserAccount | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
-) -> StreamingResponse:
+) -> Response:
     from_time = parse_optional_datetime(from_)
     to_time = parse_optional_datetime(to)
     filename = "access-events.csv"
-    return StreamingResponse(
-        _stream_events_csv(db, current_user, employee_id, department_ids or None, from_time, to_time, decision, direction, q),
+    return Response(
+        content=_build_events_csv(db, current_user, employee_id, department_ids or None, from_time, to_time, decision, direction, q),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

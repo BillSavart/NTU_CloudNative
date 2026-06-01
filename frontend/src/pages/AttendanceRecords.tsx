@@ -82,6 +82,7 @@ function AttendanceRecords() {
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [downloadingCsv, setDownloadingCsv] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const today = toDateStr()
@@ -141,7 +142,8 @@ function AttendanceRecords() {
   const handleDecision = (v: 'GRANTED' | 'DENIED' | 'ALL') => { setDecision(v); setOffset(0) }
   const handleDept = (v: string) => { setDepartmentId(v); setOffset(0) }
 
-  const handleDownloadCsv = () => {
+  const handleDownloadCsv = async () => {
+    if (downloadingCsv) return
     const params = new URLSearchParams()
     params.set('from', new Date(`${range.from}T00:00:00`).toISOString())
     params.set('to', new Date(`${range.to}T23:59:59`).toISOString())
@@ -149,12 +151,36 @@ function AttendanceRecords() {
     if (direction !== 'ALL') params.set('direction', direction)
     if (decision !== 'ALL') params.set('decision', decision)
     if (keyword.trim()) params.set('q', keyword.trim())
-    const link = document.createElement('a')
-    link.href = `/api/reports/export/events.csv?${params.toString()}`
-    link.download = `swipe-records-${range.from}-to-${range.to}.csv`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
+    const filename = `swipe-records-${range.from}-to-${range.to}.csv`
+    setDownloadingCsv(true)
+    try {
+      const response = await fetch(`/api/reports/export/events.csv?${params.toString()}`)
+      if (!response.ok) {
+        window.alert('下載刷卡紀錄失敗，請稍後再試。')
+        return
+      }
+      const csvText = await response.text()
+      const hasDataRows = csvText
+        .split(/\r?\n/)
+        .some((line, index) => index > 0 && line.trim().length > 0)
+      if (!hasDataRows) {
+        window.alert('目前篩選條件沒有可下載的刷卡紀錄。')
+        return
+      }
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      window.alert('下載刷卡紀錄失敗，請稍後再試。')
+    } finally {
+      setDownloadingCsv(false)
+    }
   }
 
 
@@ -167,8 +193,8 @@ function AttendanceRecords() {
             <h2 className="h6 mb-1">篩選條件</h2>
             <div className="small text-secondary">設定條件後點擊下載</div>
           </div>
-          <button className="btn btn-primary px-4" type="button" onClick={handleDownloadCsv}>
-            下載刷卡記錄
+          <button className="btn btn-primary px-4" type="button" onClick={handleDownloadCsv} disabled={downloadingCsv}>
+            {downloadingCsv ? '準備下載中...' : '下載刷卡記錄'}
           </button>
         </div>
 
