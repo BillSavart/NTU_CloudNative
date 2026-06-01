@@ -141,7 +141,7 @@ function AttendanceRecords() {
   const handleDecision = (v: 'GRANTED' | 'DENIED' | 'ALL') => { setDecision(v); setOffset(0) }
   const handleDept = (v: string) => { setDepartmentId(v); setOffset(0) }
 
-  const handleDownloadCsv = () => {
+  const handleDownloadCsv = async () => {
     const params = new URLSearchParams()
     params.set('from', new Date(`${range.from}T00:00:00`).toISOString())
     params.set('to', new Date(`${range.to}T23:59:59`).toISOString())
@@ -149,12 +149,29 @@ function AttendanceRecords() {
     if (direction !== 'ALL') params.set('direction', direction)
     if (decision !== 'ALL') params.set('decision', decision)
     if (keyword.trim()) params.set('q', keyword.trim())
+    const filename = `swipe-records-${range.from}-to-${range.to}.csv`
+    const response = await fetch(`/api/reports/export/events.csv?${params.toString()}`)
+    if (!response.ok) {
+      window.alert('下載刷卡紀錄失敗，請稍後再試。')
+      return
+    }
+    const csvText = await response.text()
+    const hasDataRows = csvText
+      .split(/\r?\n/)
+      .some((line, index) => index > 0 && line.trim().length > 0)
+    if (!hasDataRows) {
+      window.alert('目前篩選條件沒有可下載的刷卡紀錄。')
+      return
+    }
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
-    link.href = `/api/reports/export/events.csv?${params.toString()}`
-    link.download = `swipe-records-${range.from}-to-${range.to}.csv`
+    link.href = url
+    link.download = filename
     document.body.appendChild(link)
     link.click()
     link.remove()
+    URL.revokeObjectURL(url)
   }
 
 

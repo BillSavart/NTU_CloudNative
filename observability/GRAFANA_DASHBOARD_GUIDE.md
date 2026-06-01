@@ -1,16 +1,15 @@
 # Grafana Dashboard 重點指標說明
 
-這份文件說明 `Access Control Observability` dashboard 中保留的重點線條。Dashboard 的設計目標不是列出所有 metrics，而是讓 demo 時能快速判斷：
+這份文件說明 `Access Control Observability` dashboard 中保留的重點線條。Dashboard 的目的不是列出所有 metrics，而是讓 demo 時能快速判斷：
 
 - shift change 刷卡尖峰是否真的進入系統
 - Access API、Kafka、Reporting API 的事件管線是否順暢
 - 刷卡與報表查詢是否維持可接受延遲
 - 登入活動是否正常
-- 壓測期間是否有錯誤或品質下降
+- 壓測或 chaos 測試期間是否有錯誤或資料遺失
 - API runtime / memory 是否有異常累積
 
 多個 Access API / Reporting API instance 會產生多條 Prometheus time series。為了 demo 清楚，dashboard 會用 `sum(...)` 彙總成單一服務視角，避免同名線重複出現。
-
 
 ## 為什麼一開始會看到很多同名線
 
@@ -41,6 +40,7 @@ sum(rate(access_api_swipes_total[1m]))
 這樣 `Access swipes/sec` 就代表整個 Access API 服務每秒刷卡量，而不是每個 replica 各畫一條線。
 
 什麼時候才需要拆開 instance 看？通常是 debug 特定 container 問題時，例如某一台 Access API latency 特別高、memory 特別大、或某個 instance 沒有接到流量。demo 和 requirement 說明階段，使用彙總線比較適合。
+
 ## 1. Traffic
 
 ### Access swipes/sec
@@ -75,7 +75,7 @@ sum(rate(reporting_api_http_requests_total[1m])) or vector(0)
 
 - 開首頁、報表中心、查詢出勤資料、登入等都會讓這條線上升。
 - 若刷卡流量很高但 Reporting requests/sec 沒上升，表示目前壓力集中在刷卡入口，不是在報表查詢。
-- 若 Reporting requests/sec 上升時 p95 latency 也上升，代表報表讀取路徑開始承壓。
+- 若 Reporting requests/sec 上升時 Reporting p95 或 k6 p99 也上升，代表報表讀取路徑開始承壓。
 
 選擇原因：Reporting 是題目指定的報表讀取路徑，這條線可以說明報表服務是否正在被使用。
 
@@ -175,9 +175,90 @@ sum(rate(reporting_api_consumer_failed_total[1m])) or vector(0)
 
 選擇原因：這條線補足事件管線後半段的可靠性觀測。
 
-## 4. API p95 Latency
+## 4. Chaos / Recovery
 
-p95 表示觀察時間窗內 95% request 都比該線顯示的時間更快。它比平均值更適合判斷大多數使用者的體感延遲。
+最新 dashboard 有 chaos / recovery 區塊，用來觀察「資料有沒有被安全緩衝」以及「是否有資料被丟棄」。這對 Resilience requirement 很重要，因為題目要求 DB down 時系統仍可開門，並且 InOut events 必須先 buffer，等 DB 恢復再補回。
+
+`Chaos / Recovery` 本身是 row 標題，不是數據線；真正要看的是下面兩個 panel。
+
+### Access Events Buffered/Dropped (cumulative)
+
+#### Buffered total
+
+PromQL:
+
+```promql
+sum(access_api_events_buffered_total) or vector(0)
+```
+
+意義：Access API 啟動後累積成功寫入 Redis recovery buffer 的事件總數。
+
+判讀方式：
+
+- 刷卡流量上升時，這個累積值應該上升。
+- DB 或 Kafka 暫時異常時，仍然能看到 buffered total 增加，代表事件有被保留下來。
+- 這是 counter 類指標，只會增加，不會自然下降。
+
+選擇原因：用來證明 resilience 設計中「先緩衝事件」這件事真的有發生。
+
+#### Dropped total
+
+PromQL:
+
+```promql
+sum(access_api_events_dropped_total) or vector(0)
+```
+
+意義：Access API 啟動後累積被丟棄、未能發布或未能保留的事件總數。
+
+判讀方式：
+
+- 正常情況應維持 0。
+- 若上升，代表有事件沒有成功進入後續可靠處理流程，需要立即看 Access API logs、Kafka 狀態、Redis 狀態。
+- 若 Buffered total 上升且 Dropped total 維持 0，是比較健康的 recovery 狀態。
+
+選擇原因：buffered 只能說事件有被保留，dropped 才能確認是否有資料遺失風險。
+
+### Access Events: Buffered vs Dropped
+
+#### Buffered/sec
+
+PromQL:
+
+```promql
+sum(rate(access_api_events_buffered_total[1m])) or vector(0)
+```
+
+意義：每秒有多少事件寫入 Redis recovery buffer。
+
+判讀方式：
+
+- 刷卡流量期間應跟著 Access swipes/sec 有相近趨勢。
+- chaos 測試中如果 Kafka 或 DB 異常，仍可用這條線確認事件有被 recovery buffer 接住。
+
+選擇原因：cumulative total 適合看總量，但 rate 適合看當下是否正在發生 buffering。
+
+#### Dropped/sec
+
+PromQL:
+
+```promql
+sum(rate(access_api_events_dropped_total[1m])) or vector(0)
+```
+
+意義：每秒有多少事件被丟棄。
+
+判讀方式：
+
+- 正常應維持 0。
+- 若壓測或 chaos 測試期間出現尖峰，代表資料可靠性有風險。
+- 若 Dropped/sec 上升，demo 時應搭配 Failures panel、Loki logs、Kafka/Redis target 狀態一起查。
+
+選擇原因：這是資料遺失風險最直覺的即時訊號。
+
+## 5. Access Swipe p95 Latency
+
+最新 dashboard 把 Access API latency 拆成獨立 panel，名稱是 `Access Swipe p95 Latency`。這樣 demo 時可以清楚區分「刷卡入口延遲」和「Reporting 查詢延遲」。
 
 ### Access swipe p95
 
@@ -187,7 +268,7 @@ PromQL:
 histogram_quantile(0.95, sum(rate(access_api_swipe_latency_seconds_bucket[5m])) by (le))
 ```
 
-意義：Access API 刷卡決策流程的 p95 延遲。
+意義：Access API 刷卡決策流程的 p95 延遲。p95 表示觀察時間窗內 95% 刷卡 request 都比該線顯示的時間更快。
 
 判讀方式：
 
@@ -197,13 +278,17 @@ histogram_quantile(0.95, sum(rate(access_api_swipe_latency_seconds_bucket[5m])) 
 
 選擇原因：Access API 是開門/刷卡入口，服務本身需要有內部 latency 指標。
 
-### Reporting p95 /api/reports/dashboard
+## 6. Reporting API p95 Latency
+
+最新 dashboard 把 Reporting latency 拆成獨立 panel，名稱是 `Reporting API p95 Latency`。這個 panel 只保留三個重要 read path：dashboard、report-center、access-events。
 
 PromQL:
 
 ```promql
-histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket{path=~"/api/reports/dashboard|/api/reports/report-center"}[5m])) by (le, path))
+histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket{path=~"/api/reports/dashboard|/api/reports/report-center|/api/reports/access/events"}[5m])) by (le, path))
 ```
+
+### p95 /api/reports/dashboard
 
 意義：首頁總覽資料 API 的 p95 延遲。
 
@@ -214,7 +299,7 @@ histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bu
 
 選擇原因：首頁總覽是最容易被使用者看到的 Reporting read path。
 
-### Reporting p95 /api/reports/report-center
+### p95 /api/reports/report-center
 
 意義：報表中心主要資料 API 的 p95 延遲。
 
@@ -225,7 +310,19 @@ histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bu
 
 選擇原因：這是最貼近 Reporting requirement 的核心報表查詢路徑。
 
-## 5. Access Decision Ratio
+### p95 /api/reports/access/events
+
+意義：刷卡事件明細 API 的 p95 延遲。最新 dashboard 把這條 route 加進 Reporting p95，是因為報表中心或事件查詢頁常會讀取明細列表。
+
+判讀方式：
+
+- 大量刷卡後，如果使用者查事件明細，這條線會反映列表查詢速度。
+- 若它比 dashboard / report-center 明顯更高，可能是事件資料量、篩選條件、分頁或索引造成的查詢壓力。
+- 若 k6 或 demo 沒有打 access events endpoint，這條線可能不明顯，這是正常的。
+
+選擇原因：Reporting 不只要總覽和報表中心，也要能支援事件明細查詢，這條線補足明細 read path 的觀測。
+
+## 7. Access Decision Ratio
 
 ### Denied ratio
 
@@ -244,55 +341,88 @@ PromQL:
 
 選擇原因：只看 request 數不夠，還要知道刷卡結果是否健康。
 
-## 6. k6 Requests/sec
+## 8. k6 Requests/sec
 
 這裡只保留三種 endpoint：`access_swipe`、`reporting_report_center`、`frontend_proxy_dashboard`。
 
 ### access_swipe
+
 意義：k6 壓測送到刷卡 API 的 request rate。可對照 `Access swipes/sec`。
 
 ### reporting_report_center
-意義：k6 壓測報表中心查詢的 request rate。可對照 `Reporting p95 /api/reports/report-center`。
+
+意義：k6 壓測報表中心查詢的 request rate。可對照 `p95 /api/reports/report-center`。
 
 ### frontend_proxy_dashboard
+
 意義：k6 經由 frontend proxy 查 dashboard API 的 request rate，比較接近真實使用者從前端進入系統的路徑。
 
 選擇原因：三條線剛好代表寫入流量、報表讀取流量、前端入口流量。
 
-## 7. k6 p95 Latency
+## 9. k6 p95 / p99 Latency
 
-### p95 access_swipe
-意義：k6 從外部觀察到的刷卡 API p95 延遲。
+最新 dashboard 使用 `k6 p95 / p99 Latency`，同時看 p95 和 p99。
 
-### p95 reporting_report_center
-意義：k6 從外部觀察到的報表中心 API p95 延遲。
+### p95 access_swipe / reporting_report_center / frontend_proxy_dashboard
 
-### p95 frontend_proxy_dashboard
-意義：k6 從 frontend proxy 觀察到的 dashboard API p95 延遲。
+意義：k6 從外部觀察到的 95 百分位延遲。
 
-選擇原因：k6 是外部使用者視角，API p95 panel 是服務內部視角。兩者一起看，可以分辨問題在 API 本身還是入口路徑。
+判讀方式：
 
-## 8. k6 Quality
+- p95 代表大多數 request 的體感延遲。
+- 若 p95 上升，表示大多數使用者都開始感覺變慢。
+
+### p99 access_swipe / reporting_report_center / frontend_proxy_dashboard
+
+意義：k6 從外部觀察到的 99 百分位延遲，也就是最慢 1% request 的情況。
+
+判讀方式：
+
+- p99 比 p95 更敏感，適合看 tail latency。
+- 若 p95 穩定但 p99 突然升高，代表大多數 request 還好，但少數 request 已經明顯變慢，可能是 GC、DB query、Kafka/Redis 暫時抖動、proxy queue 等造成。
+- 若 p95 和 p99 同時升高，代表整體服務已經承壓，不只是少數 outlier。
+
+選擇原因：p95 適合描述一般使用者體感，p99 適合觀察尖峰或極端慢請求。壓測 demo 同時看兩者，可以更完整說明系統是否穩定。
+
+## 10. k6 Quality
 
 ### HTTP failed ratio
+
 意義：k6 request 失敗比例。正常應接近 0。
 
+判讀方式：
+
+- 若上升，代表壓測期間有 HTTP request 失敗。
+- 如果 latency 還不高但 failed ratio 上升，代表服務可能已經回錯誤，而不只是變慢。
+
 ### Check pass ratio
+
 意義：k6 script 中檢查條件通過的比例。正常應接近 1。
+
+判讀方式：
+
+- 若 HTTP failed ratio 是 0，但 Check pass ratio 下降，代表 HTTP status 可能成功，但 response 內容或業務結果不符合預期。
 
 選擇原因：壓測不能只看快不快，也要看結果是否正確。
 
-## 9. Login Activity
+## 11. Login Activity
 
 ### Login success/sec
+
 意義：每秒成功登入數，可對應題目提到的 user login activity。
 
 ### Login failed/sec
-意義：每秒登入失敗數，包括錯帳密、未授權或服務端錯誤。
+
+意義：每秒登入失敗數，包括錯帳密、未授權、格式錯誤或服務端錯誤。
+
+判讀方式：
+
+- 成功登入上升表示有正常使用者登入流量。
+- 失敗登入突然上升，可能是帳密錯誤、權限設定錯誤、測試資料錯誤或登入 API 異常。
 
 選擇原因：比拆成每個 HTTP status 更容易 demo，也更符合「登入活動」的判讀方式。
 
-## 10. Reporting API Memory Usage
+## 12. Reporting API Memory Usage
 
 ### Reporting memory in use
 
@@ -308,7 +438,7 @@ sum(process_resident_memory_bytes{job="reporting-api"}) or vector(0)
 
 選擇原因：Reporting API 需要查詢與整理報表資料，記憶體是很直覺的資源健康指標。
 
-## 11. Access API Runtime Load
+## 13. Access API Runtime Load
 
 ### Access goroutines
 
@@ -341,7 +471,10 @@ sum(access_api_runtime_alloc_bytes) / 1048576
 1. 看 `Access swipes/sec` 是否出現 shift change spike。
 2. 看 `Kafka events appended/sec` 和 `Reporting consumed/sec` 是否跟上。
 3. 看 `Access event backlog` 是否只是短暫上升後回落。
-4. 看 `Access publish failures/sec` 與 `Reporting consumer failures/sec` 是否維持 0。
-5. 看 `Access swipe p95` 與 `Reporting p95 /api/reports/report-center` 是否仍可接受。
-6. 若有跑 k6，看 `HTTP failed ratio` 是否接近 0、`Check pass ratio` 是否接近 1。
-7. 用 `Login success/sec` / `Login failed/sec` 補充 user login activity。
+4. 看 `Buffered/sec` 是否跟著刷卡流量上升，並確認 `Dropped/sec` 維持 0。
+5. 看 `Access publish failures/sec` 與 `Reporting consumer failures/sec` 是否維持 0。
+6. 看 `Access swipe p95` 是否可接受，確認刷卡入口延遲沒有惡化。
+7. 看 `p95 /api/reports/report-center`、`p95 /api/reports/access/events` 是否仍可接受，確認報表 read path 沒有變慢。
+8. 若有跑 k6，看 p95 / p99、`HTTP failed ratio`、`Check pass ratio`。p99 用來補充最慢 1% request 的狀況。
+9. 用 `Login success/sec` / `Login failed/sec` 補充 user login activity。
+10. 最後看 memory / goroutines，確認壓測後資源沒有持續累積。
