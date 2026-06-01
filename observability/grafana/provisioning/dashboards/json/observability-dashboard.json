@@ -158,7 +158,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 8
       },
@@ -179,14 +179,48 @@
           "expr": "histogram_quantile(0.95, sum(rate(access_api_swipe_latency_seconds_bucket[5m])) by (le))",
           "legendFormat": "Access swipe p95",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket{path=~\"/api/reports/dashboard|/api/reports/report-center|/api/reports/access/events\"}[5m])) by (le, path))",
-          "legendFormat": "Reporting p95 {{path}}",
-          "refId": "B"
         }
       ],
-      "title": "API p95 Latency",
+      "title": "Access Swipe p95 Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(reporting_api_http_request_duration_seconds_bucket{path=~\"/api/reports/dashboard|/api/reports/report-center|/api/reports/access/events\"}[5m])) by (le, path))",
+          "legendFormat": "p95 {{path}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Reporting API p95 Latency",
       "type": "timeseries"
     },
     {
@@ -202,8 +236,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 8
       },
       "id": 5,
@@ -648,6 +682,6 @@
   "timezone": "browser",
   "title": "Access Control Observability",
   "uid": "access-control-observability",
-  "version": 5,
+  "version": 6,
   "weekStart": ""
 }

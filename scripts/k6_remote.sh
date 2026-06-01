@@ -185,9 +185,15 @@ run_chaos() {
   open_tunnels
   local prefix="K6CHAOS$(date +%s)"
   local summary; summary="$(mktemp)"
-  # Chaos-tuned ramp defaults (lighter than rampup so the Redis recovery buffer
-  # and the post-outage backfill stay bounded). Override any of these via env.
-  : "${MAX_RATE:=1500}" "${STEP_DURATION:=15}" "${DOWN_TO:=400}" "${FLOOR_HOLD:=60}"
+  # Chaos-tuned ramp defaults kept deliberately SMALL. Unlike the throughput
+  # tests, chaos events (K6CHAOS prefix) ARE persisted to Postgres so the
+  # backfill check stays verifiable — so a chaos run's total volume is bounded
+  # to a few tens of thousands of events (drains in ~1-2 min) instead of
+  # clogging the real reporting pipeline. Push these up only when you explicitly
+  # want to probe the disconnected ceiling and can tolerate the backfill load.
+  : "${MAX_RATE:=300}" "${START_RATE:=100}" "${STEP:=100}" "${STEP_DURATION:=10}" \
+    "${PEAK_HOLD:=15}" "${DOWN_TO:=100}" "${DOWN_STEP:=100}" \
+    "${DOWN_STEP_DURATION:=10}" "${FLOOR_HOLD:=20}"
   build_stages
   local start_delay="${CHAOS_START_DELAY:-15}"
   # Keep DB+Kafka down for the WHOLE ramp so the max QPS we read is genuinely the

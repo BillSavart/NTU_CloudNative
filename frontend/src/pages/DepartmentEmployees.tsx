@@ -28,15 +28,15 @@ function formatDateTime(value?: string | null) {
 }
 
 function stateLabel(state: DepartmentEmployeeMetric['lastKnownState']) {
-  if (state === 'IN') return '在場'
-  if (state === 'OUT') return '不在廠'
-  return '未知'
+  if (state === 'IN') return '在廠'
+  // OUT and the default UNKNOWN are both treated as not in the factory, matching
+  // the backend which counts UNKNOWN employees as "outside".
+  return '不在廠'
 }
 
 function stateClassName(state: DepartmentEmployeeMetric['lastKnownState']) {
   if (state === 'IN') return 'status-pill status-pill-in'
-  if (state === 'OUT') return 'status-pill status-pill-out'
-  return 'status-pill status-pill-unknown'
+  return 'status-pill status-pill-out'
 }
 
 const PAGE_SIZE = 50
@@ -99,7 +99,7 @@ function DepartmentEmployees() {
           <div className="kpi-value">{loading ? '-' : data?.summary.totalEmployees ?? 0}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">目前在場</div>
+          <div className="kpi-label">目前在廠</div>
           <div className="kpi-value">{loading ? '-' : data?.summary.insideCount ?? 0}</div>
         </div>
         <div className="kpi-card">
@@ -117,7 +117,7 @@ function DepartmentEmployees() {
           <div>
             <h2 className="h6 mb-1">本月員工指標</h2>
             <p className="panel-helper-text">
-              指標聚焦主管排班與人力風險：即時在場狀態、累積工時、平均日工時、遲到、超時與拒絕刷卡。
+              指標聚焦主管排班與人力風險：即時在廠狀態、累積工時、平均日工時、遲到、超時與拒絕刷卡。
             </p>
           </div>
         </div>
