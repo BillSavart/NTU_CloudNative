@@ -1171,6 +1171,58 @@ def query_access_events(
     }
 
 
+def iter_access_events_for_export(
+    db: Session,
+    current_user: UserAccount | None = None,
+    employee_id: str | None = None,
+    department_ids: list[str] | None = None,
+    decision: str | None = None,
+    direction: str | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    q: str | None = None,
+) -> Iterable[dict[str, Any]]:
+    if department_ids and len(department_ids) > 1:
+        effective_ids = _multi_dept_visible_ids(db, current_user, department_ids)
+        query = select(AccessEvent).options(selectinload(AccessEvent.employee))
+        if effective_ids is not None:
+            query = query.join(Employee, AccessEvent.employee_id == Employee.employee_id)
+            query = query.where(Employee.department_id.in_(effective_ids))
+        if current_user is not None and current_user.role == "EMPLOYEE" and current_user.employee_id:
+            query = query.where(AccessEvent.employee_id == current_user.employee_id)
+        if from_time is not None:
+            query = query.where(AccessEvent.occurred_at >= from_time)
+        if to_time is not None:
+            query = query.where(AccessEvent.occurred_at <= to_time)
+    else:
+        single_dept = (department_ids[0] if department_ids and len(department_ids) == 1 else None)
+        query = _scoped_event_select(db, current_user, single_dept, from_time, to_time)
+
+    if employee_id:
+        query = query.where(AccessEvent.employee_id == employee_id)
+    if decision:
+        query = query.where(AccessEvent.decision == decision)
+    if direction:
+        query = query.where(AccessEvent.direction == direction)
+    if q:
+        q_pat = f"%{q}%"
+        query = query.where(
+            or_(
+                AccessEvent.employee_id.ilike(q_pat),
+                AccessEvent.gate_id.ilike(q_pat),
+                AccessEvent.employee_id.in_(
+                    select(Employee.employee_id).where(Employee.display_name.ilike(q_pat))
+                ),
+            )
+        )
+
+    events = db.scalars(
+        query.order_by(AccessEvent.occurred_at.desc()).execution_options(yield_per=1000)
+    )
+    for event in events:
+        yield serialize_access_event(event)
+
+
 def get_department_tree(db: Session, current_user: UserAccount | None = None) -> list[dict[str, Any]]:
     visible_ids = _visible_department_ids(db, current_user, None)
     query = select(Department).order_by(Department.name)

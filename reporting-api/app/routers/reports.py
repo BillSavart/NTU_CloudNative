@@ -21,6 +21,7 @@ from app.repositories import (
     get_employee_states,
     get_report_center,
     get_timeseries,
+    iter_access_events_for_export,
     list_anomalies,
     parse_optional_datetime,
     query_access_events,
@@ -335,40 +336,31 @@ def _build_events_csv(
     writer = csv.writer(buf)
     writer.writerow(headers)
 
-    batch_size = 200  # matches query_access_events internal cap
-    offset = 0
-    while True:
-        result = query_access_events(
-            db,
-            current_user=current_user,
-            employee_id=employee_id,
-            department_ids=department_ids,
-            decision=decision,
-            direction=direction,
-            from_time=from_time,
-            to_time=to_time,
-            limit=batch_size,
-            offset=offset,
-            q=q,
-        )
-        for event in result["items"]:
-            writer.writerow([
-                event.get("requestId", ""),
-                event.get("employeeId", ""),
-                event.get("displayName", ""),
-                event.get("departmentId", ""),
-                event.get("gateId", ""),
-                event.get("direction", ""),
-                event.get("decision", ""),
-                event.get("reason", ""),
-                event.get("previousState", ""),
-                event.get("currentState", ""),
-                event.get("latencyMs", ""),
-                event.get("timestamp", ""),
-            ])
-        if len(result["items"]) < batch_size:
-            break
-        offset += batch_size
+    for event in iter_access_events_for_export(
+        db,
+        current_user=current_user,
+        employee_id=employee_id,
+        department_ids=department_ids,
+        decision=decision,
+        direction=direction,
+        from_time=from_time,
+        to_time=to_time,
+        q=q,
+    ):
+        writer.writerow([
+            event.get("requestId", ""),
+            event.get("employeeId", ""),
+            event.get("displayName", ""),
+            event.get("departmentId", ""),
+            event.get("gateId", ""),
+            event.get("direction", ""),
+            event.get("decision", ""),
+            event.get("reason", ""),
+            event.get("previousState", ""),
+            event.get("currentState", ""),
+            event.get("latencyMs", ""),
+            event.get("timestamp", ""),
+        ])
     return buf.getvalue()
 
 
