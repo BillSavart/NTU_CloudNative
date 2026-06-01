@@ -376,13 +376,13 @@
       },
       "targets": [
         {
-          "expr": "avg(k6_http_req_failed_rate{testid=~\"$k6_testid\"})",
-          "legendFormat": "HTTP failed ratio",
+          "expr": "sum(rate(k6_http_reqs_total{testid=~\"$k6_testid\", expected_response=\"false\"}[$__rate_interval])) / sum(rate(k6_http_reqs_total{testid=~\"$k6_testid\"}[$__rate_interval]))",
+          "legendFormat": "HTTP failed ratio (instant)",
           "refId": "A"
         },
         {
           "expr": "avg(k6_checks_rate{testid=~\"$k6_testid\"})",
-          "legendFormat": "Check pass ratio",
+          "legendFormat": "Check pass ratio (cumulative)",
           "refId": "B"
         }
       ],
@@ -682,6 +682,6 @@
   "timezone": "browser",
   "title": "Access Control Observability",
   "uid": "access-control-observability",
-  "version": 6,
+  "version": 7,
   "weekStart": ""
 }
