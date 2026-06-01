@@ -79,6 +79,20 @@ sudo usermod -aG docker "$USER"     # then log out + back in
 docker compose version              # must be >= 2.24.4 (for !override / !reset)
 ```
 
+### 0-3b. VM: cap container log size (prevents disk-full)
+Without this, container JSON logs grow unbounded — a heavy load test can write
+tens of GB of logs and fill the disk, which cascades into Kafka/Postgres write
+failures, retry storms, and OOM. Apply the repo's daemon config once:
+```bash
+sudo cp infra/docker/daemon.json /etc/docker/daemon.json   # 20 MB × 5 per container
+sudo systemctl restart docker
+# existing containers keep their old (unlimited) log config until recreated:
+. scripts/lib-compose.sh && "${COMPOSE[@]}" up -d --force-recreate
+```
+Combined with the Kafka `retention.bytes` cap in `docker-compose.yml`, load
+tests can no longer fill the VM disk. (Quick relief if a log already grew huge:
+`sudo truncate -s 0 /var/lib/docker/containers/*/*-json.log`.)
+
 ### 0-4. VM: clone the repo
 ```bash
 cd ~ && git clone https://github.com/BillSavart/NTU_CloudNative.git
