@@ -89,7 +89,7 @@ function DepartmentAnalytics() {
         <div className="panel-heading-row">
           <div>
             <h2 className="h6 mb-1">部門概況</h2>
-            <p className="panel-helper-text">點選查看員工可進一步檢視本月工時、異常次數與即時在場狀態。</p>
+            <p className="panel-helper-text">點選查看員工可進一步檢視本月工時、異常次數與即時在廠狀態。</p>
           </div>
         </div>
         <div className="table-responsive">
