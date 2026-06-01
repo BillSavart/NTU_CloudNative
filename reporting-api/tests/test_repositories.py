@@ -351,13 +351,12 @@ class RepositoryTestCase(unittest.TestCase):
         self.assertEqual(report["metrics"]["outEvents"], 1)
         self.assertEqual(report["metrics"]["avgLatencyMs"], 6.0)
         self.assertEqual(report["metrics"]["deniedRate"], 50.0)
-        self.assertEqual(report["topDepartments"][0], {"departmentId": "OPS_A", "count": 1})
-        self.assertNotIn("FAB_A", {row["departmentId"] for row in report["topDepartments"]})
+        self.assertEqual(report["topDepartments"], [])
         self.assertEqual(report["hourlyActivity"], [{"hour": "17", "count": 2, "inCount": 1, "outCount": 1}])
         self.assertEqual(len(report["events"]), 2)
         self.assertIsInstance(report["generationLatencyMs"], float)
 
-    def test_report_center_keeps_leaf_manager_department_distribution(self) -> None:
+    def test_report_center_omits_department_distribution(self) -> None:
         with self.SessionLocal() as db:
             db.add(UserAccount(user_id=3, username="ops_manager", role="MANAGER", employee_id="EMP001", is_active=True))
             db.add(UserDepartmentScope(user_id=3, department_id="OPS_A", include_descendants=True))
@@ -371,7 +370,7 @@ class RepositoryTestCase(unittest.TestCase):
                 limit=2,
             )
 
-        self.assertEqual(report["topDepartments"], [{"departmentId": "OPS_A", "count": 1}])
+        self.assertEqual(report["topDepartments"], [])
 
     def test_report_center_caches_windowed_calls_by_scope_and_window(self) -> None:
         repositories._report_center_cache.clear()
@@ -456,6 +455,7 @@ class RepositoryTestCase(unittest.TestCase):
             )
             self.assertTrue(second["snapshot"]["hit"])
             self.assertEqual(second["metrics"]["totalEvents"], 2)
+            self.assertEqual(second["topDepartments"], [])
 
             refresh_report_center_snapshot(db, manager, "last7d", limit=2)
             refreshed = get_report_center(
@@ -476,6 +476,7 @@ class RepositoryTestCase(unittest.TestCase):
             self.assertEqual(active_report_user_ids(["fab_1_manager"]), [])
             self.assertEqual(target_department_ids(2, 10), ["FAB_A", "OPS_A"])
             self.assertNotIn(None, target_department_ids(1, 10))
+            self.assertNotIn("TSMC", target_department_ids(1, 10))
         self.assertEqual(snapshot_display_name("OPS_A", "last7d"), "OPS_A_last7d")
 
     def test_report_center_reuses_newer_executive_department_snapshot(self) -> None:

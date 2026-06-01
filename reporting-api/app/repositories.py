@@ -526,6 +526,7 @@ def _attach_report_center_snapshot_meta(
     hit: bool,
 ) -> dict[str, Any]:
     result = deepcopy(payload)
+    result["topDepartments"] = []
     result["snapshot"] = {
         "hit": hit,
         "generatedAt": _local_datetime(snapshot.generated_at).isoformat(),
@@ -849,32 +850,17 @@ def _compute_report_center_live(
     in_count = sum(1 for row in rows if row.direction == "IN")
     out_count = sum(1 for row in rows if row.direction == "OUT")
     latency_values = [row.latency_ms for row in rows if row.latency_ms is not None]
-    department_counts: Counter[str] = Counter()
     hourly_counts: Counter[str] = Counter()
     hourly_in_counts: Counter[str] = Counter()
     hourly_out_counts: Counter[str] = Counter()
 
     for row in rows:
-        department_counts[row.department_id or "UNKNOWN"] += 1
         hour = f"{_local_datetime(row.occurred_at).hour:02d}"
         hourly_counts[hour] += 1
         if row.direction == "IN":
             hourly_in_counts[hour] += 1
         if row.direction == "OUT":
             hourly_out_counts[hour] += 1
-
-    excluded_department_ids = _report_center_excluded_department_ids(current_user)
-    visible_top_departments = [
-        {"departmentId": row_department_id, "count": count}
-        for row_department_id, count in department_counts.most_common()
-        if row_department_id not in excluded_department_ids
-    ]
-    if not visible_top_departments and department_counts:
-        visible_top_departments = [
-            {"departmentId": row_department_id, "count": count}
-            for row_department_id, count in department_counts.most_common()
-        ]
-    top_departments = visible_top_departments[:6]
 
     preview = query_access_events(
         db,
@@ -897,7 +883,7 @@ def _compute_report_center_live(
             "avgLatencyMs": round(sum(latency_values) / len(latency_values), 2) if latency_values else None,
             "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
         },
-        "topDepartments": top_departments,
+        "topDepartments": [],
         "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id, employee_id=employee_id),
         "hourlyActivity": [
             {
@@ -1058,29 +1044,6 @@ def _get_report_center_sql(
         ).select_from(scoped)
     ).one()
 
-    department_counts = db.execute(
-        select(
-            Employee.department_id.label("department_id"),
-            func.count().label("count"),
-        )
-        .select_from(scoped)
-        .join(Employee, scoped.c.employee_id == Employee.employee_id)
-        .group_by(Employee.department_id)
-        .order_by(func.count().desc())
-    ).mappings().all()
-    excluded_department_ids = _report_center_excluded_department_ids(current_user)
-    top_departments = [
-        {"departmentId": row["department_id"] or "UNKNOWN", "count": int(row["count"])}
-        for row in department_counts
-        if (row["department_id"] or "UNKNOWN") not in excluded_department_ids
-    ]
-    if not top_departments and department_counts:
-        top_departments = [
-            {"departmentId": row["department_id"] or "UNKNOWN", "count": int(row["count"])}
-            for row in department_counts
-        ]
-    top_departments = top_departments[:6]
-
     hourly_rows = db.execute(
         select(
             func.to_char(func.date_trunc("hour", scoped.c.occurred_at), "HH24").label("hour"),
@@ -1117,7 +1080,7 @@ def _get_report_center_sql(
             "avgLatencyMs": round(float(average_latency), 2) if average_latency is not None else None,
             "deniedRate": round((denied_events / total_events) * 100, 2) if total_events else 0,
         },
-        "topDepartments": top_departments,
+        "topDepartments": [],
         "workHours": get_work_hour_summary(db, current_user=current_user, to_time=to_time, department_id=department_id, employee_id=employee_id),
         "hourlyActivity": [
             {

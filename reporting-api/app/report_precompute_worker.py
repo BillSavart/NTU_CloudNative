@@ -14,6 +14,7 @@ from app.repositories import REPORT_CENTER_PRECOMPUTE_PRESETS, refresh_report_ce
 
 logger = logging.getLogger(__name__)
 REPORT_CENTER_ROLES = {"ADMIN", "EXECUTIVE", "MANAGER"}
+REPORT_CENTER_PRECOMPUTE_EXCLUDED_DEPARTMENT_IDS = {"TSMC"}
 
 
 def snapshot_display_name(department_id: str | None, range_preset: str) -> str:
@@ -64,6 +65,11 @@ def target_department_ids(user_id: int, department_limit: int) -> list[str]:
         else:
             department_ids = visible_ids
 
+    department_ids = [
+        department_id
+        for department_id in department_ids
+        if department_id not in REPORT_CENTER_PRECOMPUTE_EXCLUDED_DEPARTMENT_IDS
+    ]
     return department_ids[:department_limit]
 
 

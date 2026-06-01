@@ -44,7 +44,6 @@ type ReportSectionOptions = {
   eventMetricOptions: EventMetricOptions
   workTrend: boolean
   organizationAnalysis: boolean
-  departmentDistribution: boolean
   hourlyActivity: boolean
   eventDetails: boolean
   attendanceDetails: boolean
@@ -118,6 +117,8 @@ type DepartmentOption = {
   depth: number
 }
 
+const REPORT_CENTER_EXECUTIVE_HIDDEN_DEPARTMENT_IDS = new Set(['TSMC'])
+
 function resolveDefaultDepartmentId(user: CurrentUser | null, options: DepartmentOption[]) {
   if (user?.departmentId && options.some((option) => option.departmentId === user.departmentId)) {
     return user.departmentId
@@ -181,11 +182,14 @@ function htmlEscape(value: string | number | null | undefined) {
     .replaceAll("'", '&#39;')
 }
 
-function flattenDepartments(nodes: DepartmentNode[], depth = 0): DepartmentOption[] {
-  return nodes.flatMap((node) => [
-    { departmentId: node.departmentId, name: node.name, depth },
-    ...flattenDepartments(node.children ?? [], depth + 1),
-  ])
+function flattenDepartments(nodes: DepartmentNode[], user: CurrentUser | null, depth = 0): DepartmentOption[] {
+  return nodes.flatMap((node) => {
+    const hiddenForUser = user?.role === 'EXECUTIVE' && REPORT_CENTER_EXECUTIVE_HIDDEN_DEPARTMENT_IDS.has(node.departmentId)
+    const children = flattenDepartments(node.children ?? [], user, hiddenForUser ? depth : depth + 1)
+
+    if (hiddenForUser) return children
+    return [{ departmentId: node.departmentId, name: node.name, depth }, ...children]
+  })
 }
 
 function summarizeEvents(events: AccessEvent[]): ReportMetrics {
@@ -483,21 +487,6 @@ function departmentAttendanceRows(items: DepartmentStayStat[]) {
           <td>${htmlEscape(formatPercentValue(item.normalAttendanceRate))}</td>
           <td>${htmlEscape(item.workDays)}</td>
         </tr>
-      `,
-    )
-    .join('')
-}
-
-function barRows(items: Array<{ label: string; value: number }>) {
-  const max = Math.max(1, ...items.map((item) => item.value))
-  return items
-    .map(
-      (item) => `
-        <div class="bar-row">
-          <span>${htmlEscape(item.label)}</span>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(4, (item.value / max) * 100)}%"></div></div>
-          <strong>${htmlEscape(item.value)}</strong>
-        </div>
       `,
     )
     .join('')
@@ -820,11 +809,6 @@ function buildVisualReport(
           <div class="chart">${lineTrendChart(workHours?.yearlyTrend ?? [])}</div>`
         : ''
     }
-    ${
-      sectionOptions.organizationAnalysis && sectionOptions.departmentDistribution
-        ? `<h2>部門刷卡事件分布</h2><div class="chart">${barRows(metrics.topDepartments.map((item) => ({ label: item.departmentId, value: item.count })))}</div>`
-        : ''
-    }
     ${sectionOptions.trendAnalysis && sectionOptions.hourlyActivity ? `<h2>時段活動量趨勢</h2><div class="chart">${stackedHourRows(metrics.hourlyActivity)}</div>` : ''}
     ${
       sectionOptions.eventDetails
@@ -920,7 +904,6 @@ function Reports() {
   })
   const [showWorkTrend, setShowWorkTrend] = useState(true)
   const [showOrganizationAnalysis, setShowOrganizationAnalysis] = useState(true)
-  const [showDepartmentDistribution, setShowDepartmentDistribution] = useState(true)
   const [showHourlyActivity, setShowHourlyActivity] = useState(true)
   const [showEventDetails, setShowEventDetails] = useState(false)
   const [showAttendanceDetails, setShowAttendanceDetails] = useState(true)
@@ -957,7 +940,7 @@ function Reports() {
     Promise.all([fetchDepartmentTree(), fetchCurrentUser()])
       .then(([departments, user]) => {
         if (cancelled) return
-        const options = flattenDepartments(departments)
+        const options = flattenDepartments(departments, user)
         setCurrentUser(user)
         setDepartmentOptions(options)
         setDepartmentId((current) => {
@@ -1092,7 +1075,6 @@ function Reports() {
     () => reportData?.attendanceSummary ?? buildHrMetrics(attendanceDetails),
     [reportData, attendanceDetails],
   )
-  const maxDepartmentCount = Math.max(1, ...metrics.topDepartments.map((item) => item.count))
   const maxHourlyCount = Math.max(1, ...metrics.hourlyActivity.map((item) => item.count))
   const reportTiming = reportTimingText(reportData?.snapshot, reportData?.generationLatencyMs)
 
@@ -1161,7 +1143,6 @@ function Reports() {
     eventMetricOptions,
     workTrend: showTrendAnalysis && showWorkTrend,
     organizationAnalysis: !isEmployee && showOrganizationAnalysis,
-    departmentDistribution: showOrganizationAnalysis && !isEmployee && showDepartmentDistribution,
     hourlyActivity: showTrendAnalysis && showHourlyActivity,
     eventDetails: showEventDetails,
     attendanceDetails: showAttendanceDetails,
@@ -1180,7 +1161,6 @@ function Reports() {
     showDepartmentStaySummary &&
     showDepartmentStayRanking &&
     (isEmployee || showDepartmentAttendanceRate) &&
-    (isEmployee || showDepartmentDistribution) &&
     showEventMetrics &&
     Object.values(eventMetricOptions).every(Boolean) &&
     showEventDetails &&
@@ -1200,7 +1180,6 @@ function Reports() {
     setShowDepartmentStaySummary(checked)
     setShowDepartmentStayRanking(checked)
     setShowDepartmentAttendanceRate(checked)
-    setShowDepartmentDistribution(checked)
     setShowEventMetrics(checked)
     setEventMetricOptions({
       total: checked,
@@ -1522,10 +1501,6 @@ function Reports() {
                     <input type="checkbox" checked={showDepartmentAttendanceRate} onChange={(event) => setShowDepartmentAttendanceRate(event.target.checked)} />
                     部門正常出勤率
                   </label>
-                  <label>
-                    <input type="checkbox" checked={showDepartmentDistribution} onChange={(event) => setShowDepartmentDistribution(event.target.checked)} />
-                    部門刷卡事件分布
-                  </label>
                 </div>
               ) : null}
               {showReportOptionDetails && showAttendanceDetails ? (
@@ -1845,32 +1820,6 @@ function Reports() {
           ) : (
             <div className="work-trend-empty text-secondary small">目前沒有完整進出可計算工時。</div>
           )}
-          </div>
-        </section>
-      ) : null}
-
-      {!isEmployee && showOrganizationAnalysis && showDepartmentDistribution ? (
-        <section className="panel-grid mb-3">
-          <div className="panel-card">
-          <div className="report-section-toolbar">
-            <h2 className="h6 m-0">部門刷卡事件分布</h2>
-            <span className="small text-secondary">Top {metrics.topDepartments.length}</span>
-          </div>
-          <div className="report-chart-list">
-            {metrics.topDepartments.length > 0 ? (
-              metrics.topDepartments.map((item) => (
-                <div className="report-bar-row" key={item.departmentId}>
-                  <span>{item.departmentId}</span>
-                  <div className="report-bar-track">
-                    <div className="report-bar-fill" style={{ width: `${Math.max(4, (item.count / maxDepartmentCount) * 100)}%` }} />
-                  </div>
-                  <strong>{item.count.toLocaleString()}</strong>
-                </div>
-              ))
-            ) : (
-              <div className="text-secondary small">目前沒有可比較的下轄部門事件。</div>
-            )}
-          </div>
           </div>
         </section>
       ) : null}
