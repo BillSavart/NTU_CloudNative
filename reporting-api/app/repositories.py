@@ -167,18 +167,35 @@ def parse_optional_datetime(value: str | None) -> datetime | None:
     return parse_event_timestamp(value)
 
 
+@lru_cache(maxsize=1)
+def _loadtest_skip_prefixes() -> tuple[str, ...]:
+    raw = get_settings().loadtest_skip_employee_prefixes or ""
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def is_skipped_loadtest_event(employee_id: str) -> bool:
+    prefixes = _loadtest_skip_prefixes()
+    return bool(prefixes) and employee_id.startswith(prefixes)
+
+
 def save_access_event(payload: dict[str, Any]) -> bool:
     with SessionLocal() as db:
         return save_access_event_with_session(db, payload)
 
 
 def save_access_event_with_session(db: Session, payload: dict[str, Any]) -> bool:
+    employee_id = str(payload["employeeId"])
+    # Throughput/ramp load-test events are acknowledged (offset committed) but
+    # never persisted, so a load run cannot back up the real reporting pipeline.
+    # Chaos keeps its prefix out of the skip list so its backfill stays verifiable.
+    if is_skipped_loadtest_event(employee_id):
+        return False
+
     request_id = str(payload["requestId"])
     existing = db.scalar(select(AccessEvent.id).where(AccessEvent.request_id == request_id))
     if existing is not None:
         return False
 
-    employee_id = str(payload["employeeId"])
     occurred_at = parse_event_timestamp(str(payload["timestamp"]))
     current_state = str(payload["currentState"])
 

@@ -76,6 +76,23 @@ class RepositoryTestCase(unittest.TestCase):
                 "NEW001",
             )
 
+    def test_save_access_event_skips_loadtest_prefixes_but_keeps_chaos(self) -> None:
+        with self.SessionLocal() as db:
+            # Throughput/ramp events (K6CONST/K6RAMP) are acknowledged but not
+            # persisted, so a load run cannot back up the real pipeline.
+            skipped = self._payload(request_id="req-load", employee_id="K6RAMP00001")
+            self.assertFalse(save_access_event_with_session(db, skipped))
+            self.assertIsNone(
+                db.scalar(select(AccessEvent).where(AccessEvent.request_id == "req-load"))
+            )
+
+            # Chaos events stay persisted so the backfill check remains verifiable.
+            chaos = self._payload(request_id="req-chaos", employee_id="K6CHAOS00001")
+            self.assertTrue(save_access_event_with_session(db, chaos))
+            self.assertIsNotNone(
+                db.scalar(select(AccessEvent).where(AccessEvent.request_id == "req-chaos"))
+            )
+
     def test_summary_and_event_filters(self) -> None:
         with self.SessionLocal() as db:
             manager = self._user(db, "manager")
