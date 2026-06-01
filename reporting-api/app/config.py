@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # instead of crashing and reconnecting.
     kafka_consume_retry_initial_seconds: float = 1.0
     kafka_consume_retry_max_seconds: float = 30.0
+    # Load-test events whose employee_id starts with one of these comma-separated
+    # prefixes are acknowledged (offset committed) but NOT written to the DB, so a
+    # throughput/ramp run can never clog the real reporting pipeline. Chaos keeps
+    # its prefix OUT of this list so its Redis->Postgres backfill stays verifiable.
+    loadtest_skip_employee_prefixes: str = "K6CONST,K6RAMP"
 
     redis_addr: str = "127.0.0.1:6379"
     redis_password: str = ""
