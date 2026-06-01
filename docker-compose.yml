@@ -122,6 +122,10 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
+      # Cap TSDB on-disk size so repeated k6 load tests (high-cardinality
+      # per-run series) can't grow the volume unbounded and fill the disk.
+      - "--storage.tsdb.retention.size=8GB"
+      - "--storage.tsdb.retention.time=15d"
     volumes:
       - ./infra/prometheus:/etc/prometheus:ro
       - prometheusdata:/prometheus
