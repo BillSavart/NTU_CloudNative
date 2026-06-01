@@ -4,6 +4,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 
 from aiokafka import AIOKafkaConsumer
+from redis.asyncio import Redis
 
 from app.config import Settings
 from app.repositories import parse_access_event, save_access_event
@@ -44,6 +45,10 @@ class AccessEventConsumerService:
         )
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        # Set while consuming so each handled event can be marked "persisted" for
+        # the Redis recovery fallback. None outside the run loop (and in tests),
+        # where _mark_persisted becomes a no-op.
+        self._redis: Redis | None = None
 
     def start(self) -> None:
         if not self.settings.kafka_consumer_enabled or self._task is not None:
@@ -81,6 +86,11 @@ class AccessEventConsumerService:
             enable_auto_commit=False,
         )
 
+        # Only mark persisted events when the recovery fallback is enabled to
+        # read them; otherwise the marker write is pure overhead.
+        if self.settings.redis_recovery_enabled:
+            self._redis = Redis.from_url(self.settings.redis_url, decode_responses=True)
+
         await consumer.start()
         self.status.running = True
         self.status.last_error = None
@@ -106,6 +116,9 @@ class AccessEventConsumerService:
         finally:
             self.status.running = False
             await consumer.stop()
+            if self._redis is not None:
+                redis, self._redis = self._redis, None
+                await redis.aclose()
             logger.info("access event consumer stopped")
 
     async def _handle_with_retry(self, raw: bytes, headers: dict[str, bytes]) -> bool:
@@ -154,12 +167,29 @@ class AccessEventConsumerService:
                 self.status.inserted += 1
             else:
                 self.status.duplicates += 1
+            await self._mark_persisted(payload.get("requestId"))
             return True
         except Exception as exc:
             self.status.failed += 1
             self.status.last_error = str(exc)
             logger.exception("failed to persist access event")
             return False
+
+    async def _mark_persisted(self, request_id: object) -> None:
+        """Tell the Redis recovery fallback this event is already handled.
+
+        Best-effort: a marker failure must never block or fail Kafka consumption,
+        because the recovery consumer's DB-level dedup still prevents duplicates.
+        """
+        if self._redis is None or not request_id:
+            return
+        key = self.settings.redis_persisted_marker_prefix + str(request_id)
+        try:
+            await self._redis.set(
+                key, "1", ex=self.settings.redis_persisted_marker_ttl_seconds
+            )
+        except Exception:
+            logger.warning("failed to set persisted marker for %s", request_id)
 
     def _merge_trace_headers(self, payload: dict, headers: dict[str, bytes]) -> None:
         for key in ("traceparent", "tracestate"):

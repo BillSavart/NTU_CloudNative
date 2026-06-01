@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     redis_recovery_consumer_name: str = "reporting-api-1"
     redis_recovery_block_ms: int = 5000
     redis_recovery_batch_size: int = 100
+    # Redis recovery runs as a TRUE fallback, not a second always-on pipeline.
+    # The Kafka consumer is the primary persister; after it handles an event it
+    # sets a short-TTL "persisted" marker in Redis. Recovery waits this grace
+    # period before touching a streamed event and skips it entirely when the
+    # marker is present, so while Kafka keeps up recovery does no DB work and
+    # only backfills events Kafka has not handled within the window (Kafka down
+    # or badly lagging). Set grace to 0 to restore the old eager behaviour.
+    redis_recovery_grace_seconds: float = 30.0
+    # Marker key set by the Kafka consumer and read by recovery. The TTL must
+    # comfortably exceed the grace period so the marker outlives the wait.
+    redis_persisted_marker_prefix: str = "reporting:persisted:"
+    redis_persisted_marker_ttl_seconds: int = 300
 
     # --- Attendance / access business rules (single source of truth) ---
     # SQL LIKE pattern identifying "main entrance" gates used for attendance.
