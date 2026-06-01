@@ -232,7 +232,7 @@ function ComplianceAlerts() {
                 <th>員工</th>
                 <th>部門</th>
                 <th>異常類型</th>
-                <th>連續工時</th>
+                <th>異常內容</th>
                 <th>發生時間</th>
                 <th>備註</th>
                 <th className="alert-actions-header">操作</th>
